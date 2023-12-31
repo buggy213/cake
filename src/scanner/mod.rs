@@ -2,128 +2,13 @@ use std::{collections::{VecDeque, HashMap}, fmt::Debug, iter};
 
 use crate::scanner::alphabet::AsciiCharIterator;
 
-use self::alphabet::AsciiChar;
+use self::{alphabet::AsciiChar, regex::Regex};
 use bit_set::BitSet;
 
 mod alphabet;
-mod table_scanner;
 
-// super basic regex implementation for learning purposes
-// with following grammar (EBNF)
-// <regex> ::= <term> '|' <regex>
-// |  <term>
-
-// <term> ::= { <factor> }
-
-// <factor> ::= <base> { '*' }
- 
-// <base> ::= <char>
-// |  '\' <char>
-// |  '(' <regex> ')'
-
-#[derive(Debug)]
-pub enum Regex<A: Eq> {
-    Alternation(Vec<Regex<A>>),
-    Concatenation(Vec<Regex<A>>),
-    Kleene(Box<Regex<A>>),
-    Char(A)
-}
-
-#[derive(Debug)]
-pub enum RegexError {
-    Malformed
-}
-
-// basic recursive descent parsing
-impl Regex<AsciiChar> {
-    fn parse_regex(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex<AsciiChar>, RegexError> {
-        let term = Self::parse_term(tokens)?;
-        let mut alternates: Vec<Regex<AsciiChar>> = Vec::new();
-        while tokens.front().is_some_and(|x| *x == AsciiChar::VerticalLine) { // '|'
-            tokens.pop_front();
-            let alternate = Self::parse_term(tokens)?;
-            alternates.push(alternate);
-        }
-        if alternates.is_empty() {
-            Ok(term)
-        }
-        else {
-            alternates.push(term); // commutative
-            Ok(Regex::Alternation(alternates))
-        }
-    }
-
-    fn parse_term(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex<AsciiChar>, RegexError> {
-        let mut factors: Vec<Regex<AsciiChar>> = Vec::new();
-        while tokens.front().is_some_and(|x| *x != AsciiChar::VerticalLine && *x != AsciiChar::RightParenthesis) {
-            let factor = Self::parse_factor(tokens)?;
-            factors.push(factor);
-        }
-
-        assert!(factors.len() != 0);
-        
-        if factors.len() == 1 {
-            Ok(factors.remove(0))
-        }
-        else {
-            Ok(Regex::Concatenation(factors))
-        }
-    }
-
-    fn parse_factor(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex<AsciiChar>, RegexError> {
-        let base = Self::parse_base(tokens)?;
-        let mut is_kleene = false;
-        while tokens.front().is_some_and(|x| *x == AsciiChar::Asterisk) {
-            is_kleene = true;
-            tokens.pop_front();
-        }
-
-        if is_kleene {
-            Ok(Regex::Kleene(Box::new(base)))
-        }
-        else {
-            Ok(base)
-        }
-
-    }
-
-    fn parse_base(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex<AsciiChar>, RegexError> {
-        let front = tokens.pop_front().ok_or(RegexError::Malformed)?;
-        if front == AsciiChar::ReverseSolidus { // funny name for backslash
-            // escape next character
-            let code = tokens.pop_front().ok_or(RegexError::Malformed)?;
-            let escaped = match code {
-                AsciiChar::SmallN => AsciiChar::LineFeed,
-                x => x
-            };
-            Ok(Regex::Char(escaped))
-        }
-        else if front == AsciiChar::LeftParenthesis {
-            let parenthesized_regex = Self::parse_regex(tokens)?;
-            if tokens.pop_front().is_some_and(|x| x == AsciiChar::RightParenthesis) {
-                Ok(parenthesized_regex)
-            }
-            else {
-                Err(RegexError::Malformed)
-            }
-        }
-        else {
-            Ok(Regex::Char(front))
-        }
-    }
-
-    pub fn from_str(re_str: &str) -> Result<Regex<AsciiChar>, RegexError> {
-        assert!(re_str.is_ascii());
-        let mut tokens: VecDeque<AsciiChar> = re_str.as_bytes().iter().map(|x| AsciiChar::from_u8(*x)).collect();
-        let re = Self::parse_regex(&mut tokens)?;
-        if tokens.len() > 0 {
-            Err(RegexError::Malformed)
-        }
-        else {
-            Ok(re)
-        }
-    }    
-}
+pub mod table_scanner;
+pub mod regex;
 
 // pointer-based graphs in safe rust are somewhat tricky, so just do indices to keep things simple
 #[derive(Debug, Clone)]
@@ -175,7 +60,9 @@ impl FA<AsciiChar> {
                     (start_ptr, end_ptr)
                 },
                 Regex::Concatenation(factors) => {
-                    let heads_tails: Vec<(usize, usize)> = factors.into_iter().map(|x| Self::recursive_helper(x, nodes)).collect();
+                    let heads_tails: Vec<(usize, usize)> = factors.into_iter()
+                        .map(|x| Self::recursive_helper(x, nodes))
+                        .collect();
                     let start_ptr = heads_tails.first().unwrap().0;
                     let end_ptr = heads_tails.last().unwrap().1;
 
@@ -258,8 +145,14 @@ impl FA<AsciiChar> {
         let initial_state = nodes.len() - 1;
 
 
-        let accept_states: Vec<usize> = heads_tails.iter().map(|x| x.1).collect();
-        let mut actions: Vec<i32> = iter::repeat(-1).take(nodes.len()).collect();
+        let accept_states: Vec<usize> = heads_tails.iter()
+            .map(|x| x.1)
+            .collect();
+
+        let mut actions: Vec<i32> = iter::repeat(-1)
+            .take(nodes.len())
+            .collect();
+        
         for (priority, x) in accept_states.iter().copied().enumerate() {
             actions[x] = priority as i32;
         }
@@ -284,11 +177,15 @@ impl FA<AsciiChar> {
 
         // compute epsilon closure
         Self::epsilon_closure(&nfa.nodes, &mut initial_configuration);
+        assert!(initial_configuration.is_disjoint(&accepting_states), 
+            "initial state should be epsilon disjoint from accepting states");
+
         let mut id: usize = 0;
 
         // configuration -> id
         let mut subsets: HashMap<BitSet, usize> = HashMap::new();
         subsets.insert(initial_configuration.clone(), id);
+        actions_dfa.push(-1);
         id += 1;
         
         let mut work_queue: VecDeque<BitSet> = VecDeque::new();
@@ -522,25 +419,33 @@ impl FA<AsciiChar> {
             .filter(|x| x.1.is_subset(&accept))
             .map(|x| x.0)
             .collect();
-
+        
+        // println!("{:?}", dfa.actions);
+        // println!("{:?}", accept_states);
         let actions: Option<Vec<i32>> = dfa.actions.as_ref().map(|actions| {
-            accept_states.iter()
-                .copied()
-                .map(|minimized_idx| {
-                    let minimized_final = &a_partition[minimized_idx];
-                    if minimized_final.len() > 1 {
-                        println!(
-                            "warning: {} accepting states were collapsed together when lexing actions are specified,
-                            this is probably unintended. use separate_finals to prevent minimization",
-                            minimized_final.len()
-                        );
-                    }
-                    minimized_final.iter()
-                        .map(|x| actions[x])
-                        .min()
-                        .expect("actions should be nonempty")
-                })
-                .collect()
+            let mut new_actions: Vec<i32> = Vec::new();
+            new_actions.resize(a_partition.len(), -1);
+
+            for accept_state in accept_states.iter().copied() {
+                let minimized_final = &a_partition[accept_state];
+                // println!("{:?}", minimized_final);
+                if minimized_final.len() > 1 {
+                    println!(
+                        "warning: {} accepting states were collapsed together when lexing actions are specified, \
+                        this is probably unintended. use separate_finals to prevent minimization of accept states",
+                        minimized_final.len()
+                    );
+                }
+
+                let new_action = minimized_final.iter()
+                    .map(|x| actions[x])
+                    .min()
+                    .expect("actions should be nonempty");
+
+                new_actions[accept_state] = new_action;
+            }
+
+            new_actions
         });
 
         FA { 

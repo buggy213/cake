@@ -1,5 +1,5 @@
 use cake::scanner::FA;
-use cake::scanner::Regex;
+use cake::scanner::regex::Regex;
 
 
 
