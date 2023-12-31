@@ -5,8 +5,7 @@ use crate::scanner::alphabet::AsciiCharIterator;
 use self::{alphabet::AsciiChar, regex::Regex};
 use bit_set::BitSet;
 
-mod alphabet;
-
+pub mod alphabet;
 pub mod table_scanner;
 pub mod regex;
 
@@ -30,88 +29,140 @@ pub struct FA<A: Eq + Copy> {
 impl FA<AsciiChar> {
 
     // re + mutable nodes -> initial, accept state 
-        // invariant - push stuff into `nodes` before making pointers, otherwise memory unsafe
-        fn recursive_helper<A: Eq + Copy>(re: &Regex<A>, nodes: &mut Vec<FANode<A>>) 
-            -> (usize, usize) 
-        {
-            match re {
-                Regex::Alternation(alternates) => {
-                    let end: FANode<A> = FANode {
-                        transitions: Vec::new()
-                    };
+    // invariant - push stuff into `nodes` before making pointers, otherwise memory unsafe
+    fn recursive_helper(re: &Regex<AsciiChar>, nodes: &mut Vec<FANode<AsciiChar>>) 
+        -> (usize, usize) 
+    {
+        match re {
+            Regex::Alternation(alternates) => {
+                let end: FANode<AsciiChar> = FANode {
+                    transitions: Vec::new()
+                };
 
-                    nodes.push(end);
-                    let end_ptr: usize = nodes.len() - 1;
+                nodes.push(end);
+                let end_ptr: usize = nodes.len() - 1;
 
-                    let mut start_transitions: Vec<(Option<A>, usize)> = Vec::new();
-                    for alternate in alternates {
-                        let (alternate_start, alternate_end) = Self::recursive_helper(alternate, nodes);
-                        nodes[alternate_end].transitions.push((None, end_ptr));
-                        start_transitions.push((None, alternate_start));
-                    }
-
-                    let start: FANode<A> = FANode {
-                        transitions: start_transitions
-                    };
-
-                    nodes.push(start);
-                    let start_ptr: usize = nodes.len() - 1;
-                    
-                    (start_ptr, end_ptr)
-                },
-                Regex::Concatenation(factors) => {
-                    let heads_tails: Vec<(usize, usize)> = factors.into_iter()
-                        .map(|x| Self::recursive_helper(x, nodes))
-                        .collect();
-                    let start_ptr = heads_tails.first().unwrap().0;
-                    let end_ptr = heads_tails.last().unwrap().1;
-
-                    for i in 0..heads_tails.len() - 1 {
-                        let next_head = heads_tails[i+1].0;
-                        nodes[heads_tails[i].1].transitions.push((None, next_head))
-                    }
-
-                    (start_ptr, end_ptr)
-                },
-                Regex::Kleene(inner) => {
-                    let (inner_start, inner_end) = Self::recursive_helper(inner.as_ref(), nodes);
-                    let end: FANode<A> = FANode {
-                        transitions: Vec::new()
-                    };
-                    nodes.push(end);
-                    let end_ptr: usize = nodes.len() - 1;
-                    nodes[inner_end].transitions.push((None, inner_start));
-                    nodes[inner_end].transitions.push((None, end_ptr));
-                    
-
-                    let start: FANode<A> = FANode {
-                        transitions: vec![(None, inner_start), (None, end_ptr)]
-                    };
-                    nodes.push(start);
-                    let start_ptr: usize = nodes.len() - 1;
-                    (start_ptr, end_ptr)
-                },
-                Regex::Char(c) => {
-                    let end: FANode<A> = FANode {
-                        transitions: Vec::new()
-                    };
-
-                    nodes.push(end);
-                    let end_ptr: usize = nodes.len() - 1;
-
-                    let start: FANode<A> = FANode {
-                        transitions: vec![
-                            (Some(*c), end_ptr)
-                        ],
-                    };
-
-                    nodes.push(start);
-                    let start_ptr: usize = nodes.len() - 1;
-
-                    (start_ptr, end_ptr)
+                let mut start_transitions: Vec<(Option<AsciiChar>, usize)> = Vec::new();
+                for alternate in alternates {
+                    let (alternate_start, alternate_end) = Self::recursive_helper(alternate, nodes);
+                    nodes[alternate_end].transitions.push((None, end_ptr));
+                    start_transitions.push((None, alternate_start));
                 }
+
+                let start: FANode<AsciiChar> = FANode {
+                    transitions: start_transitions
+                };
+
+                nodes.push(start);
+                let start_ptr: usize = nodes.len() - 1;
+                
+                (start_ptr, end_ptr)
+            },
+            Regex::Concatenation(factors) => {
+                let heads_tails: Vec<(usize, usize)> = factors.into_iter()
+                    .map(|x| Self::recursive_helper(x, nodes))
+                    .collect();
+                let start_ptr = heads_tails.first().unwrap().0;
+                let end_ptr = heads_tails.last().unwrap().1;
+
+                for i in 0..heads_tails.len() - 1 {
+                    let next_head = heads_tails[i+1].0;
+                    nodes[heads_tails[i].1].transitions.push((None, next_head))
+                }
+
+                (start_ptr, end_ptr)
+            },
+            Regex::Kleene(inner) => {
+                let (inner_start, inner_end) = Self::recursive_helper(inner.as_ref(), nodes);
+                let end: FANode<AsciiChar> = FANode {
+                    transitions: Vec::new()
+                };
+                nodes.push(end);
+                let end_ptr: usize = nodes.len() - 1;
+                nodes[inner_end].transitions.push((None, inner_start));
+                nodes[inner_end].transitions.push((None, end_ptr));
+                
+
+                let start: FANode<AsciiChar> = FANode {
+                    transitions: vec![(None, inner_start), (None, end_ptr)]
+                };
+                nodes.push(start);
+                let start_ptr: usize = nodes.len() - 1;
+                (start_ptr, end_ptr)
+            },
+            Regex::Char(c) => {
+                let end: FANode<AsciiChar> = FANode {
+                    transitions: Vec::new()
+                };
+
+                nodes.push(end);
+                let end_ptr: usize = nodes.len() - 1;
+
+                let start: FANode<AsciiChar> = FANode {
+                    transitions: vec![
+                        (Some(*c), end_ptr)
+                    ],
+                };
+
+                nodes.push(start);
+                let start_ptr: usize = nodes.len() - 1;
+
+                (start_ptr, end_ptr)
             }
+            Regex::Class(class) => {
+                let all_chars: BitSet = (0..128).collect();
+                let mut included: BitSet = BitSet::with_capacity(128);
+
+                for x in &class.characters {
+                    included.insert(*x as usize);
+                }
+                for (low, high) in &class.ranges {
+                    for x in (*low as usize)..=(*high as usize) {
+                        included.insert(x);
+                    }
+                }
+
+                if class.negated {
+                    included.symmetric_difference_with(&all_chars);
+                }
+
+                let end: FANode<AsciiChar> = FANode {
+                    transitions: Vec::new()
+                };
+                nodes.push(end);
+                let end_ptr = nodes.len() - 1;
+
+                let transitions: Vec<(Option<AsciiChar>, usize)> = included.iter()
+                    .map(|x| (Some(AsciiChar::from_u8(x as u8)), end_ptr))
+                    .collect();
+
+                let start: FANode<AsciiChar> = FANode {
+                    transitions
+                };
+                nodes.push(start);
+                let start_ptr = nodes.len() - 1;
+                
+                (start_ptr, end_ptr)
+            },
+            Regex::Empty => {
+                let end = FANode {
+                    transitions: Vec::new()
+                };
+
+                nodes.push(end);
+                let end_ptr = nodes.len() - 1;
+
+                let start = FANode {
+                    transitions: vec![(None, end_ptr)]
+                };
+
+                nodes.push(start);
+                let start_ptr = nodes.len() - 1;
+
+                (start_ptr, end_ptr)
+            },
         }
+    }
 
     // creates a NFA from a regex using Thompson's Construction
     // guaranteed to only have one accept state
@@ -300,10 +351,12 @@ impl FA<AsciiChar> {
         let mut first = true;
         for e in set.iter() {
             let node = &dfa.nodes[e];
-            let mut no_transition = true; 
+            let mut no_transition = true;
+
             for (label, next) in &node.transitions {
                 let label = label.expect("DFA must not have epsilon transitions");
                 let next = (Self::get_partition(partitions, *next)) as i32;
+                
                 if label == c {
                     no_transition = false;
                     if action != next {
@@ -315,6 +368,10 @@ impl FA<AsciiChar> {
                             // need to split
                             b.insert(e);
                         }
+                    }
+                    else {
+                        // join partition
+                        a.insert(e);
                     }
                     break;
                 }
