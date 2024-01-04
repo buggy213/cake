@@ -7,3 +7,8 @@ edition = "2021"
 
 [dependencies]
 bit-set = "0.5.3"
+
+[build-dependencies]
+codegen = "0.1.3"
+glob = "0.3.1"
+convert_case = "0.6.0"

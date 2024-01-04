@@ -1,4 +1,4 @@
-use cake::scanner::FA;
+use cake::scanner::fa::FA;
 use cake::scanner::regex::Regex;
 use cake::scanner::alphabet::AsciiChar;
 
@@ -78,7 +78,7 @@ fn optional_regex() {
 
 }
 
-// #[test]
+#[test]
 fn floating_point_regex() {
     let re_str = r"[\-+]?([0-9]*\.)?[0-9]+([eE][\-+]?[0-9]+)?";
     let dfa = compile_regex(re_str, false);

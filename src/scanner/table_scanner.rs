@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 
-use super::{FA, alphabet::AsciiChar};
+use super::{fa::FA, alphabet::AsciiChar};
 
 // states = rows, 1 additional error state
-// characters = columns, 1 additional column for EOF
+// characters = columns
 // -1 = invalid transition
 struct DFATable {
     data: Vec<usize>,
@@ -12,7 +12,7 @@ struct DFATable {
     inputs: usize
 }
 
-struct DFAScanner {
+pub struct DFAScanner {
     table: DFATable,
     initial_state: usize,
     state: usize
@@ -24,8 +24,8 @@ impl DFATable {
     }
 
     fn from_ascii_dfa(dfa: &FA<AsciiChar>) -> DFATable {
-        let num_states: usize = dfa.nodes.len();
-        let num_inputs: usize = 128+1;
+        let num_states: usize = dfa.nodes.len() + 1;
+        let num_inputs: usize = 128;
         let mut data: Vec<usize> = Vec::with_capacity(num_states * num_inputs);
         data.resize(num_states * num_inputs, num_states - 1);
 
@@ -38,10 +38,10 @@ impl DFATable {
             }
         }
 
-        let actions = dfa.actions.as_ref()
+        let mut actions = dfa.actions.as_ref()
             .expect("using DFA for table requires associated lexing actions")
             .clone();
-
+        actions.push(-1); // add implicit error state
         
         DFATable { 
             data, 
@@ -54,7 +54,11 @@ impl DFATable {
 
 impl DFAScanner {
     pub fn from_ascii_dfa(dfa: &FA<AsciiChar>) -> DFAScanner {
-        todo!()
+        DFAScanner {
+            table: DFATable::from_ascii_dfa(dfa),
+            initial_state: dfa.initial_state,
+            state: dfa.initial_state,
+        }
     }
 
     fn next_char(input: &[u8], cursor: &mut usize) -> Option<AsciiChar> {
@@ -68,30 +72,37 @@ impl DFAScanner {
 
     // output: lexeme + action
     fn next_word(&mut self, input: &[u8], cursor: &mut usize) -> (String, i32) {
-        let mut failed: Vec<bool> = Vec::with_capacity(input.len() * self.table.states);
+        let mut failed: Vec<bool> = Vec::new();
+        failed.resize(input.len() * self.table.states, false);
+
         self.state = self.initial_state;
         let mut stack: VecDeque<usize> = VecDeque::new();
         stack.push_back(usize::MAX); // MAX as sentinel
         
         let mut lexeme = String::new();
-
+        
         while self.state != self.table.states - 1 {
+            if *cursor >= input.len() {
+                break; // hit EOF
+            }
             let c = AsciiChar::from_u8(input[*cursor]);
             *cursor += 1;
 
+            // println!("c = '{:?}'", c);
             lexeme.push(char::from_u32(c as u32).expect("character is somehow invalid"));
             if failed[self.state * input.len() + *cursor] {
                 break;
             }
 
-            if self.table.actions[self.state] != -1 {
-                // accept state
-                stack.clear();
-            }
-
             stack.push_back(self.state);
             let next_state = self.table.get_next_state(self.state, c);
             self.state = next_state;
+
+            if self.table.actions[self.state] != -1 {
+                // accept state
+                // println!("accepted '{}'", lexeme);
+                stack.clear();
+            }
         }
 
         while self.state != usize::MAX && self.table.actions[self.state] == -1 {
@@ -115,7 +126,6 @@ impl DFAScanner {
         assert!(input.is_ascii(), "only ascii supported");
         
         // TODO: add preprocessor
-        
         let mut cursor = 0;
         let input = input.as_bytes();
 

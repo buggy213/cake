@@ -232,7 +232,7 @@ impl Regex<AsciiChar> {
                     }
                 }
 
-                println!("{:?}", alternates);
+                // println!("{:?}", alternates);
 
                 Ok(Regex::Alternation(alternates))
             },
@@ -279,7 +279,7 @@ impl Regex<AsciiChar> {
             class_items.push(class_item);
         }
         
-        println!("{:?}", class_items);
+        // println!("{:?}", class_items);
         let mut characters: Vec<AsciiChar> = Vec::new();
         let mut ranges: Vec<(AsciiChar, AsciiChar)> = Vec::new();
         let mut i: i32 = (class_items.len() - 1) as i32;
