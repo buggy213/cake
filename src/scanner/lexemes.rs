@@ -5,7 +5,7 @@
 // Enum variant is canonical, but the other two might be more convenient for 
 // automatic / generated code to use
 // Should be clone + copy (plain data type)
-pub trait LexemeSet: Clone + Copy {
+pub trait LexemeSet: Clone + Copy + Eq {
     fn from_name(name: &str) -> Self;
     fn from_id(id: u32) -> Self;
     fn to_name(self) -> &'static str;

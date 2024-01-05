@@ -80,8 +80,18 @@ fn parse_lexeme_def(path: PathBuf) -> Result<String, Box<dyn Error>> {
     let mut variants = 0;
     let lines = def_string.split("\n");
     for line in lines {
-        let (name, pattern) = line.split_once(":")
-            .expect("incorrectly formatted def");
+        let name_string;
+        let name;
+        let pattern;
+        let split_result = line.split_once(":");
+        if split_result.is_some() {
+            (name, pattern) = split_result.unwrap();
+        }
+        else {
+            name_string = line.to_case(Case::Pascal);
+            name = &name_string;
+            pattern = line;
+        }
         let name = name.trim();
         let pattern = pattern.trim();
         
@@ -106,6 +116,8 @@ fn parse_lexeme_def(path: PathBuf) -> Result<String, Box<dyn Error>> {
 
     lexeme_enum.derive("Clone");
     lexeme_enum.derive("Copy");
+    lexeme_enum.derive("PartialEq");
+    lexeme_enum.derive("Eq");
     lexeme_enum.repr("u32");
     lexeme_enum.vis("pub");
     base.push_enum(lexeme_enum);

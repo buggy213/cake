@@ -1,6 +1,6 @@
 use crate::scanner::lexemes::{LexemeSet, LexemeIterator};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Simple {
     Identifier,
