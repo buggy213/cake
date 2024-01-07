@@ -111,6 +111,11 @@ fn parse_lexeme_def(path: PathBuf) -> Result<String, Box<dyn Error>> {
         .ret("Option<Self>")
         .line(format!("if self.to_id() >= {} - 1 {{ None }} else {{ Some(Self::from_id(self.to_id() + 1)) }}", variants));
 
+
+    let mut size = Function::new("size");
+    size.ret("u32")
+        .line(format!("{}", variants));
+
     base.import("crate::scanner::lexemes", "LexemeSet");
     base.import("crate::scanner::lexemes", "LexemeIterator");
 
@@ -136,6 +141,8 @@ fn parse_lexeme_def(path: PathBuf) -> Result<String, Box<dyn Error>> {
     lexeme_set_impl.push_fn(pattern);
 
     lexeme_set_impl.push_fn(next);
+
+    lexeme_set_impl.push_fn(size);
     
     lexeme_set_impl.impl_trait("LexemeSet");
 

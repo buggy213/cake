@@ -409,4 +409,8 @@ impl LexemeSet for CLexemes {
     fn next(self) -> Option<Self> {
         if self.to_id() >= 94 - 1 { None } else { Some(Self::from_id(self.to_id() + 1)) }
     }
+
+    fn size() -> u32 {
+        94
+    }
 }

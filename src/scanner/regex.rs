@@ -25,6 +25,8 @@
 
 use std::{collections::VecDeque, ops::Mul};
 
+use crate::util::RangeUInt;
+
 use super::alphabet::AsciiChar;
 
 #[derive(Clone, Debug)]
@@ -54,24 +56,6 @@ enum ClassItem<A: Eq> {
 #[derive(Debug)]
 pub enum RegexError {
     Malformed
-}
-
-// basic helper for doing range arithmetic
-#[derive(Clone, Copy)]
-enum RangeUInt {
-    Finite(u32),
-    Infinite
-}
-
-impl Mul for RangeUInt {
-    type Output = RangeUInt;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (RangeUInt::Finite(a), RangeUInt::Finite(b)) => RangeUInt::Finite(a * b),
-            _ => RangeUInt::Infinite
-        }
-    }
 }
 
 // basic recursive descent parsing

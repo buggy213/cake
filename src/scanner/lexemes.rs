@@ -17,6 +17,7 @@ pub trait LexemeSet: Clone + Copy + Eq {
     }
 
     fn pattern(self) -> &'static str;
+    fn size() -> u32;
 }
 pub struct LexemeIterator<T: LexemeSet> {
     state: Option<T>

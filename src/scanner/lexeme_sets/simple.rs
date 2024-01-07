@@ -41,4 +41,8 @@ impl LexemeSet for Simple {
     fn next(self) -> Option<Self> {
         if self.to_id() >= 2 - 1 { None } else { Some(Self::from_id(self.to_id() + 1)) }
     }
+
+    fn size() -> u32 {
+        2
+    }
 }

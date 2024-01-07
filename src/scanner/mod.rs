@@ -15,43 +15,24 @@ pub mod lexeme_sets;
 // parsing troubles
 pub trait TokenStream<T: LexemeSet> {
     fn eat(&mut self, lexeme: T) -> bool;
-    fn peek(&self) -> Option<(T, &str)>;
-    fn advance(&mut self) -> Option<(T, String)>;
-}
+    fn peek(&mut self) -> Option<(T, &str, usize)>;
+    fn peekn(&mut self, n: usize) -> Option<(T, &str, usize)>;
+    fn advance(&mut self) -> Option<(T, &str, usize)>;
 
-pub struct VecTokenStream<T: LexemeSet> {
-    tokens: VecDeque<(T, String)>
-}
-
-impl<T: LexemeSet> TokenStream<T> for VecTokenStream<T> {
-    fn eat(&mut self, lexeme: T) -> bool {
-        match self.tokens.front() {
-            Some((t, _)) if *t == lexeme => {
-                self.tokens.pop_front();
-                true
-            },
-            _ => false,
-        }
-    }
-
-    fn peek(&self) -> Option<(T, &str)> {
-        self.tokens.front()
-            .map(|(a, b)| (*a, b.as_str()))
-    }
-
-    fn advance(&mut self) -> Option<(T, String)> {
-        self.tokens.pop_front()
-    }
+    fn rollback(&mut self, target: usize);
+    fn get_location(&self) -> usize;
 }
 
 // TODO: processed token stream to implement preprocessor
 // don't think you have to do a separate pass for preprocessing
+const BUFFER_SIZE: usize = 10;
 pub struct RawTokenStream<'a, T> where T: LexemeSet {
     cursor: usize,
     scanner: DFAScanner,
     source: &'a [u8],
 
-    memo: Option<(T, String)>
+    buffer: VecDeque<(T, &'a str, usize)>,
+    index: usize
 }
 
 impl <'a, T: LexemeSet> RawTokenStream<'a, T> {
@@ -60,47 +41,67 @@ impl <'a, T: LexemeSet> RawTokenStream<'a, T> {
             cursor: 0,
             scanner,
             source,
-            memo: None,
+
+            buffer: VecDeque::new(),
+            index: 0
         };
 
-        retval.refill_memo();
         retval
     }
 
-    fn refill_memo(&mut self) {
-        let (token, lexeme, next_cursor) = 
-            self.scanner.next_word(self.source, self.cursor);
-        
-        if lexeme == -1 {
-            self.memo = None;
-        }
+    fn refill_buffer(&mut self) {
+        self.refill_buffer_to_size(BUFFER_SIZE);
+    }
 
-        let lexeme = T::from_id(lexeme as u32);
-        self.cursor = next_cursor;
-        self.memo = Some((lexeme, token))
+    fn refill_buffer_to_size(&mut self, size: usize) {
+        while self.buffer.len() < size {
+            let (lexeme, action, next_cursor) = 
+                self.scanner.next_word(self.source, self.cursor);
+
+            if action == -1 {
+                break;
+            }
+            self.buffer.push_back((T::from_id(action as u32), lexeme, self.cursor));
+            self.cursor = next_cursor;
+        }
     }
 }
 
 // TODO: optimize this
 impl<'a, T> TokenStream<T> for RawTokenStream<'a, T> where T: LexemeSet {
     fn eat(&mut self, expected_lexeme: T) -> bool {
-        let matched = match self.memo.as_ref() {
-            Some((lexeme, _)) if *lexeme == expected_lexeme => true,
+        self.refill_buffer();
+        let matched = match self.buffer.front().copied() {
+            Some((lexeme, _, _)) if lexeme == expected_lexeme => true,
             _ => false,
         };
 
-        self.refill_memo();
         matched
     }
 
-    fn peek(&self) -> Option<(T, &str)> {
-        self.memo.as_ref().map(|(a, b)| (*a, b.as_str()))
+    fn peek(&mut self) -> Option<(T, &str, usize)> {
+        self.refill_buffer();
+        self.buffer.front().copied()
     }
 
-    fn advance(&mut self) -> Option<(T, String)> {
-        let old_memo = self.memo.take();
-        self.refill_memo();
+    fn advance(&mut self) -> Option<(T, &str, usize)> {
+        self.refill_buffer();
+        let old_memo = self.buffer.pop_front();
         old_memo
+    }
+
+    fn rollback(&mut self, target: usize) {
+        self.cursor = target;
+        self.buffer.clear();
+    }
+
+    fn get_location(&self) -> usize {
+        self.cursor
+    }
+
+    fn peekn(&mut self, n: usize) -> Option<(T, &str, usize)> {
+        self.refill_buffer_to_size(n+1);
+        self.buffer.get(n).copied()
     }
 
 

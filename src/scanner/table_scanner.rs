@@ -61,17 +61,8 @@ impl DFAScanner {
         }
     }
 
-    fn next_char(input: &[u8], cursor: &mut usize) -> Option<AsciiChar> {
-        if *cursor >= input.len() {
-            return None
-        }
-
-        let c = AsciiChar::from_u8(input[*cursor]);
-        Some(c)
-    }
-
     // output: lexeme + action + next token cursor
-    pub fn next_word(&mut self, input: &[u8], start_cursor: usize) -> (String, i32, usize) {
+    pub fn next_word<'a>(&mut self, input: &'a [u8], start_cursor: usize) -> (&'a str, i32, usize) {
         let mut cursor = start_cursor;
         let mut failed: Vec<bool> = Vec::new();
         failed.resize(input.len() * self.table.states, false);
@@ -113,11 +104,13 @@ impl DFAScanner {
             cursor -= 1;
         }
 
+        // earlier passes ensured its valid utf8 (ascii)
+        let slice = unsafe { std::str::from_utf8_unchecked(&input[start_cursor..cursor]) };
         if self.state == usize::MAX {
-            (lexeme, -1, cursor)
+            (slice, -1, cursor)
         }
         else {
-            (lexeme, self.table.actions[self.state], cursor)
+            (slice, self.table.actions[self.state], cursor)
         }
     }
 

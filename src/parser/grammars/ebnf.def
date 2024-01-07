@@ -1,0 +1,14 @@
+<ebnf> ::= <goal-nonterminal> ("\n\n" <nonterminal>)* 
+
+<nonterminal> ::= <symbol> "::=" <productions>
+
+<productions> ::= <production> (bar <production>)*
+
+<production> ::= <factor>*
+
+<factor> ::= <base> <count>*
+
+<count> ::= "+" | "*" | "?"
+
+<base> ::= <symbol>
+| "(" <production> ")"
