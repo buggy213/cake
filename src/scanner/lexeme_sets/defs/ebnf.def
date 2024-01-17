@@ -1,0 +1,11 @@
+DoubleNewline: \n\n|\r\n\r\n
+Nonterminal: <[a-z\-]+>
+Define: ::=
+Terminal: [A-Za-z\-]+
+Whitespace: [ \t\n\v\f]
+Bar: \|
+Plus: \+
+Star: \*
+Question: \?
+LParen: \(
+RParen: \)

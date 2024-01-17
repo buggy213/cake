@@ -61,7 +61,8 @@ impl <'a, T: LexemeSet> RawTokenStream<'a, T> {
             if action == -1 {
                 break;
             }
-            self.buffer.push_back((T::from_id(action as u32), lexeme, self.cursor));
+            let l = T::from_id(action as u32).expect("invalid action (is the scanner compatible?)");
+            self.buffer.push_back((l, lexeme, self.cursor));
             self.cursor = next_cursor;
         }
     }

@@ -1,0 +1,7 @@
+LParen: \(
+RParen: \)
+Plus: \+
+Minus: \-
+Times: \*
+Divide: \/
+Number: [0-9]+

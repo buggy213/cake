@@ -1,6 +1,6 @@
 use crate::scanner::lexemes::{LexemeSet, LexemeIterator};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub enum Simple {
     Identifier,
@@ -8,16 +8,17 @@ pub enum Simple {
 }
 
 impl LexemeSet for Simple {
-    fn from_name(name: &str) -> Self {
+    fn from_name(name: &str) -> Option<Self> {
         match name {
-            "Identifier" => Simple::Identifier,
-            "Whitespace" => Simple::Whitespace,
-            _ => panic!("unrecognized variant")
+            "Identifier" => Some(Simple::Identifier),
+            "Whitespace" => Some(Simple::Whitespace),
+            _ => None
         }
     }
 
-    fn from_id(id: u32) -> Self {
-        unsafe { std::mem::transmute::<u32, Self>(id) }
+    fn from_id(id: u32) -> Option<Self> {
+        if id >= Self::size() { return None; }
+        unsafe { Some(std::mem::transmute::<u32, Self>(id)) }
     }
 
     fn to_name(self) -> &'static str {
@@ -39,7 +40,7 @@ impl LexemeSet for Simple {
     }
 
     fn next(self) -> Option<Self> {
-        if self.to_id() >= 2 - 1 { None } else { Some(Self::from_id(self.to_id() + 1)) }
+        if self.to_id() >= 2 - 1 { None } else { Self::from_id(self.to_id() + 1) }
     }
 
     fn size() -> u32 {

@@ -51,14 +51,15 @@ fn parse_lexeme_def(path: PathBuf) -> Result<String, Box<dyn Error>> {
 
     let mut from_name = Function::new("from_name");
     from_name.arg("name", "&str")
-        .ret("Self");
+        .ret("Option<Self>");
 
     let mut from_name_match = Block::new("match name");
 
     let mut from_id = Function::new("from_id");
     from_id.arg("id", "u32")
-        .ret("Self")
-        .line("unsafe { std::mem::transmute::<u32, Self>(id) }");
+        .ret("Option<Self>")
+        .line("if id >= Self::size() { return None; }")
+        .line("unsafe { Some(std::mem::transmute::<u32, Self>(id)) }");
 
     let mut to_name = Function::new("to_name");
     to_name.arg_self()
@@ -98,19 +99,18 @@ fn parse_lexeme_def(path: PathBuf) -> Result<String, Box<dyn Error>> {
         lexeme_enum.new_variant(name);
         
         let escaped_pattern = pattern.escape_default();
-        from_name_match.line(format!("\"{}\" => {}::{},", name, pascal_case_name, name));
+        from_name_match.line(format!("\"{}\" => Some({}::{}),", name, pascal_case_name, name));
         to_name_match.line(format!("{}::{} => \"{}\",", pascal_case_name, name, name));
         pattern_match.line(format!("{}::{} => \"{}\",", pascal_case_name, name, escaped_pattern));
         variants += 1;
     }
 
-    from_name_match.line("_ => panic!(\"unrecognized variant\")");
+    from_name_match.line("_ => None");
 
     let mut next = Function::new("next");
     next.arg_self()
         .ret("Option<Self>")
-        .line(format!("if self.to_id() >= {} - 1 {{ None }} else {{ Some(Self::from_id(self.to_id() + 1)) }}", variants));
-
+        .line(format!("if self.to_id() >= {} - 1 {{ None }} else {{ Self::from_id(self.to_id() + 1) }}", variants));
 
     let mut size = Function::new("size");
     size.ret("u32")
@@ -123,6 +123,7 @@ fn parse_lexeme_def(path: PathBuf) -> Result<String, Box<dyn Error>> {
     lexeme_enum.derive("Copy");
     lexeme_enum.derive("PartialEq");
     lexeme_enum.derive("Eq");
+    lexeme_enum.derive("Debug");
     lexeme_enum.repr("u32");
     lexeme_enum.vis("pub");
     base.push_enum(lexeme_enum);

@@ -1,14 +1,19 @@
-<ebnf> ::= <goal-nonterminal> ("\n\n" <nonterminal>)* 
+<ebnf> ::= <goal-nonterminal> (DoubleNewline <nonterminal>)* 
 
-<nonterminal> ::= <symbol> "::=" <productions>
+<goal-nonterminal> ::= <nonterminal>
 
-<productions> ::= <production> (bar <production>)*
+<nonterminal> ::= <symbol> Define <productions>
+
+<productions> ::= <production> (Bar <production>)*
 
 <production> ::= <factor>*
 
-<factor> ::= <base> <count>*
+<factor> ::= <base> <count>?
 
-<count> ::= "+" | "*" | "?"
+<count> ::= Plus | Star | Question
 
 <base> ::= <symbol>
-| "(" <production> ")"
+    | LParen <production> RParen
+
+<symbol> ::= Nonterminal
+    | Terminal

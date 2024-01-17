@@ -7,17 +7,20 @@ use crate::{scanner::lexemes::LexemeSet, util::RangeUInt};
 pub type NT = usize;
 
 // everything is just indices since it is simpler, but maybe less safe
+#[derive(Clone, Copy, Debug)]
 pub enum Symbol<T: LexemeSet> {
     Terminal(T),
     Nonterminal(NT),
     EOF
 }
 
+#[derive(Debug)]
 pub enum Production<T: LexemeSet> {
     Empty(NT),
     Nonempty(NT, Vec<Symbol<T>>)
 }
 
+#[derive(Debug)]
 pub struct Grammar<T: LexemeSet> {
     pub(super) n_nonterminals: usize,
     pub(super) productions: Vec<Production<T>>,
@@ -71,7 +74,7 @@ impl<T: LexemeSet> Grammar<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum EBNF {
     Concatenation(Vec<EBNF>),
     Identifier(String),
@@ -87,25 +90,166 @@ pub enum BNFError {
     UnexpectedEOF,
 }
 
+
 impl<T: LexemeSet> Grammar<T> {
-    // output: index of nonterminal produced
-    fn recursive_helper(
-        nonterminals: &mut HashMap<&str, usize>
-    ) -> usize {
-        todo!()
+    // 2 mutually recursive functions 
+    // output: a production rule
+    fn recursive_helper_production_rule(
+        name_to_nonterminal: &mut HashMap<&str, usize>,
+        nonterminal_to_name: &mut Vec<&str>,
+        productions: &mut Vec<Production<T>>,
+        associated_nonterminal: NT,
+        rule: &EBNF,
+    ) -> Result<(), BNFError> {
+        let production = match rule {
+            EBNF::Concatenation(symbols) => {
+                let mut new_rule: Vec<Symbol<T>> = Vec::new();
+                for s in symbols {
+                    let s = Self::recursive_helper_symbol(
+                        name_to_nonterminal, 
+                        nonterminal_to_name,
+                        productions,
+                        associated_nonterminal, 
+                        s
+                    )?;
+                    new_rule.push(s);
+                }
+                Production::Nonempty(associated_nonterminal, new_rule)
+            },
+            EBNF::Identifier(x) => {
+                return Err(BNFError::Malformed("unexpected identifier node"));
+            },
+            EBNF::Empty => {
+                Production::Empty(associated_nonterminal)
+            },
+            EBNF::Repeat(clause, low, high) => {
+                return Err(BNFError::Malformed("unexpected repeat node"));
+                
+                // let clause = Self::recursive_helper_symbol(
+                //     name_to_nonterminal, 
+                //     nonterminal_to_name, 
+                //     clause
+                // )?;
+
+                // Production::Nonempty(associated_nonterminal, vec![clause]);
+                // todo!()
+            },
+            EBNF::Nonterminal(_, _) => {
+                return Err(BNFError::Malformed("unexpected nonterminal node"));
+            },
+        };
+
+        productions.push(production);
+        Ok(())
+    }
+
+    // output: symbol (potentially a new nonterminal based on rewrite rules)
+    fn recursive_helper_symbol(
+        name_to_nonterminal: &mut HashMap<&str, usize>,
+        nonterminal_to_name: &mut Vec<&str>,
+        productions: &mut Vec<Production<T>>,
+        associated_nonterminal: NT,
+        symbol: &EBNF,
+    ) -> Result<Symbol<T>, BNFError> {
+        let result = match symbol {
+            EBNF::Concatenation(_) => {
+                // rewrite rule 1: replace (...) with X -> ... where X is a new nonterminal
+                // 1. create new nonterminal - to avoid dealing with lifetimes, just give them all the same name
+                let nt = nonterminal_to_name.len();
+                nonterminal_to_name.push("<anonymous-concat>");
+
+                // 2. use other recursive function to create a production rule
+                let rule = symbol;
+                let _ = Self::recursive_helper_production_rule(
+                    name_to_nonterminal, 
+                    nonterminal_to_name, 
+                    productions, 
+                    nt, 
+                    rule
+                )?;
+
+                Symbol::Nonterminal(nt)
+            },
+            EBNF::Identifier(x) => {
+                let symbol = if let Some(name) = name_to_nonterminal.get(x.as_str()) {
+                    Symbol::Nonterminal(*name)
+                }
+                else if let Some(terminal) = T::from_name(x.as_str()) {
+                    Symbol::Terminal(terminal)
+                }
+                else {
+                    return Err(BNFError::Malformed("unable to find matching name or terminal"));
+                };
+
+                symbol
+            },
+            EBNF::Empty => {
+                return Err(BNFError::Malformed("unexpected empty node (should only occur at top level productions)"))
+            },
+            EBNF::Repeat(clause, low, high) => {
+                // rewrite rule 2: repetition
+                let clause_symbol = Self::recursive_helper_symbol(
+                    name_to_nonterminal, 
+                    nonterminal_to_name, 
+                    productions, 
+                    associated_nonterminal, 
+                    &clause
+                )?;
+
+                let new_nt = nonterminal_to_name.len();
+                let new_nt_symbol = Symbol::Nonterminal(new_nt);
+                nonterminal_to_name.push("<anonymous-repeat>");
+
+
+                match (*low, *high) {
+                    // Cloning should be ok since EBNF restricts to just 0 / 1 / infinity as bounds
+                    // only issue is if things are nested too deeply, but the whole point of 
+                    // EBNF is to avoid this through composition...
+                    (RangeUInt::Finite(low), RangeUInt::Finite(high)) => {
+                        for i in low..=high {
+                            if i == 0 {
+                                productions.push(Production::Empty(new_nt));
+                            }
+                            else {
+                                productions.push(Production::Nonempty(new_nt, vec![clause_symbol; i as usize]));
+                            }
+                        }
+                    },
+                    (RangeUInt::Finite(low), RangeUInt::Infinite) => {
+                        if low == 0 {
+                            productions.push(Production::Empty(new_nt));
+                        }
+                        else {
+                            productions.push(Production::Nonempty(new_nt, vec![clause_symbol; low as usize]));
+                        }
+                        // repeat production; prefer left recursion (naive Earley parser is n^2 on right recursion,
+                        // so this should help a little bit. won't be suitable for any LL though)
+                        productions.push(Production::Nonempty(new_nt, vec![new_nt_symbol, clause_symbol]))
+                    },
+                    _ => return Err(BNFError::Malformed("infinite lower bound should not occur"))
+                }
+
+                new_nt_symbol
+            },
+            EBNF::Nonterminal(_, _) => {
+                return Err(BNFError::Malformed("unexpected nonterminal node"));
+            },
+        };
+
+        Ok(result)
     }
 
     pub fn from_ebnf(ebnf: &Vec<EBNF>) -> Result<Grammar<T>, BNFError> {
-        let mut symbol_to_nonterminal: HashMap<&str, usize> = HashMap::new();
-        let mut nonterminal_to_symbol: Vec<&str> = Vec::new();
+        let mut name_to_nonterminal: HashMap<&str, usize> = HashMap::new();
+        let mut nonterminal_to_name: Vec<&str> = Vec::new();
 
         let mut i: usize = 0;
 
         // pass 1: collect names - ebnf is order invariant
         for nonterminal in ebnf {
             if let EBNF::Nonterminal(name, _) = nonterminal {
-                symbol_to_nonterminal.insert(&name, i);
-                nonterminal_to_symbol.push(&name);
+                name_to_nonterminal.insert(&name, i);
+                nonterminal_to_name.push(&name);
                 i += 1;
             }
             else {
@@ -116,10 +260,29 @@ impl<T: LexemeSet> Grammar<T> {
         let mut productions: Vec<Production<T>> = Vec::new();
         let goal_symbol: usize = 0;
         // pass 2: convert EBNF to grammar
-        for nonterminal in ebnf {
-            
+        for (nt_index, nonterminal) in ebnf.iter().enumerate() {
+            if let EBNF::Nonterminal(_, production_rules) = nonterminal {
+                for production in production_rules {
+                    let _ = Self::recursive_helper_production_rule(
+                        &mut name_to_nonterminal, 
+                        &mut nonterminal_to_name, 
+                        &mut productions, 
+                        nt_index, 
+                        production
+                    )?;
+                }
+            }
+            else {
+                return Err(BNFError::Malformed("top level must be Nonterminal variant"));
+            }
         }
-        todo!()
+
+        let n_nonterminals = nonterminal_to_name.len();
+        Ok(Grammar {
+            n_nonterminals,
+            productions,
+            goal_symbol,
+        })
     }
 }
 
@@ -200,14 +363,14 @@ impl EBNF {
 
         let mut productions = Vec::new();
         
-        let production = Self::parse_production(toks)?;
+        let production = Self::parse_production(toks, true)?;
         productions.push(production);
         while toks.front().is_some() {
             if toks.pop_front().unwrap() != "|" {
                 // println!("{:?}", toks);
                 return Err(BNFError::Malformed("expected | (new production)"));
             }
-            let production = Self::parse_production(toks)?;
+            let production = Self::parse_production(toks, true)?;
             productions.push(production);
         }
 
@@ -221,7 +384,7 @@ impl EBNF {
         ))
     }
 
-    fn parse_production(toks: &mut VecDeque<&str>) -> Result<EBNF, BNFError> {
+    fn parse_production(toks: &mut VecDeque<&str>, top_level: bool) -> Result<EBNF, BNFError> {
         let mut factors: Vec<EBNF> = Vec::new();
         
         while toks.front().is_some() {
@@ -234,10 +397,12 @@ impl EBNF {
         }
         
         if factors.len() == 0 {
-            Ok(EBNF::Empty) // empty production
-        }
-        else if factors.len() == 1 {
-            Ok(factors.pop().unwrap())
+            if top_level {
+                Ok(EBNF::Empty) // empty production
+            }
+            else {
+                Err(BNFError::Malformed("empty terms not allowed unless part of a top-level production rule"))
+            }
         }
         else {
             Ok(EBNF::Concatenation(factors))
@@ -278,7 +443,7 @@ impl EBNF {
         let lookahead = toks.front().copied().ok_or(BNFError::UnexpectedEOF)?;
         let result = if lookahead == "(" {
             toks.pop_front();
-            let result = Self::parse_production(toks)?;
+            let result = Self::parse_production(toks, false)?;
             toks.pop_front().ok_or(BNFError::Malformed("expecting )"))?;
             result
         }

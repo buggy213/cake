@@ -6,14 +6,14 @@
 // automatic / generated code to use
 // Should be clone + copy (plain data type)
 pub trait LexemeSet: Clone + Copy + Eq {
-    fn from_name(name: &str) -> Self;
-    fn from_id(id: u32) -> Self;
+    fn from_name(name: &str) -> Option<Self>;
+    fn from_id(id: u32) -> Option<Self>;
     fn to_name(self) -> &'static str;
     fn to_id(self) -> u32;
 
     fn next(self) -> Option<Self>;
     fn iter() -> LexemeIterator<Self> {
-        LexemeIterator { state: Some(Self::from_id(0)) }
+        LexemeIterator { state: Self::from_id(0) }
     }
 
     fn pattern(self) -> &'static str;
