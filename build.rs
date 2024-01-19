@@ -124,6 +124,7 @@ fn parse_lexeme_def(path: PathBuf) -> Result<String, Box<dyn Error>> {
     lexeme_enum.derive("PartialEq");
     lexeme_enum.derive("Eq");
     lexeme_enum.derive("Debug");
+    lexeme_enum.derive("Hash");
     lexeme_enum.repr("u32");
     lexeme_enum.vis("pub");
     base.push_enum(lexeme_enum);

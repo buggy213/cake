@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, collections::{HashMap, VecDeque, HashSet}, ops::Deref, iter};
+use std::{marker::PhantomData, collections::{HashMap, VecDeque, HashSet}, ops::Deref, iter, ptr::null};
 
 use bit_set::BitSet;
 
@@ -7,7 +7,7 @@ use crate::{scanner::lexemes::LexemeSet, util::RangeUInt};
 pub type NT = usize;
 
 // everything is just indices since it is simpler, but maybe less safe
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Symbol<T: LexemeSet> {
     Terminal(T),
     Nonterminal(NT),
@@ -20,11 +20,28 @@ pub enum Production<T: LexemeSet> {
     Nonempty(NT, Vec<Symbol<T>>)
 }
 
+impl<T: LexemeSet> Production<T> {
+    pub fn nonterminal(&self) -> NT {
+        match self {
+            Production::Empty(nt) => *nt,
+            Production::Nonempty(nt, _) => *nt,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Production::Empty(_) => 0,
+            Production::Nonempty(_, rhs) => rhs.len(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Grammar<T: LexemeSet> {
     pub(super) n_nonterminals: usize,
     pub(super) productions: Vec<Production<T>>,
     pub(super) goal_symbol: NT,
+    pub(super) nonterminal_names: Vec<String>
 }
 
 #[derive(Clone)]
@@ -71,6 +88,39 @@ impl<T: LexemeSet> Grammar<T> {
     
     pub fn compute_first_sets(grammar: &Grammar<T>) -> Vec<FirstSet<T>> {
         todo!()
+    }
+
+    // n^2 in size of grammar, more efficient algorithm does exist
+    // TODO: implement later
+    pub fn compute_nullable_nonterminals(grammar: &Grammar<T>) -> HashSet<NT> {
+        let mut nullables: HashSet<usize> = HashSet::new();
+        loop {
+            let mut changed = false;
+            for rule in &grammar.productions {
+                match rule {
+                    Production::Empty(nt) => {
+                        changed |= nullables.insert(*nt);
+                    },
+                    Production::Nonempty(nt, p) =>  {
+                        let all_nullable = p.iter().all(|x| match x {
+                            Symbol::Terminal(_) => false,
+                            Symbol::Nonterminal(nt) => nullables.contains(nt),
+                            Symbol::EOF => true,
+                        });
+
+                        if all_nullable {
+                            changed |= nullables.insert(*nt);
+                        }
+                    },
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
+
+        nullables
     }
 }
 
@@ -282,6 +332,7 @@ impl<T: LexemeSet> Grammar<T> {
             n_nonterminals,
             productions,
             goal_symbol,
+            nonterminal_names: nonterminal_to_name.into_iter().map(|x| x.to_string()).collect()
         })
     }
 }

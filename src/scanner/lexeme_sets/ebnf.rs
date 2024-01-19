@@ -1,6 +1,6 @@
 use crate::scanner::lexemes::{LexemeSet, LexemeIterator};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 #[repr(u32)]
 pub enum Ebnf {
     DoubleNewline,

@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 
-use super::{fa::FA, alphabet::AsciiChar};
+use crate::scanner::regex::Regex;
+
+use super::{fa::FA, alphabet::AsciiChar, lexemes::LexemeSet};
 
 // states = rows, 1 additional error state
 // characters = columns
@@ -61,8 +63,26 @@ impl DFAScanner {
         }
     }
 
+    // convenience function to compile lexeme regexes to NFA, then DFA, then optimize, then construct scanner
+    pub fn from_lexeme_set<T: LexemeSet>() -> DFAScanner {
+        let lexemes: Vec<Regex<_>> = T::iter()
+            .map(|x| Regex::from_str(x.pattern()).expect("failed to parse regex"))
+            .collect();
+
+        let nfa = FA::combine_res(&lexemes);
+        let dfa = FA::dfa_from_nfa(&nfa);
+        let dfa = FA::minimize_dfa(&dfa, true);
+        
+        let scanner = DFAScanner::from_ascii_dfa(&dfa);
+        scanner
+    }
+
     // output: lexeme + action + next token cursor
     pub fn next_word<'a>(&mut self, input: &'a [u8], start_cursor: usize) -> (&'a str, i32, usize) {
+        if start_cursor >= input.len() {
+            return ("", -1, start_cursor);
+        }
+
         let mut cursor = start_cursor;
         let mut failed: Vec<bool> = Vec::new();
         failed.resize(input.len() * self.table.states, false);

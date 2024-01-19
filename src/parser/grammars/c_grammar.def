@@ -1,0 +1,93 @@
+<expression> ::= <assignment-expression>
+    | <expression> Comma <assignment-expression>
+
+<constant> ::= IntegerConst
+    | FloatConst
+    | CharConst
+
+<primary-expression> ::= Identifier
+    | <constant>
+    | StringConst
+    | LParen <expression> RParen
+
+<postfix-expression> ::= <primary-expression>
+    | <postfix-expression> LBracket <expression> RBracket
+    | <postfix-expression> LParen <argument-expression-list> RParen
+    | <postfix-expression> Dot Identifier
+    | <postfix-expression> Arrow Identifier
+    | <postfix-expression> Increment
+    | <postfix-expression> Decrement
+
+<argument-expression-list> ::= <assignment-expression>
+    | <argument-expression-list> Comma <assignment-expression>
+
+<unary-expression> ::= <postfix-expression>
+    | Increment <unary-expression>
+    | Decrement <unary-expression>
+    | <unary-operator> <cast-expression>
+    | Sizeof <unary-expression>
+
+<unary-operator> ::= BitAnd
+    | Star
+    | Plus
+    | Minus
+    | Tilde
+    | Bang
+
+<cast-expression> ::= <unary-expression>
+
+<multiplicative-expression> ::= <cast-expression>
+    | <multiplicative-expression> Star <cast-expression>
+    | <multiplicative-expression> Slash <cast-expression>
+    | <multiplicative-expression> Percent <cast-expression>
+
+<additive-expression> ::= <multiplicative-expression>
+    | <additive-expression> Plus <multiplicative-expression>
+    | <additive-expression> Minus <multiplicative-expression>
+
+<shift-expression> ::= <additive-expression>
+    | <shift-expression> LShift <additive-expression>
+    | <shift-expression> RShift <additive-expression>
+
+<relational-expression> ::= <shift-expression>
+    | <relational-expression> Lt <shift-expression>
+    | <relational-expression> Gt <shift-expression>
+    | <relational-expression> Leq <shift-expression>
+    | <relational-expression> Geq <shift-expression>
+
+<equality-expression> ::= <relational-expression>
+    | <equality-expression> Eq <relational-expression>
+    | <equality-expression> Neq <relational-expression>
+
+<and-expression> ::= <equality-expression>
+    | <and-expression> BitAnd <equality-expression>
+
+<xor-expression> ::= <and-expression>
+    | <xor-expression> Xor <and-expression>
+
+<or-expression> ::= <xor-expression>
+    | <or-expression> BitOr <xor-expression>
+
+<logical-and-expression> ::= <or-expression>
+    | <logical-and-expression> And <or-expression>
+
+<logical-or-expression> ::= <logical-and-expression>
+    | <logical-or-expression> Or <logical-and-expression>
+
+<conditional-expression> ::= <logical-or-expression>
+    | <logical-or-expression> Question <expression> Colon <conditional-expression>
+
+<assignment-expression> ::= <conditional-expression>
+    | <unary-expression> <assignment-operator> <assignment-expression>
+
+<assignment-operator> ::= Assign
+    | MultAssign
+    | DivAssign
+    | ModAssign
+    | AddAssign
+    | SubAssign
+    | LShiftAssign
+    | RShiftAssign
+    | AndAssign
+    | XorAssign
+    | OrAssign

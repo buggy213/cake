@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use self::{lexemes::LexemeSet, table_scanner::DFAScanner};
+use self::{lexemes::LexemeSet, table_scanner::DFAScanner, lexeme_sets::c_lexemes::CLexemes};
 
 pub mod alphabet;
 pub mod table_scanner;
@@ -36,8 +36,8 @@ pub struct RawTokenStream<'a, T> where T: LexemeSet {
 }
 
 impl <'a, T: LexemeSet> RawTokenStream<'a, T> {
-    fn new(scanner: DFAScanner, source: &'a [u8]) -> RawTokenStream<'a, T> {
-        let mut retval = RawTokenStream {
+    pub fn new(scanner: DFAScanner, source: &'a [u8]) -> RawTokenStream<'a, T> {
+        let retval = RawTokenStream {
             cursor: 0,
             scanner,
             source,
@@ -61,12 +61,18 @@ impl <'a, T: LexemeSet> RawTokenStream<'a, T> {
             if action == -1 {
                 break;
             }
+            if action as u32 == CLexemes::Whitespace.to_id() {
+                self.cursor = next_cursor;
+                continue;
+            } 
             let l = T::from_id(action as u32).expect("invalid action (is the scanner compatible?)");
             self.buffer.push_back((l, lexeme, self.cursor));
             self.cursor = next_cursor;
         }
     }
 }
+
+
 
 // TODO: optimize this
 impl<'a, T> TokenStream<T> for RawTokenStream<'a, T> where T: LexemeSet {
