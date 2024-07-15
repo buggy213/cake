@@ -23,7 +23,7 @@
 // | '-' <char>
 // | '\' <char>
 
-use std::{collections::VecDeque, ops::Mul};
+use std::collections::VecDeque;
 
 use crate::util::RangeUInt;
 

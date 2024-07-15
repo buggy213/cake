@@ -119,7 +119,6 @@ fn parse_lexeme_def(def_path: &PathBuf, mod_path: &PathBuf) -> Result<String, Bo
         .line(format!("{}", variants));
 
     base.import("crate::scanner::lexemes", "LexemeSet");
-    base.import("crate::scanner::lexemes", "LexemeIterator");
 
     lexeme_enum.derive("Clone");
     lexeme_enum.derive("Copy");

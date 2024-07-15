@@ -6,16 +6,10 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt::format;
 
 use petgraph::Graph;
 use petgraph::adj::NodeIndex;
-use petgraph::data::Build;
 use petgraph::graph::DiGraph;
-use petgraph::graphmap::DiGraphMap;
-use petgraph::stable_graph::DefaultIx;
-use petgraph::visit::EdgeRef;
-use petgraph::visit::NodeRef;
 
 use crate::scanner::TokenStream;
 use crate::scanner::lexemes::LexemeSet;

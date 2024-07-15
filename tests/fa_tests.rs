@@ -74,8 +74,7 @@ fn basic_extended_regex() {
 #[test]
 fn optional_regex() {
     let re_str = r"(a*b)?c";
-    let dfa = compile_regex(re_str, false);
-
+    let _dfa = compile_regex(re_str, false);
 }
 
 #[test]
