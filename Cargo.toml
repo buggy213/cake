@@ -8,6 +8,7 @@ build = "build/build.rs"
 
 [dependencies]
 bit-set = "0.5.3"
+bitflags = "2.6.0"
 petgraph = "0.6.4"
 
 
