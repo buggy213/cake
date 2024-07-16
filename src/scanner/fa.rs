@@ -174,7 +174,7 @@ impl FA<AsciiChar> {
         }
     }
 
-    pub fn combine_res(res: &Vec<Regex<AsciiChar>>) -> FA<AsciiChar> {
+    pub fn combine_res(res: &[Regex<AsciiChar>]) -> FA<AsciiChar> {
         let mut nodes: Vec<FANode<AsciiChar>> = Vec::new();
         let heads_tails: Vec<_> = res.iter()
             .map(|re| Self::recursive_helper(re, &mut nodes))
@@ -294,7 +294,7 @@ impl FA<AsciiChar> {
     }
 
     // basic BFS to compute epsilon closure
-    fn epsilon_closure(nodes: &Vec<FANode<AsciiChar>>, set: &mut BitSet) {
+    fn epsilon_closure(nodes: &[FANode<AsciiChar>], set: &mut BitSet) {
         let mut queue: VecDeque<usize> = set.iter().collect();
         let mut visited: BitSet = BitSet::with_capacity(set.capacity());
 
@@ -315,7 +315,7 @@ impl FA<AsciiChar> {
         }
     }
 
-    fn delta(nodes: &Vec<FANode<AsciiChar>>, set: &BitSet, c: AsciiChar) -> BitSet {
+    fn delta(nodes: &[FANode<AsciiChar>], set: &BitSet, c: AsciiChar) -> BitSet {
         let mut result = BitSet::with_capacity(set.capacity());
 
         for i in set.iter() {
@@ -329,7 +329,7 @@ impl FA<AsciiChar> {
         result
     }
 
-    fn get_partition(partitions: &Vec<BitSet>, id: usize) -> usize {
+    fn get_partition(partitions: &[BitSet], id: usize) -> usize {
         partitions.iter()
             .enumerate()
             .filter(|x| x.1.contains(id))
@@ -338,7 +338,7 @@ impl FA<AsciiChar> {
             .0
     }
 
-    fn split(partitions: &Vec<BitSet>, dfa: &FA<AsciiChar>, set: &BitSet, c: AsciiChar) -> (BitSet, BitSet) {
+    fn split(partitions: &[BitSet], dfa: &FA<AsciiChar>, set: &BitSet, c: AsciiChar) -> (BitSet, BitSet) {
         let mut a = BitSet::new();
         let mut b = BitSet::new();
 

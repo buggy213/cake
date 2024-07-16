@@ -289,7 +289,7 @@ impl<T: LexemeSet> Grammar<T> {
         Ok(result)
     }
 
-    pub fn from_ebnf(ebnf: &Vec<EBNF>) -> Result<Grammar<T>, BNFError> {
+    pub fn from_ebnf(ebnf: &[EBNF]) -> Result<Grammar<T>, BNFError> {
         let mut name_to_nonterminal: HashMap<&str, usize> = HashMap::new();
         let mut nonterminal_to_name: Vec<&str> = Vec::new();
 
