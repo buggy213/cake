@@ -12,7 +12,7 @@
 
 <postfix-expression> ::= <primary-expression>
     | <postfix-expression> LBracket <expression> RBracket
-    | <postfix-expression> LParen <argument-expression-list> RParen
+    | <postfix-expression> LParen <argument-expression-list>? RParen
     | <postfix-expression> Dot Identifier
     | <postfix-expression> Arrow Identifier
     | <postfix-expression> Increment
