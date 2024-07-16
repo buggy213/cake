@@ -59,9 +59,9 @@ fn parse_lexeme_def(def_path: &PathBuf, mod_path: &PathBuf) -> Result<String, Bo
 
     let mut from_id = Function::new("from_id");
     from_id.arg("id", "u32")
-        .ret("Option<Self>")
-        .line("if id >= Self::size() { return None; }")
-        .line("unsafe { Some(std::mem::transmute::<u32, Self>(id)) }");
+        .ret("Option<Self>");
+
+    let mut from_id_match = Block::new("match id");
 
     let mut to_name = Function::new("to_name");
     to_name.arg_self()
@@ -102,12 +102,14 @@ fn parse_lexeme_def(def_path: &PathBuf, mod_path: &PathBuf) -> Result<String, Bo
         
         let escaped_pattern = pattern.escape_default();
         from_name_match.line(format!("\"{}\" => Some({}::{}),", name, pascal_case_name, name));
+        from_id_match.line(format!("{} => Some({}::{}),", variants, pascal_case_name, name));
         to_name_match.line(format!("{}::{} => \"{}\",", pascal_case_name, name, name));
         pattern_match.line(format!("{}::{} => \"{}\",", pascal_case_name, name, escaped_pattern));
         variants += 1;
     }
 
     from_name_match.line("_ => None");
+    from_id_match.line("_ => None");
 
     let mut next = Function::new("next");
     next.arg_self()
@@ -133,11 +135,12 @@ fn parse_lexeme_def(def_path: &PathBuf, mod_path: &PathBuf) -> Result<String, Bo
     from_name.push_block(from_name_match);
     lexeme_set_impl.push_fn(from_name);
 
+    from_id.push_block(from_id_match);
     lexeme_set_impl.push_fn(from_id);
     
     to_name.push_block(to_name_match);
     lexeme_set_impl.push_fn(to_name);
-
+    
     lexeme_set_impl.push_fn(to_id);
 
     pattern.push_block(pattern_match);
