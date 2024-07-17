@@ -46,23 +46,20 @@ fn parse_primary_expr(toks: &mut CTokenStream, state: &mut ParserState) {
 // <translation-unit> ::= <external-declaration>
 // | <translation-unit> <external-declaration>
 fn parse_translation_unit(toks: &mut CTokenStream, state: &mut ParserState) {
-
+    while let Some(_) = toks.peek() {
+        parse_external_declaration(toks, state);
+    }
 }
 
 // <external-declaration> ::= <function-definition>
 // | <declaration>
+// way to distinguish is that declarations end with a semicolon while function definitions
+// have a compound statement
 fn parse_external_declaration(toks: &mut CTokenStream, state: &mut ParserState) {
     
 }
 
-// standard allows for functions like
-// ```
-// void f(a, b)
-// int a, b
-// { ... }
-// ```
-
-// do this later
+// functions which don't include types in parameter list are not supported
 fn parse_function_definition(toks: &mut CTokenStream, state: &mut ParserState) {
 
 }
@@ -109,6 +106,26 @@ fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState
         },
         None => panic!("error while parsing declaration specifier"),
     }
+}
+
+fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState) {
+    parse_init_declarator(toks, state);
+    if let Some((lexeme, _, _)) = toks.peek() {
+        match lexeme {
+
+        }
+    }
+    else {
+        
+    }
+}
+
+fn parse_init_declarator(toks: &mut CTokenStream, state: &mut ParserState) {
+
+}
+
+fn parse_declarator(toks: &mut CTokenStream, state: &mut ParserState) {
+
 }
 
 fn parse_statement(toks: &mut CTokenStream, state: &mut ParserState) {

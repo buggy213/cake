@@ -12,35 +12,35 @@ enum BasicType {
     Double,
 }
 
-
-
-
-type AggregateMember = (Option<String>, Box<CType>);
+type AggregateMember = (String, Box<CType>);
+type EnumVariant = (String, usize);
 
 enum CType {
-    BasicType(BasicType),
+    BasicType {
+        basic_type: BasicType
+    },
     UnionType {
         tag: Option<String>,
-        members: Vec<AggregateMember>
+        members: Vec<AggregateMember>,
     },
     StructureType {
         tag: Option<String>,
-        members: Vec<AggregateMember>
+        members: Vec<AggregateMember>,
     },
     EnumerationType {
         tag: Option<String>,
-        members: Vec<AggregateMember>
+        members: Vec<EnumVariant>,
     },
     ArrayType {
         size: usize,
-        element_type: Box<CType>
+        element_type: Box<CType>,
     },
     FunctionType {
         parameter_types: Vec<CType>,
-        return_type: Box<CType>
+        return_type: Box<CType>,
     },
     PointerType {
-        pointee_type: Box<CType>
+        pointee_type: Box<CType>,
     },
-    Void
+    Void,
 }
