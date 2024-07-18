@@ -15,7 +15,7 @@ enum BasicType {
 type AggregateMember = (String, Box<CType>);
 type EnumVariant = (String, usize);
 
-enum CType {
+pub(crate) enum CType {
     BasicType {
         basic_type: BasicType
     },

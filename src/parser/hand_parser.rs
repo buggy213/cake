@@ -1,17 +1,76 @@
 use core::panic;
+use std::collections::VecDeque;
 
-use crate::scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream};
+use thiserror::Error;
 
-type CTokenStream<'a, 'b> = crate::scanner::RawTokenStream<'a, CLexemes>;
+use crate::{scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::symtab::{Scope, SymbolTable}};
 
-// explicitly materialize parse tree for now, can think about more efficient
-// semantic action based approach later
+use super::ast::ASTNode;
+
+type CTokenStream<'a> = crate::scanner::RawTokenStream<'a, CLexemes>;
+
+// can explicitly materialize parse tree for debugging purposes, though not required
+#[cfg(debug_assertions)]
 enum ParseNode {
+    Test(Box<ParseNode>, usize, usize)
+}
 
+#[cfg(debug_assertions)]
+// start / end are describe position of the text corresponding to this parse node,
+// variant is the enum variant for this parse node
+// non-leaf parse nodes must be tuple structs (Box<ParseNode>, usize, usize) or (Vec<ParseNode>, usize, usize)
+// leaf parse nodes must be tuple structs of (usize, usize)
+macro_rules! materialize_parse_node {
+    // child count must be tt for it to be matched correctly by sub-macro
+    ($start:expr, $end:expr, $variant:expr, $child_count:tt, $node_vec:expr) => {
+        {
+            // generates either a Box or Vec
+            let parse_node_children = materialize_parse_node_children![$child_count, $node_vec];
+            let parse_node = $variant(parse_node_children, $start, $end);
+            $node_vec.push_back(parse_node);
+        }
+    };
+
+    ($start:expr, $end:expr, $variant:expr, $node_vec:expr) => {
+        {
+            // generates either a Box or Vec
+            let parse_node = $variant($start, $end);
+            $node_vec.push_back(parse_node);
+        }
+    };
+}
+
+#[cfg(debug_assertions)]
+macro_rules! materialize_parse_node_children {
+    (1, $node_vec:expr) => {
+        Box::new($node_vec.pop_back().expect("Expected at least one element in parse stack"))
+    };
+
+    ($n:literal, $node_vec:expr) => {
+        {
+            let mut children = Vec::with_capacity($n);
+            for _ in 0..$n {
+                children.push($node_vec.pop_back().expect("Expected at least $n elements in the vector"));
+            }
+            children.reverse(); // Reverse to maintain the original order
+            children
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+enum ParseError {
+    #[error("Unexpected end of file while parsing")]
+    UnexpectedEOFError,
+    #[error("Unexpected token {0:?} while parsing")]
+    UnexpectedTokenError(CLexemes)
 }
 
 struct ParserState {
-
+    smybol_table: SymbolTable,
+    current_scope: Scope,
+    #[cfg(debug_assertions)]
+    parse_tree_stack: VecDeque<ParseNode>
 }
 
 // TODO: error recovery
@@ -108,16 +167,27 @@ fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState
     }
 }
 
-fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState) {
+fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    let start = toks.get_location();
     parse_init_declarator(toks, state);
-    if let Some((lexeme, _, _)) = toks.peek() {
+    while let Some((lexeme, _, _)) = toks.peek() {
         match lexeme {
-
+            CLexemes::Comma => {
+                toks.eat(CLexemes::Comma);
+            },
+            CLexemes::Semicolon => {
+                
+                
+            }
+            other => return Err(ParseError::UnexpectedTokenError(other))
         }
     }
-    else {
-        
-    }
+
+    #[cfg(debug_assertions)]
+    materialize_parse_node![5, 100, ParseNode::Test, 1, state.parse_tree_stack];
+
+    // unexpected EOF
+    Err(ParseError::UnexpectedEOFError)
 }
 
 fn parse_init_declarator(toks: &mut CTokenStream, state: &mut ParserState) {
