@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 
 use thiserror::Error;
 
-use crate::{scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::{symtab::{Scope, StorageClass, SymbolTable}, types::{CType, FunctionSpecifier, TypeQualifier}}};
+use crate::{parser::ast::Constant, scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::{symtab::{Scope, StorageClass, Symbol, SymbolTable, SymtabError, TypeIdx}, types::{AggregateMember, CType, FunctionSpecifier, TypeQualifier}}};
 
 use super::ast::ASTNode;
 
@@ -67,11 +67,21 @@ enum ParseError {
     #[error("Only one storage class allowed in declaration")]
     UnexpectedStorageClass,
     #[error("restrict qualifier only applies to pointers")]
-    BadRestrictQualifier
+    BadRestrictQualifier,
+    #[error("failed to lookup item in symbol table")]
+    LookupError(#[source] SymtabError),
+    #[error("cannot redeclare enum `{0}` in same scope")]
+    RedeclaredEnum(String),
+    #[error("cannot redeclare enum constant")]
+    RedeclaredEnumConstant(#[source] SymtabError),
+    #[error("invalid enum constant (must be integer constant)")]
+    InvalidEnumConstant(String),
+    #[error("empty enum is not allowed")]
+    EmptyEnum
 }
 
 struct ParserState {
-    smybol_table: SymbolTable,
+    symbol_table: SymbolTable,
     current_scope: Scope,
     #[cfg(debug_assertions)]
     parse_tree_stack: VecDeque<ParseNode>
@@ -138,6 +148,7 @@ fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState
     let mut type_qualifier: TypeQualifier = TypeQualifier::empty();
     let mut function_specifier: FunctionSpecifier = FunctionSpecifier::None;
     let mut primitive_type_specifiers: Vec<CLexemes> = Vec::new();
+    let mut struct_or_union_or_enum: Option<TypeIdx> = None;
     while let Some((lexeme, _, _)) = toks.peek() {
         match lexeme {
             CLexemes::Typedef => {
@@ -208,9 +219,14 @@ fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState
                 primitive_type_specifiers.push(lexeme);
             },
 
+            // struct / union specifier (syntactically very similar!)
             CLexemes::Struct
-            | CLexemes::Union
-            | CLexemes::Enum => {
+            | CLexemes::Union => {
+
+            }
+
+            // enum specifier
+            CLexemes::Enum => {
                 
             }
 
@@ -221,18 +237,193 @@ fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState
     todo!()
 }
 
-fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Result<CType, ParseError> {
+fn parse_struct_declaration(toks: &mut CTokenStream, state: &mut ParserState) {
+
+}
+
+fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Result<TypeIdx, ParseError> {
+    enum StructOrUnion {
+        Struct, Union
+    }
+    
+    let members: Vec<AggregateMember> = Vec::new();
+    let specifier_type: StructOrUnion;
+    match toks.peek() {
+        Some((CLexemes::Struct, _, _)) => {
+            toks.eat(CLexemes::Struct);
+            specifier_type = StructOrUnion::Struct;        
+        },
+        Some((CLexemes::Union, _, _)) => {
+            toks.eat(CLexemes::Union);
+            specifier_type = StructOrUnion::Union;
+        },
+        Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)); }
+        None => { return Err(ParseError::UnexpectedEOF); }
+    }
+
+    
+    
+
     todo!()
 }
 
-fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Result<CType, ParseError> {
-    if let Some((CLexemes::Enum, _, _)) = toks.peek() {
+fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Result<TypeIdx, ParseError> {
+    match toks.peek() {
+        Some((CLexemes::Enum, _, _)) => {
+            toks.eat(CLexemes::Enum);
+        },
+        Some((other, _, _)) => {
+            return Err(ParseError::UnexpectedToken(other));
+        },
+        None => {
+            return Err(ParseError::UnexpectedEOF);
+        }
+    }
+    
+    let enum_tag: Option<String>;
+    match toks.peek() {
+        Some((CLexemes::LBrace, _, _)) => {
+            // untagged enum
+            toks.eat(CLexemes::LBrace);
+            enum_tag = None;
+        },
+        Some((CLexemes::Identifier, ident, _)) => {
+            enum_tag = Some(ident.to_string());
+            toks.eat(CLexemes::Identifier);
+            let next_tok = toks.peek();
+            match next_tok {
+                Some((CLexemes::LBrace, _, _)) => {
+                    toks.eat(CLexemes::LBrace);
+                },
+                Some(_) => {
+                    // incomplete enum, need to do lookup (6.7.2.3 3)
+                    // GCC / Clang both support extension which allows enum to be incomplete type
+                    // (only complains if using -Wpedantic)
+                    let lookup = state.symbol_table.lookup_tag_type_idx(state.current_scope, &enum_tag.unwrap());
+                    match lookup {
+                        Ok(tag_type) => return Ok(tag_type),
+                        Err(err) => return Err(ParseError::LookupError(err))
+                    }
+                },
+                None => return Err(ParseError::UnexpectedEOF)
+            };
+        },
+        Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)) },
+        None => { return Err(ParseError::UnexpectedEOF) }
+    }
 
+    // 6.7.2.3 1, not allowed to redeclare enum (or struct or union) contents
+    match &enum_tag {
+        Some(enum_tag) => {
+            let direct_lookup = state.symbol_table.direct_lookup_tag_type(state.current_scope, &enum_tag);
+            if direct_lookup.is_ok() {
+                return Err(ParseError::RedeclaredEnum(enum_tag.to_string()))
+            }
+        },
+        None => {}, // 6.7.2.3 5, all untagged enums/unions/structs have different types
     }
-    else {
-        return Err(ParseError::UnexpectedEOF);
+    
+    // footnote 109 - enum constants share namespace with eachother and with "ordinary" identifiers
+    // so, just put them into symbol table with everything else
+    
+    let mut counter: i32 = 0;
+    let mut enum_members: Vec<(String, i32)> = Vec::new();
+    loop {
+        // 1. match identifier
+        let enum_constant_name: String;
+        match toks.peek() {
+            Some((CLexemes::Identifier, name, _)) => {
+                enum_constant_name = name.to_string();
+                toks.eat(CLexemes::Identifier);
+            }
+            Some((CLexemes::RBrace, _, _)) => { return Err(ParseError::EmptyEnum); }
+            Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)); }
+            None => { return Err(ParseError::UnexpectedEOF); }
+        }
+
+        // 2. comma -> go next, brace -> break, other -> bad token, equal -> expect int
+        match toks.peek() {
+            Some((CLexemes::Comma, _, _)) => {
+                let enum_constant_value = Symbol::Constant(Constant::Int(counter));
+                enum_members.push((enum_constant_name.clone(), counter));
+                
+                match state.symbol_table.add_symbol(state.current_scope, enum_constant_name, enum_constant_value) {
+                    Err(e) => { return Err(ParseError::RedeclaredEnumConstant(e)); }
+                    Ok(_) => {}
+                }
+
+                toks.eat(CLexemes::Comma);
+                counter += 1;
+                if let Some((CLexemes::RBrace, _, _)) = toks.peek() {
+                    toks.eat(CLexemes::RBrace);
+                    break;
+                }
+                else {
+                    continue;
+                }
+            }
+            Some((CLexemes::Eq, _, _)) => {
+                toks.eat(CLexemes::Eq);
+                // fall through
+            }
+            Some((CLexemes::RBrace, _, _)) => {
+                toks.eat(CLexemes::RBrace);
+                break;
+            }
+            Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)); }
+            None => { return Err(ParseError::UnexpectedEOF); }
+        }
+
+        match toks.peek() {
+            Some((CLexemes::IntegerConst, int_str, _)) => {
+                // TODO: technically any integer constant expression is ok, but just ignore this for now
+                // until can parse constant expressions more generally.
+                let enum_value = int_str.parse::<i32>()
+                    .map_err(|_| ParseError::InvalidEnumConstant(int_str.to_string()))?;
+                
+                let enum_constant_value = Symbol::Constant(Constant::Int(enum_value));
+                enum_members.push((enum_constant_name.clone(), enum_value));
+
+                match state.symbol_table.add_symbol(state.current_scope, enum_constant_name, enum_constant_value) {
+                    Err(e) => { return Err(ParseError::RedeclaredEnumConstant(e)); }
+                    Ok(_) => {}
+                }
+
+                counter = enum_value + 1;
+                toks.eat(CLexemes::IntegerConst);
+            },
+            Some((_, text, _)) => {
+                return Err(ParseError::InvalidEnumConstant(text.to_string()));
+            }
+            None => { return Err(ParseError::UnexpectedEOF); },
+        }
+
+        match toks.peek() {
+            Some((CLexemes::Comma, _, _)) => {
+                toks.eat(CLexemes::Comma);
+                if let Some((CLexemes::RBrace, _, _)) = toks.peek() {
+                    toks.eat(CLexemes::RBrace);
+                    break;
+                }
+                else {
+                    continue;
+                }
+            }
+            Some((CLexemes::RBrace, _, _)) => { 
+                toks.eat(CLexemes::RBrace);
+                break;
+            },
+            Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)); },
+            None => { return Err(ParseError::UnexpectedEOF); }
+        }
     }
-    todo!()
+
+    let enum_type = CType::EnumerationType { 
+        tag: enum_tag, 
+        members: enum_members 
+    };
+
+    return Ok(state.symbol_table.add_type(enum_type));
 }
 
 fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
