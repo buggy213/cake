@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 
 use thiserror::Error;
 
-use crate::{scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::symtab::{Scope, SymbolTable}};
+use crate::{scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::{symtab::{Scope, StorageClass, SymbolTable}, types::{CType, FunctionSpecifier, TypeQualifier}}};
 
 use super::ast::ASTNode;
 
@@ -61,9 +61,13 @@ macro_rules! materialize_parse_node_children {
 #[derive(Error, Debug)]
 enum ParseError {
     #[error("Unexpected end of file while parsing")]
-    UnexpectedEOFError,
+    UnexpectedEOF,
     #[error("Unexpected token {0:?} while parsing")]
-    UnexpectedTokenError(CLexemes)
+    UnexpectedToken(CLexemes),
+    #[error("Only one storage class allowed in declaration")]
+    UnexpectedStorageClass,
+    #[error("restrict qualifier only applies to pointers")]
+    BadRestrictQualifier
 }
 
 struct ParserState {
@@ -104,67 +108,131 @@ fn parse_primary_expr(toks: &mut CTokenStream, state: &mut ParserState) {
 
 // <translation-unit> ::= <external-declaration>
 // | <translation-unit> <external-declaration>
-fn parse_translation_unit(toks: &mut CTokenStream, state: &mut ParserState) {
+fn parse_translation_unit(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
     while let Some(_) = toks.peek() {
-        parse_external_declaration(toks, state);
+        parse_external_declaration(toks, state)?;
     }
+
+    todo!()
 }
 
 // <external-declaration> ::= <function-definition>
 // | <declaration>
 // way to distinguish is that declarations end with a semicolon while function definitions
 // have a compound statement
-fn parse_external_declaration(toks: &mut CTokenStream, state: &mut ParserState) {
-    
-}
-
-// functions which don't include types in parameter list are not supported
-fn parse_function_definition(toks: &mut CTokenStream, state: &mut ParserState) {
-
-}
-
-fn parse_declaration(toks: &mut CTokenStream, state: &mut ParserState) {
+fn parse_external_declaration(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    // both will include declaration specifiers
     parse_declaration_specifiers(toks, state);
+    if let Some((CLexemes::Semicolon, _, _)) = toks.peek() {
+        // 6.7, clause 2: must have declared struct / union with tag
+        // or enum constants
+
+    }
     
+    todo!()
 }
 
-fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState) {
-    match toks.peek() {
-        Some((lexeme, _, _)) => {
-            match lexeme {
-                CLexemes::Typedef
-                | CLexemes::Extern
-                | CLexemes::Static
-                | CLexemes::Auto
-                | CLexemes::Register
-
-                | CLexemes::Void
-                | CLexemes::Char
-                | CLexemes::Short
-                | CLexemes::Int
-                | CLexemes::Long
-                | CLexemes::Float
-                | CLexemes::Double
-                | CLexemes::Signed
-                | CLexemes::Unsigned
-                | CLexemes::Bool
-                | CLexemes::Complex
-                
-                | CLexemes::Const
-                | CLexemes::Restrict
-                | CLexemes::Volatile 
-                
-                | CLexemes::Inline => {
-                    // TODO
-                    toks.eat(lexeme);
+// no typedefs for now
+fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    let mut storage_class: StorageClass = StorageClass::None;
+    let mut type_qualifier: TypeQualifier = TypeQualifier::empty();
+    let mut function_specifier: FunctionSpecifier = FunctionSpecifier::None;
+    let mut primitive_type_specifiers: Vec<CLexemes> = Vec::new();
+    while let Some((lexeme, _, _)) = toks.peek() {
+        match lexeme {
+            CLexemes::Typedef => {
+                todo!("add typedef support")
+            },
+            
+            // storage class specifiers, only 1 allowed
+            CLexemes::Extern => {
+                if storage_class != StorageClass::None {
+                    return Err(ParseError::UnexpectedStorageClass);
                 }
-                CLexemes::Identifier => todo!("need semantic analysis to resolve ambiguity"),
+                toks.eat(CLexemes::Extern);
+                storage_class = StorageClass::Extern;
+            },
+            CLexemes::Auto => {
+                if storage_class != StorageClass::None {
+                    return Err(ParseError::UnexpectedStorageClass);
+                }
+                toks.eat(CLexemes::Auto);
+                storage_class = StorageClass::Auto;
+            },
+            CLexemes::Register => {
+                if storage_class != StorageClass::None {
+                    return Err(ParseError::UnexpectedStorageClass);
+                }
+                toks.eat(CLexemes::Register);
+                storage_class = StorageClass::Register;
+            },
+            CLexemes::Static => {
+                if storage_class != StorageClass::None {
+                    return Err(ParseError::UnexpectedStorageClass);
+                }
+                toks.eat(CLexemes::Static);
+                storage_class = StorageClass::Static;
+            },
 
-                _ => panic!("bad")
+            // type qualifiers, multiple allowed 
+            CLexemes::Const => {
+                toks.eat(CLexemes::Const);
+                type_qualifier |= TypeQualifier::Const;
+            },
+            CLexemes::Restrict => {
+                return Err(ParseError::BadRestrictQualifier);
+            },
+            CLexemes::Volatile => {
+                toks.eat(CLexemes::Volatile);
+                type_qualifier |= TypeQualifier::Volatile;
+            },
+            
+            // function specifiers
+            CLexemes::Inline => {
+                toks.eat(CLexemes::Inline);
+                function_specifier = FunctionSpecifier::Inline;
             }
-        },
-        None => panic!("error while parsing declaration specifier"),
+
+            // according to standard, these are allowed in any order and allowed to be mixed w/ any part of the specifier
+            // (why???)
+            CLexemes::Void
+            | CLexemes::Char
+            | CLexemes::Short
+            | CLexemes::Int
+            | CLexemes::Long
+            | CLexemes::Float
+            | CLexemes::Double
+            | CLexemes::Signed
+            | CLexemes::Unsigned => {
+                toks.eat(lexeme);
+                primitive_type_specifiers.push(lexeme);
+            },
+
+            CLexemes::Struct
+            | CLexemes::Union
+            | CLexemes::Enum => {
+                
+            }
+
+            _ => todo!()
+        }
     }
+
+    todo!()
+}
+
+fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Result<CType, ParseError> {
+    todo!()
+}
+
+fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Result<CType, ParseError> {
+    if let Some((CLexemes::Enum, _, _)) = toks.peek() {
+
+    }
+    else {
+        return Err(ParseError::UnexpectedEOF);
+    }
+    todo!()
 }
 
 fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
@@ -177,9 +245,8 @@ fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState) -> R
             },
             CLexemes::Semicolon => {
                 
-                
             }
-            other => return Err(ParseError::UnexpectedTokenError(other))
+            other => return Err(ParseError::UnexpectedToken(other))
         }
     }
 
@@ -187,7 +254,7 @@ fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState) -> R
     materialize_parse_node![5, 100, ParseNode::Test, 1, state.parse_tree_stack];
 
     // unexpected EOF
-    Err(ParseError::UnexpectedEOFError)
+    Err(ParseError::UnexpectedEOF)
 }
 
 fn parse_init_declarator(toks: &mut CTokenStream, state: &mut ParserState) {

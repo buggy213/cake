@@ -1,4 +1,6 @@
-use std::{collections::HashMap, ops::Index};
+use std::{collections::HashMap, ops::Index, rc::Rc};
+
+use crate::parser::ast::ASTNode;
 
 use super::types::CType;
 
@@ -16,8 +18,25 @@ pub(crate) struct Scope {
     index: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StorageClass {
+    Extern,
+    Static,
+    Auto,
+    Register,
+    None,
+}
+
+pub(crate) enum Linkage {
+    External,
+    Internal,
+    None
+}
+
 pub(crate) struct Symbol {
-    symbol_type: CType
+    symbol_type: CType,
+    storage_class: StorageClass,
+    linkage: Linkage
 }
 
 // monolithic symbol table contains all symbols in program
@@ -25,7 +44,9 @@ pub(crate) struct Symbol {
 // will likely need to add storage / linkage / layout information as well
 pub(crate) struct SymbolTable {
     scopes: Vec<Scope>,
-    symbols: Vec<HashMap<String, Symbol>>
+    symbols: Vec<HashMap<String, Symbol>>,
+    labels: Vec<HashMap<String, Rc<ASTNode>>>,
+    tags: Vec<HashMap<String, CType>>
 }
 
 struct ImmutableScopedSymbolTable<'a> {
