@@ -1,5 +1,7 @@
 use bitflags::bitflags;
 
+use super::symtab::TypeIdx;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BasicType {
     UChar,
@@ -44,9 +46,8 @@ pub(crate) struct QualifiedType {
 
 #[derive(Debug)]
 pub(crate) enum CType {
-    BasicType {
-        basic_type: BasicType,
-    },
+    // "Canonical" types go into symbol table, should try to only keep 1 around
+    // if possible. Incomplete types can be std::mem::replace'd once they are completed
     IncompleteUnionType {
         tag: String
     },
@@ -55,7 +56,7 @@ pub(crate) enum CType {
         members: Vec<AggregateMember>,
     },
     IncompleteStructureType {
-        tag: String // having an anonymous incomplete structure type seems meaningless...
+        tag: String // having an anonymous incomplete struct/union type seems meaningless...
     },
     StructureType {
         tag: Option<String>,
@@ -64,6 +65,11 @@ pub(crate) enum CType {
     EnumerationType {
         tag: Option<String>,
         members: Vec<EnumVariant>,
+    },
+
+    // Derived / basic types can be passed around more freely
+    BasicType {
+        basic_type: BasicType,
     },
     ArrayType {
         size: usize,
@@ -78,4 +84,13 @@ pub(crate) enum CType {
         pointee_type: Box<CType>,
     },
     Void,
+
+    // Pointers into symbol table to avoid having deep copies of highly-nested structs / unions
+    // need to be careful to avoid circular / recursive structs (infinite size!)
+    StructureTypeRef {
+        symtab_idx: TypeIdx
+    },
+    UnionTypeRef {
+        symtab_idx: TypeIdx
+    }
 }

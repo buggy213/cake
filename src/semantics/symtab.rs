@@ -172,4 +172,12 @@ impl SymbolTable {
         self.symbols[scope.index].insert(name, symbol);
         Ok(())
     }
+
+    pub fn get_type(&self, idx: TypeIdx) -> &CType {
+        &self.types[idx]
+    }
+
+    pub fn get_type_mut(&mut self, idx: TypeIdx) -> &mut CType {
+        &mut self.types[idx]
+    }
 }

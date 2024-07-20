@@ -77,7 +77,9 @@ enum ParseError {
     #[error("invalid enum constant (must be integer constant)")]
     InvalidEnumConstant(String),
     #[error("empty enum is not allowed")]
-    EmptyEnum
+    EmptyEnum,
+    #[error("enum <tag> cannot be declared alongside struct <tag> or union <tag>")]
+    EnumDeclarationMustMatch
 }
 
 struct ParserState {
@@ -261,7 +263,29 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
         None => { return Err(ParseError::UnexpectedEOF); }
     }
 
-    
+    let struct_or_union_tag: Option<String>;
+    match toks.peek() {
+        Some((CLexemes::LBrace, _, _)) => {
+            // untagged
+            struct_or_union_tag = None;
+        },
+        Some((CLexemes::Identifier, tag, _)) => {
+            struct_or_union_tag = Some(tag.to_string());
+            // do lookup, insert incomplete type if not present
+            
+            match toks.peek() {
+                Some((CLexemes::LBrace, _, _)) => {
+                    toks.eat(CLexemes::LBrace);
+                },
+                Some((other, _, _)) => {
+                    
+                },
+                None => { return Err(ParseError::UnexpectedEOF); }
+            }
+        },
+        Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)); }
+        None => { return Err(ParseError::UnexpectedEOF); }
+    }    
     
 
     todo!()
@@ -301,7 +325,16 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
                     // (only complains if using -Wpedantic)
                     let lookup = state.symbol_table.lookup_tag_type_idx(state.current_scope, &enum_tag.unwrap());
                     match lookup {
-                        Ok(tag_type) => return Ok(tag_type),
+                        Ok(tag_type) => {
+                            if let CType::EnumerationType { .. } = state.symbol_table.get_type(tag_type) {
+                                return Ok(tag_type);
+                            }
+                            else {
+                                // other type is not an enum, so lookup fails
+                                return Err(ParseError::EnumDeclarationMustMatch);
+                            }
+                        },
+                        // incomplete enum not allowed
                         Err(err) => return Err(ParseError::LookupError(err))
                     }
                 },
@@ -316,6 +349,7 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
     match &enum_tag {
         Some(enum_tag) => {
             let direct_lookup = state.symbol_table.direct_lookup_tag_type(state.current_scope, &enum_tag);
+            // shares namespace with struct / unions, so a struct / union named the same thing is also not ok
             if direct_lookup.is_ok() {
                 return Err(ParseError::RedeclaredEnum(enum_tag.to_string()))
             }
@@ -325,7 +359,6 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
     
     // footnote 109 - enum constants share namespace with eachother and with "ordinary" identifiers
     // so, just put them into symbol table with everything else
-    
     let mut counter: i32 = 0;
     let mut enum_members: Vec<(String, i32)> = Vec::new();
     loop {
