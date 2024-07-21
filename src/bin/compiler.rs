@@ -4,7 +4,7 @@ use cake::{parser::{grammar::{EBNF, Grammar}, earley::{self}}, scanner::{lexeme_
 use petgraph::dot::{Dot, Config};
 
 fn main() {
-    let c_grammar = include_str!("../src/parser/grammars/c_grammar.def");
+    let c_grammar = include_str!("../../src/parser/grammars/c_grammar.def");
     let parse_result = EBNF::from_str(c_grammar);
     let parse_result = parse_result.expect("expect");
     let c_grammar = Grammar::<CLexemes>::from_ebnf(&parse_result).expect("failed");
