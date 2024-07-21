@@ -17,7 +17,7 @@ pub(crate) enum BasicType {
     Double,
 }
 
-pub(crate) type AggregateMember = (String, Box<CType>);
+
 // for now, all enums will be 4 bytes
 type EnumVariant = (String, i32);
 
@@ -37,17 +37,18 @@ pub(crate) enum FunctionSpecifier {
     None
 }
 
-
-#[derive(Debug)]
+pub(crate) type AggregateMember = (String, Box<QualifiedType>);
+#[derive(Debug, Clone)]
 pub(crate) struct QualifiedType {
-    base_type: CType,
-    qualifier: TypeQualifier
+    pub(crate) base_type: CType,
+    pub(crate) qualifier: TypeQualifier
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum CType {
     // "Canonical" types go into symbol table, should try to only keep 1 around
     // if possible. Incomplete types can be std::mem::replace'd once they are completed
+    // in addition, they do not specify type qualifiers (though their members might)
     IncompleteUnionType {
         tag: String
     },
@@ -71,26 +72,32 @@ pub(crate) enum CType {
     BasicType {
         basic_type: BasicType,
     },
+    IncompleteArrayType {
+        element_type: Box<QualifiedType>,
+    },
     ArrayType {
         size: usize,
-        element_type: Box<CType>,
+        element_type: Box<QualifiedType>,
     },
     FunctionType {
-        parameter_types: Vec<CType>,
-        return_type: Box<CType>,
+        parameter_types: Vec<QualifiedType>,
+        return_type: Box<QualifiedType>,
         function_specifier: FunctionSpecifier,
+        varargs: bool
     },
     PointerType {
-        pointee_type: Box<CType>,
+        pointee_type: Box<QualifiedType>,
     },
     Void,
 
     // Pointers into symbol table to avoid having deep copies of highly-nested structs / unions
     // need to be careful to avoid circular / recursive structs (infinite size!)
     StructureTypeRef {
-        symtab_idx: TypeIdx
+        symtab_idx: TypeIdx,
+        qualifier: TypeQualifier
     },
     UnionTypeRef {
-        symtab_idx: TypeIdx
+        symtab_idx: TypeIdx,
+        qualifier: TypeQualifier
     }
 }

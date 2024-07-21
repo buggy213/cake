@@ -4,11 +4,11 @@ use thiserror::Error;
 
 use crate::parser::ast::{ASTNode, Constant};
 
-use super::types::CType;
+use super::types::{CType, QualifiedType};
 
 // "function prototype scope" not included, 
 // just ignore symbol table when processing a function prototype
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeType {
     BlockScope,
     FunctionScope,
@@ -39,7 +39,7 @@ pub(crate) enum Linkage {
 
 pub(crate) enum Symbol {
     Variable {
-        symbol_type: TypeIdx,
+        symbol_type: QualifiedType,
         storage_class: StorageClass,
         linkage: Linkage
     },
@@ -79,8 +79,6 @@ pub(crate) struct ImmutableScopedSymbolTable<'a> {
 
 #[derive(Debug, Error)]
 pub(crate) enum SymtabError {
-    #[error("Unable to find tag `{0}` in symbol table")]
-    TagNotFound(String),
     #[error("Symbol `{0}` already declared")]
     AlreadyDeclared(String),
     #[error("type provided is not a tag")]
@@ -96,25 +94,25 @@ impl SymbolTable {
     }
 
     // look in current scope and all parent scopes
-    pub fn lookup_tag_type(&self, scope: Scope, tag: &str) -> Result<&CType, SymtabError> {
+    pub(crate) fn lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CType> {
         self.lookup_tag_type_idx(scope, tag)
             .map(|idx| &self.types[idx])
     }
 
-    pub fn lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Result<&mut CType, SymtabError> {
+    pub(crate) fn lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Option<&mut CType> {
         self.lookup_tag_type_idx(scope, tag)
             .map(|idx| &mut self.types[idx])
     }
 
-    pub fn lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Result<TypeIdx, SymtabError> {
+    pub(crate) fn lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<TypeIdx> {
         let mut current_scope = scope;
         loop {
             match self.direct_lookup_tag_type_idx(current_scope, tag) {
-                Ok(tag_type) => return Ok(tag_type),
-                Err(_) => {
+                Some(tag_type) => return Some(tag_type),
+                None => {
                     match current_scope.parent_scope {
                         Some(parent) => current_scope = self.scopes[parent],
-                        None => return Err(SymtabError::TagNotFound(tag.to_owned())),
+                        None => return None,
                     }
                 }
             }
@@ -122,32 +120,32 @@ impl SymbolTable {
     }
 
     // only look in current scope
-    pub fn direct_lookup_tag_type(&self, scope: Scope, tag: &str) -> Result<&CType, SymtabError> {
+    pub(crate) fn direct_lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CType> {
         self.direct_lookup_tag_type_idx(scope, tag)
             .map(|idx| &self.types[idx])
     }
 
-    pub fn direct_lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Result<&mut CType, SymtabError> {
+    pub(crate) fn direct_lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Option<&mut CType> {
         self.direct_lookup_tag_type_idx(scope, tag)
             .map(|idx| &mut self.types[idx])
     }
 
-    pub fn direct_lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Result<TypeIdx, SymtabError> {
+    pub(crate) fn direct_lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<TypeIdx> {
         let direct_lookup = self.tags[scope.index].get(tag);
         match direct_lookup {
-            Some(tag_type_idx) => return Ok(*tag_type_idx),
-            None => return Err(SymtabError::TagNotFound(tag.to_owned()))
+            Some(tag_type_idx) => return Some(*tag_type_idx),
+            None => return None
         }
     }
 
-    pub fn add_type(&mut self, ctype: CType) -> TypeIdx {
+    pub(crate) fn add_type(&mut self, ctype: CType) -> TypeIdx {
         let type_idx = TypeIdx(self.types.len() - 1);
         self.types.push(ctype);
         type_idx
     }
 
-    pub fn add_tag(&mut self, scope: Scope, name: String, tag: CType) -> Result<(), SymtabError> {
-        match tag {
+    pub(crate) fn add_tag(&mut self, scope: Scope, name: String, tag: TypeIdx) -> Result<(), SymtabError> {
+        match self.types[tag] {
             CType::UnionType { .. }
             | CType::StructureType { .. }
             | CType::EnumerationType { .. } => {}
@@ -159,13 +157,12 @@ impl SymbolTable {
             return Err(SymtabError::AlreadyDeclared(name));
         }
         
-        let type_idx = self.add_type(tag);
-        self.tags[scope.index].insert(name, type_idx);
+        self.tags[scope.index].insert(name, tag);
 
         Ok(())
     }
 
-    pub fn add_symbol(&mut self, scope: Scope, name: String, symbol: Symbol) -> Result<(), SymtabError> {
+    pub(crate) fn add_symbol(&mut self, scope: Scope, name: String, symbol: Symbol) -> Result<(), SymtabError> {
         if self.symbols[scope.index].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
         }
@@ -173,11 +170,30 @@ impl SymbolTable {
         Ok(())
     }
 
-    pub fn get_type(&self, idx: TypeIdx) -> &CType {
+    pub(crate) fn get_type(&self, idx: TypeIdx) -> &CType {
         &self.types[idx]
     }
 
-    pub fn get_type_mut(&mut self, idx: TypeIdx) -> &mut CType {
+    pub(crate) fn get_type_mut(&mut self, idx: TypeIdx) -> &mut CType {
         &mut self.types[idx]
+    }
+
+    pub(crate) fn new_scope(&mut self, parent: Option<Scope>, scope_type: ScopeType) -> Scope {
+        if let None = parent {
+            debug_assert!(scope_type == ScopeType::FileScope);
+        }
+
+        let new_scope = Scope {
+            scope_type,
+            parent_scope: parent.map(|s| s.index),
+            index: self.scopes.len(),
+        };
+
+        self.scopes.push(new_scope);
+        new_scope
+    }
+
+    pub(crate) fn get_parent_scope(&self, scope: Scope) -> Option<Scope> {
+        scope.parent_scope.map(|idx| self.scopes[idx])
     }
 }
