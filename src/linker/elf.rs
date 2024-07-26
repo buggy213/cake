@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::{io::Read, mem::size_of};
 
 use bitflags::bitflags;
 use byteorder::{ByteOrder, ReadBytesExt, LE};
@@ -407,6 +407,23 @@ impl Elf64Header {
             header_name_section_idx,
         })
     }
+
+    fn size() -> usize {
+        16 // e_ident
+        + size_of::<Elf64Half>() // e_type
+        + size_of::<Elf64Half>() // e_machine
+        + size_of::<Elf64Word>() // e_version
+        + size_of::<Elf64Addr>() // e_entry
+        + size_of::<Elf64Off>() // e_phoff
+        + size_of::<Elf64Off>() // e_shoff
+        + size_of::<Elf64Word>() // e_flags
+        + size_of::<Elf64Half>() // e_ehsize
+        + size_of::<Elf64Half>() // e_phentsize
+        + size_of::<Elf64Half>() // e_phnum
+        + size_of::<Elf64Half>() // e_shentsize
+        + size_of::<Elf64Half>() // e_shnum
+        + size_of::<Elf64Half>() // e_shstrndx
+    }
 }
 
 /* 
@@ -508,7 +525,14 @@ typedef struct {
 */
 
 pub struct Elf64ProgramHeader {
-
+    segment_type: ElfSegmentType,
+    flags: ElfSegmentPermissions,
+    offset: Elf64Off,
+    vaddr: Elf64Addr,
+    paddr: Elf64Addr,
+    file_size: Elf64Xword,
+    mem_size: Elf64Xword,
+    align: Elf64Xword
 }
 
 pub struct Elf {
@@ -556,8 +580,15 @@ impl<'buffer> ReadElf<'buffer> {
     }
 }
 
+trait ElfRead {
+
+}
+
 pub struct WriteElf {
     elf: Elf,
     section_data: Vec<Vec<u8>>
 }
 
+trait ElfWrite {
+
+}
