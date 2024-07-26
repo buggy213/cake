@@ -37,15 +37,14 @@ pub(crate) enum FunctionSpecifier {
     None
 }
 
-pub(crate) type AggregateMember = (String, Box<QualifiedType>);
+pub(crate) type AggregateMember = (String, QualifiedType);
 #[derive(Debug, Clone)]
 pub(crate) struct QualifiedType {
     pub(crate) base_type: CType,
     pub(crate) qualifier: TypeQualifier
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum CType {
+pub(crate) enum CanonicalType {
     // "Canonical" types go into symbol table, should try to only keep 1 around
     // if possible. Incomplete types can be std::mem::replace'd once they are completed
     // in addition, they do not specify type qualifiers (though their members might)
@@ -67,7 +66,10 @@ pub(crate) enum CType {
         tag: Option<String>,
         members: Vec<EnumVariant>,
     },
+}
 
+#[derive(Debug, Clone)]
+pub(crate) enum CType {
     // Derived / basic types can be passed around more freely
     BasicType {
         basic_type: BasicType,
@@ -93,11 +95,12 @@ pub(crate) enum CType {
     // Pointers into symbol table to avoid having deep copies of highly-nested structs / unions
     // need to be careful to avoid circular / recursive structs (infinite size!)
     StructureTypeRef {
-        symtab_idx: TypeIdx,
-        qualifier: TypeQualifier
+        symtab_idx: TypeIdx
     },
     UnionTypeRef {
-        symtab_idx: TypeIdx,
-        qualifier: TypeQualifier
+        symtab_idx: TypeIdx
+    },
+    EnumTypeRef {
+        symtab_idx: TypeIdx
     }
 }

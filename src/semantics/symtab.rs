@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::parser::ast::{ASTNode, Constant};
 
-use super::types::{CType, QualifiedType};
+use super::types::{CType, CanonicalType, QualifiedType};
 
 // "function prototype scope" not included, 
 // just ignore symbol table when processing a function prototype
@@ -48,14 +48,14 @@ pub(crate) enum Symbol {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TypeIdx(usize);
-impl Index<TypeIdx> for Vec<CType> {
-    type Output = CType;
+impl Index<TypeIdx> for Vec<CanonicalType> {
+    type Output = CanonicalType;
 
     fn index(&self, index: TypeIdx) -> &Self::Output {
         return &self[index.0];
     }
 }
-impl IndexMut<TypeIdx> for Vec<CType> {
+impl IndexMut<TypeIdx> for Vec<CanonicalType> {
     fn index_mut(&mut self, index: TypeIdx) -> &mut Self::Output {
         return &mut self[index.0];
     }
@@ -69,7 +69,7 @@ pub(crate) struct SymbolTable {
     symbols: Vec<HashMap<String, Symbol>>,
     labels: Vec<HashMap<String, Rc<ASTNode>>>,
     tags: Vec<HashMap<String, TypeIdx>>,
-    types: Vec<CType>
+    types: Vec<CanonicalType>
 }
 
 pub(crate) struct ImmutableScopedSymbolTable<'a> {
@@ -94,12 +94,12 @@ impl SymbolTable {
     }
 
     // look in current scope and all parent scopes
-    pub(crate) fn lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CType> {
+    pub(crate) fn lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CanonicalType> {
         self.lookup_tag_type_idx(scope, tag)
             .map(|idx| &self.types[idx])
     }
 
-    pub(crate) fn lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Option<&mut CType> {
+    pub(crate) fn lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Option<&mut CanonicalType> {
         self.lookup_tag_type_idx(scope, tag)
             .map(|idx| &mut self.types[idx])
     }
@@ -120,12 +120,12 @@ impl SymbolTable {
     }
 
     // only look in current scope
-    pub(crate) fn direct_lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CType> {
+    pub(crate) fn direct_lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CanonicalType> {
         self.direct_lookup_tag_type_idx(scope, tag)
             .map(|idx| &self.types[idx])
     }
 
-    pub(crate) fn direct_lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Option<&mut CType> {
+    pub(crate) fn direct_lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Option<&mut CanonicalType> {
         self.direct_lookup_tag_type_idx(scope, tag)
             .map(|idx| &mut self.types[idx])
     }
@@ -138,21 +138,13 @@ impl SymbolTable {
         }
     }
 
-    pub(crate) fn add_type(&mut self, ctype: CType) -> TypeIdx {
+    pub(crate) fn add_type(&mut self, ctype: CanonicalType) -> TypeIdx {
         let type_idx = TypeIdx(self.types.len() - 1);
         self.types.push(ctype);
         type_idx
     }
 
     pub(crate) fn add_tag(&mut self, scope: Scope, name: String, tag: TypeIdx) -> Result<(), SymtabError> {
-        match self.types[tag] {
-            CType::UnionType { .. }
-            | CType::StructureType { .. }
-            | CType::EnumerationType { .. } => {}
-
-            _ => return Err(SymtabError::NotATag(name))
-        }
-
         if self.tags[scope.index].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
         }
@@ -170,11 +162,11 @@ impl SymbolTable {
         Ok(())
     }
 
-    pub(crate) fn get_type(&self, idx: TypeIdx) -> &CType {
+    pub(crate) fn get_type(&self, idx: TypeIdx) -> &CanonicalType {
         &self.types[idx]
     }
 
-    pub(crate) fn get_type_mut(&mut self, idx: TypeIdx) -> &mut CType {
+    pub(crate) fn get_type_mut(&mut self, idx: TypeIdx) -> &mut CanonicalType {
         &mut self.types[idx]
     }
 
