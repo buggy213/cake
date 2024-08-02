@@ -8,14 +8,14 @@ use super::types::{CType, CanonicalType, QualifiedType};
 
 // "function prototype scope" not included, 
 // just ignore symbol table when processing a function prototype
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeType {
     BlockScope,
     FunctionScope,
     FileScope
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Scope {
     scope_type: ScopeType,
     parent_scope: Option<usize>,

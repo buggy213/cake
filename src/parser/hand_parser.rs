@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{parser::ast::Constant, scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::{symtab::{Linkage, Scope, ScopeType, StorageClass, Symbol, SymbolTable, SymtabError, TypeIdx}, types::{AggregateMember, BasicType, CType, CanonicalType, FunctionSpecifier, QualifiedType, TypeQualifier}}};
 
-use super::ast::ASTNode;
+use super::ast::{ASTNode, ExpressionNode, Identifier};
 
 type CTokenStream<'a> = crate::scanner::RawTokenStream<'a, CLexemes>;
 
@@ -63,9 +63,12 @@ macro_rules! materialize_parse_node_children {
 macro_rules! eat_or_error {
     ($toks:expr, $tok:path) => {
         match $toks.peek() {
-            Some(($tok, _, _)) => { $toks.eat($tok); }
-            Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)); }
-            None => { return Err(ParseError::UnexpectedEOF); }
+            Some(($tok, _, _)) => { 
+                $toks.eat($tok);
+                Ok(())
+            }
+            Some((other, _, _)) => { Err(ParseError::UnexpectedToken(other)) }
+            None => { Err(ParseError::UnexpectedEOF) }
         }   
     };
 }
@@ -125,7 +128,9 @@ enum ParseError {
     #[error("at least on type specifier required in declaration")]
     MissingTypeSpecifier,
     #[error("error while parsing basic type")]
-    BasicTypeError
+    BasicTypeError,
+    #[error("member access (with '.' or '->' operators) expects identifier, not arbitrary expression")]
+    BadMemberAccess,
 }
 
 struct ParserState {
@@ -147,33 +152,550 @@ impl ParserState {
 }
 
 // TODO: error recovery
-fn parse_expr(toks: &mut CTokenStream, state: &mut ParserState) {
-    
+#[derive(Debug, Clone)]
+enum Atom {
+    Identifier(Identifier),
+    Constant(Constant),
+    StringLiteral(String)
 }
 
-fn parse_postfix_expr(toks: &mut CTokenStream, state: &mut ParserState) {
-
-}
-
-fn parse_primary_expr(toks: &mut CTokenStream, state: &mut ParserState) {
-    let (lookahead, _, _) = toks.peek().expect("bad");
-    match lookahead {
-        CLexemes::Identifier => todo!(),
-        CLexemes::IntegerConst => todo!(),
-        CLexemes::FloatConst => todo!(),
-        CLexemes::CharConst => todo!(),
-        CLexemes::OctalCharConst => todo!(),
-        CLexemes::StringConst => todo!(),
-        
-        CLexemes::LParen => {
-            toks.eat(CLexemes::LParen);
-            parse_expr(toks, state);
-            toks.eat(CLexemes::RParen);
-        },
-
-        _ => panic!("bad")
+impl From<Atom> for ExpressionNode {
+    fn from(value: Atom) -> Self {
+        match value {
+            Atom::Identifier(ident) => ExpressionNode::Identifier(ident, None),
+            Atom::Constant(constant) => ExpressionNode::Constant(constant),
+            Atom::StringLiteral(string) => ExpressionNode::StringLiteral(string),
+        }
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+enum Operator {
+    // "ordinary" operators
+    Increment,
+    Decrement,
+    Dot,
+    Arrow,
+    Plus,
+    Minus,
+    Bang,
+    Tilde,
+    Star,
+    BitAnd,
+    Sizeof,
+    Slash,
+    Percent,
+    RShift,
+    LShift,
+    Lt,
+    Gt,
+    Leq,
+    Geq,
+    Eq,
+    Neq,
+    Xor,
+    BitOr,
+    And,
+    Or,
+    Assign,
+    Comma,
+
+    // special cases - '(' can be a function call or delimiter for a primary-expression
+    LParen,
+    // '[' can be used for array indexing
+    LBracket,
+    // '?' and ':' collectively create a ternary
+    Question,
+    Colon
+
+}
+
+enum ExprPart {
+    Atom(Atom),
+    Operator(Operator)
+}
+
+fn parse_integer_const(text: &str) -> Constant {
+    todo!()
+}
+
+fn parse_float_const(text: &str) -> Constant {
+    todo!()
+}
+
+fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Option<ExprPart> {
+    match lexeme {
+        CLexemes::Increment => ExprPart::Operator(Operator::Increment),
+        CLexemes::Decrement => ExprPart::Operator(Operator::Decrement),
+        CLexemes::Dot => ExprPart::Operator(Operator::Dot),
+        CLexemes::Arrow => ExprPart::Operator(Operator::Arrow),
+        CLexemes::Plus => ExprPart::Operator(Operator::Plus),
+        CLexemes::Minus => ExprPart::Operator(Operator::Minus),
+        CLexemes::Bang => ExprPart::Operator(Operator::Bang),
+        CLexemes::Tilde => ExprPart::Operator(Operator::Tilde),
+        CLexemes::Star => ExprPart::Operator(Operator::Star),
+        CLexemes::BitAnd => ExprPart::Operator(Operator::BitAnd),
+        CLexemes::Sizeof => ExprPart::Operator(Operator::Sizeof),
+        CLexemes::Slash => ExprPart::Operator(Operator::Slash),
+        CLexemes::Percent => ExprPart::Operator(Operator::Percent),
+        CLexemes::RShift => ExprPart::Operator(Operator::RShift),
+        CLexemes::LShift => ExprPart::Operator(Operator::LShift),
+        CLexemes::Lt => ExprPart::Operator(Operator::Lt),
+        CLexemes::Gt => ExprPart::Operator(Operator::Gt),
+        CLexemes::Leq => ExprPart::Operator(Operator::Leq),
+        CLexemes::Geq => ExprPart::Operator(Operator::Geq),
+        CLexemes::Eq => ExprPart::Operator(Operator::Eq),
+        CLexemes::Neq => ExprPart::Operator(Operator::Neq),
+        CLexemes::Xor => ExprPart::Operator(Operator::Xor),
+        CLexemes::BitOr => ExprPart::Operator(Operator::BitOr),
+        CLexemes::And => ExprPart::Operator(Operator::And),
+        CLexemes::Or => ExprPart::Operator(Operator::Or),
+        CLexemes::Assign => ExprPart::Operator(Operator::Assign),
+        CLexemes::Comma => ExprPart::Operator(Operator::Comma),
+        CLexemes::LParen => ExprPart::Operator(Operator::LParen),
+        CLexemes::LBracket => ExprPart::Operator(Operator::LBracket),
+        CLexemes::Question => ExprPart::Operator(Operator::Question),
+        CLexemes::Colon => ExprPart::Operator(Operator::Colon),
+
+        CLexemes::Identifier => {
+            let identifier = Identifier::new(state.current_scope, text.to_string());
+            ExprPart::Atom(Atom::Identifier(identifier))  
+        },
+
+        CLexemes::IntegerConst => {
+            let int_const = parse_integer_const(text);
+            ExprPart::Atom(Atom::Constant(int_const))
+        },
+
+        CLexemes::FloatConst => {
+            let float_const = parse_float_const(text);
+            ExprPart::Atom(Atom::Constant(float_const))
+        },
+
+        CLexemes::StringConst => {
+            ExprPart::Atom(Atom::StringLiteral(text.to_string()))
+        },
+
+        _ => return None
+    };
+    todo!()
+}
+
+fn prefix_binding_power(op: Operator) -> Option<u32> {
+    match op {
+        Operator::Increment => Some(15),
+        Operator::Decrement => Some(15),
+        Operator::Plus => Some(15),
+        Operator::Minus => Some(15),
+        Operator::Bang => Some(15),
+        Operator::Tilde => Some(15),
+        Operator::Star => Some(15),
+        Operator::BitAnd => Some(15),
+        Operator::Sizeof => Some(15),
+        _ => None
+    }
+}
+
+fn postfix_binding_power(op: Operator) -> Option<u32> {
+    match op {
+        Operator::Increment => todo!(),
+        Operator::Decrement => todo!(),
+        Operator::LParen => todo!(),
+        Operator::LBracket => todo!(),
+
+        _ => return None
+    }
+    
+    todo!()
+}
+
+fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
+    match op {
+        Operator::Plus => todo!(),
+        Operator::Minus => todo!(),
+        Operator::Star => todo!(),
+        Operator::BitAnd => todo!(),
+        Operator::Slash => todo!(),
+        Operator::Percent => todo!(),
+        Operator::RShift => todo!(),
+        Operator::LShift => todo!(),
+        Operator::Lt => todo!(),
+        Operator::Gt => todo!(),
+        Operator::Leq => todo!(),
+        Operator::Geq => todo!(),
+        Operator::Eq => todo!(),
+        Operator::Neq => todo!(),
+        Operator::Xor => todo!(),
+        Operator::BitOr => todo!(),
+        Operator::And => todo!(),
+        Operator::Or => todo!(),
+        Operator::Assign => todo!(),
+        Operator::Comma => todo!(),
+
+        // grammatically, Dot / Arrow (member access, either directly or through a pointer)
+        // are considered "postfix", left-associative operators. however, like array subscript / function calls,
+        // they are a special case, since it is required for following token to be an identifier
+        // and not any arbitrary expression. something like
+        // ```
+        // struct example *s;
+        // s->(a + b);
+        // ```
+        // is clearly nonsensical;
+        Operator::Dot => todo!(),
+        Operator::Arrow => todo!(),
+
+        _ => return None
+    }
+    
+    todo!()
+}
+
+// precedence climbing ("Pratt parsing") algorithm with some special case handling
+// for C specific syntax. in the first pass, no type checking is done
+fn parse_expr(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    
+
+    todo!()
+}
+
+fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32) -> Result<ExpressionNode, ParseError> {
+    let mut lhs: ExpressionNode;
+    match toks.advance() {
+        Some((lexeme, text, _)) => {
+            match to_expr_part(lexeme, text, state) {
+                Some(ExprPart::Atom(atom)) => {
+                    lhs = atom.into();
+                },
+                Some(ExprPart::Operator(Operator::LParen)) => {
+                    lhs = parse_expr_rec(toks, state, 0)?;
+                    eat_or_error!(toks, CLexemes::LParen)?;
+                },
+                Some(ExprPart::Operator(op)) => {
+                    // it must be a prefix operator
+                    if let Some(power) = prefix_binding_power(op) {
+                        let rhs = parse_expr_rec(toks, state, power)?;
+                        match op {
+                            Operator::Increment => {
+                                lhs = ExpressionNode::PreIncrement(
+                                    Box::new(rhs),
+                                    None
+                                );
+                            },
+                            Operator::Decrement => {
+                                lhs = ExpressionNode::PreDecrement(
+                                    Box::new(rhs), 
+                                    None
+                                );
+                            },
+                            Operator::Plus => {
+                                lhs = ExpressionNode::UnaryPlus(
+                                    Box::new(rhs),
+                                    None    
+                                );
+                            },
+                            Operator::Minus => {
+                                lhs = ExpressionNode::UnaryMinus(
+                                    Box::new(rhs),
+                                    None    
+                                );
+                            },
+                            Operator::Bang => {
+                                lhs = ExpressionNode::Not(
+                                    Box::new(rhs),
+                                    None    
+                                );
+                            },
+                            Operator::Tilde => {
+                                lhs = ExpressionNode::BitwiseNot(
+                                    Box::new(rhs),
+                                    None    
+                                );
+                            },
+                            Operator::Star => {
+                                lhs = ExpressionNode::Dereference(
+                                    Box::new(rhs),
+                                    None    
+                                );
+                            },
+                            Operator::BitAnd => {
+                                lhs = ExpressionNode::AddressOf(
+                                    Box::new(rhs),
+                                    None    
+                                );
+                            },
+                            Operator::Sizeof => {
+                                // TODO: special lookahead for sizeof type name
+                                // (as opposed to sizeof an expression)
+                                lhs = ExpressionNode::Sizeof(
+                                    Box::new(rhs),
+                                    None    
+                                );
+                            },
+                            // to avoid cluttering with additional types,
+                            // no separate "PrefixOperator" enum. however,
+                            // op cannot be any other value
+                            _ => unreachable!()
+                        }
+                    }
+                    else {
+                        return Err(ParseError::UnexpectedToken(lexeme));
+                    }
+                },
+                None => return Err(ParseError::UnexpectedToken(lexeme)),
+            }
+        },
+        None => return Err(ParseError::UnexpectedEOF)
+    }
+
+    loop {
+        match toks.peek() {
+            Some((lexeme, text, _)) => {
+                match to_expr_part(lexeme, text, state) {
+                    Some(ExprPart::Operator(op)) => {
+                        if let Some(left_bp) = postfix_binding_power(op) {
+                            if left_bp < min_bp {
+                                // some higher precedence operator binds to lhs before op does
+                                break;
+                            }
+
+                            toks.eat(lexeme);
+
+                            match op {
+                                Operator::Increment => {
+                                    lhs = ExpressionNode::PostIncrement(
+                                        Box::new(lhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Decrement => {
+                                    lhs = ExpressionNode::PostDecrement(
+                                        Box::new(lhs), 
+                                        None
+                                    )
+                                },
+                            
+                                // function call / array subscript
+                                Operator::LParen => {
+                                    let arguments;
+                                    if let Some((CLexemes::RParen, _, _)) = toks.peek() {
+                                        arguments = Vec::new();
+                                    }
+                                    else {
+                                        arguments = todo!();
+                                    }
+
+                                    eat_or_error!(toks, CLexemes::RParen)?;
+
+                                    lhs = ExpressionNode::FunctionCall(
+                                        Box::new(lhs), 
+                                        arguments, 
+                                        None
+                                    );
+                                },
+                                Operator::LBracket => {
+                                    let index = parse_expr_rec(toks, state, 0)?;
+                                    eat_or_error!(toks, CLexemes::RBracket)?;
+                                    lhs = ExpressionNode::ArraySubscript(
+                                        Box::new(lhs), 
+                                        Box::new(index),
+                                        None 
+                                    );
+                                },
+                                
+                                _ => unreachable!()
+                            }
+
+                            continue;
+                        }
+                    
+                        if let Some((left_bp, right_bp)) = infix_binding_power(op) {
+                            if left_bp < min_bp {
+                                break;
+                            }
+
+                            toks.eat(lexeme);
+                            let rhs = parse_expr_rec(toks, state, right_bp)?;
+                            lhs = match op {
+                                Operator::Plus => {
+                                    ExpressionNode::Add(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Minus => {
+                                    ExpressionNode::Subtract(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Star => {
+                                    ExpressionNode::Multiply(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::BitAnd => {
+                                    ExpressionNode::BitwiseAnd(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Slash => {
+                                    ExpressionNode::Divide(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Percent => {
+                                    ExpressionNode::Modulo(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::RShift => {
+                                    ExpressionNode::RShift(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::LShift => {
+                                    ExpressionNode::LShift(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Lt => {
+                                    ExpressionNode::LessThan(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Gt => {
+                                    ExpressionNode::GreaterThan(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Leq => {
+                                    ExpressionNode::LessThanOrEqual(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Geq => {
+                                    ExpressionNode::GreaterThanOrEqual(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Eq => {
+                                    ExpressionNode::Equal(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Neq => {
+                                    ExpressionNode::NotEqual(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Xor => {
+                                    ExpressionNode::BitwiseXor(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::BitOr => {
+                                    ExpressionNode::BitwiseOr(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::And => {
+                                    ExpressionNode::LogicalAnd(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Or => {
+                                    ExpressionNode::LogicalOr(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Assign => {
+                                    ExpressionNode::SimpleAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::Comma => {
+                                    // should this be a separate function?
+                                    todo!()
+                                },
+                                Operator::Dot => {
+                                    if let ExpressionNode::Identifier(member, _) = rhs {
+                                        ExpressionNode::DotAccess(
+                                            Box::new(lhs), 
+                                            member, 
+                                            None    
+                                        )
+                                    }
+                                    else {
+                                        return Err(ParseError::BadMemberAccess);
+                                    }
+                                },
+                                Operator::Arrow => {
+                                    if let ExpressionNode::Identifier(member, _) = rhs {
+                                        ExpressionNode::ArrowAccess(
+                                            Box::new(lhs), 
+                                            member,
+                                            None 
+                                        )
+                                    }
+                                    else {
+                                        return Err(ParseError::BadMemberAccess);
+                                    }
+                                },
+                                _ => unreachable!()
+                            };
+
+                            continue;
+                        }
+
+                        break; // ? is this the right thing to do
+                    },
+                    Some(ExprPart::Atom(_)) => return Err(ParseError::UnexpectedToken(lexeme)),
+                    None => break,
+                }
+            },
+            None => return Err(ParseError::UnexpectedEOF)
+        }
+    }
+
+    todo!()
+}
+
 
 // <translation-unit> ::= <external-declaration>
 // | <translation-unit> <external-declaration>
@@ -455,7 +977,7 @@ fn parse_struct_declaration_list(toks: &mut CTokenStream, state: &mut ParserStat
             Some((_, _, _)) => {
                 let base_type = parse_specifier_qualifier_list(toks, state)?;
                 parse_struct_declarator_list(toks, state, base_type, &mut members)?;
-                eat_or_error!(toks, CLexemes::Semicolon);
+                eat_or_error!(toks, CLexemes::Semicolon)?;
             }
             None => { return Err(ParseError::UnexpectedEOF); }
         }
@@ -583,7 +1105,7 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
     }
 
     let members: Vec<AggregateMember> = parse_struct_declaration_list(toks, state)?;
-    eat_or_error!(toks, CLexemes::RBrace);
+    eat_or_error!(toks, CLexemes::RBrace)?;
 
     let struct_or_union_type = match specifier_type {
         StructOrUnion::Struct => {
@@ -946,7 +1468,7 @@ fn parse_abstract_declarator(toks: &mut CTokenStream, state: &mut ParserState, b
 struct PointerDeclarator(TypeQualifier);
 fn parse_pointer_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> Result<PointerDeclarator, ParseError> {
     let mut qualifier = TypeQualifier::empty();
-    eat_or_error!(toks, CLexemes::Star);
+    eat_or_error!(toks, CLexemes::Star)?;
     loop {
         match toks.peek() {
             Some((CLexemes::Const, _, _)) => {
@@ -969,7 +1491,7 @@ fn parse_pointer_declarator(toks: &mut CTokenStream, state: &mut ParserState) ->
 struct ArrayDeclarator(TypeQualifier, Option<usize>);
 fn parse_array_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ArrayDeclarator, ParseError> {
     let mut qualifier = TypeQualifier::empty();
-    eat_or_error!(toks, CLexemes::LBracket);
+    eat_or_error!(toks, CLexemes::LBracket)?;
     loop {
         match toks.peek() {
             Some((CLexemes::Restrict, _, _)) => {
@@ -990,7 +1512,7 @@ fn parse_array_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> R
                     |e| ParseError::BadArrayBound(e)
                 )?;
 
-                eat_or_error!(toks, CLexemes::RBracket);
+                eat_or_error!(toks, CLexemes::RBracket)?;
                 return Ok(ArrayDeclarator(qualifier, Some(size)));
             },
             Some((other, _, _)) => {
@@ -1014,7 +1536,7 @@ struct FunctionDeclarator {
 // will not support old-style function declarations because they are cringe
 // this code is used for both function prototypes and function definitions
 fn parse_function_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> Result<FunctionDeclarator, ParseError> {
-    eat_or_error!(toks, CLexemes::LParen);
+    eat_or_error!(toks, CLexemes::LParen)?;
     state.open_scope(ScopeType::FunctionScope);
     
     // ignore special case for empty parameter list
@@ -1087,7 +1609,7 @@ fn parse_function_declarator(toks: &mut CTokenStream, state: &mut ParserState) -
             Some((CLexemes::Ellipsis, _, _)) => {
                 toks.eat(CLexemes::Ellipsis);
                 varargs = true;
-                eat_or_error!(toks, CLexemes::RParen);
+                eat_or_error!(toks, CLexemes::RParen)?;
                 let declarator = FunctionDeclarator {
                     argument_types: parameter_types, 
                     varargs, 

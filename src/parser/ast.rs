@@ -32,11 +32,22 @@ pub(crate) enum ASTNode {
 }
 
 // Essentially just an index into symbol table. Borrow checker makes reference difficult (though maybe this is something to look into)
+#[derive(Debug, Clone)]
 pub(crate) struct Identifier {
     scope: Scope,
     name: String
 }
 
+impl Identifier {
+    pub fn new(scope: Scope, name: String) -> Self {
+        Identifier {
+            scope,
+            name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Constant {
     // won't make distinction between long / long long
     Int(i32),
@@ -52,64 +63,65 @@ pub(crate) enum Constant {
 }
 
 pub(crate) enum ExpressionNode {
-    CommaExpr(Vec<ExpressionNode>, CType),
+    CommaExpr(Vec<ExpressionNode>, Option<CType>),
     
-    SimpleAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    MultiplyAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    DivideAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    ModuloAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    AddAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    SubAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    LShiftAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    RShiftAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    AndAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    XorAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    OrAssign(Box<ExpressionNode>, Box<ExpressionNode>, CType),
+    SimpleAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    MultiplyAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    DivideAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    ModuloAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    AddAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    SubAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    LShiftAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    RShiftAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    AndAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    XorAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    OrAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
 
-    Ternary(Box<ExpressionNode>, Box<ExpressionNode>, Box<ExpressionNode>, CType),
+    Ternary(Box<ExpressionNode>, Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
 
-    LogicalAnd(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    LogicalOr(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    BitwiseAnd(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    BitwiseOr(Box<ExpressionNode>, Box<ExpressionNode>, CType),
+    LogicalAnd(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    LogicalOr(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    BitwiseAnd(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    BitwiseOr(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    BitwiseXor(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
     
-    Equal(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    NotEqual(Box<ExpressionNode>, Box<ExpressionNode>, CType),
+    Equal(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    NotEqual(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
 
-    LessThan(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    GreaterThan(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    LessThanOrEqual(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    GreaterThanOrEqual(Box<ExpressionNode>, Box<ExpressionNode>, CType),
+    LessThan(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    GreaterThan(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    LessThanOrEqual(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    GreaterThanOrEqual(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
 
-    LShift(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    RShift(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    Multiply(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    Divide(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    Modulo(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    Add(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    Subtract(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    Cast(Box<ExpressionNode>, Box<ExpressionNode>, CType),
+    LShift(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    RShift(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    Multiply(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    Divide(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    Modulo(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    Add(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    Subtract(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    Cast(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
 
-    PreIncrement(Box<ExpressionNode>, CType),
-    PreDecrement(Box<ExpressionNode>, CType),
-    Sizeof(Box<ExpressionNode>, CType), 
-    AddressOf(Box<ExpressionNode>, CType),
-    Dereference(Box<ExpressionNode>, CType),
-    UnaryPlus(Box<ExpressionNode>, CType),
-    UnaryMinus(Box<ExpressionNode>, CType),
-    BitwiseNot(Box<ExpressionNode>, CType),
-    Not(Box<ExpressionNode>, CType),
+    PreIncrement(Box<ExpressionNode>, Option<CType>),
+    PreDecrement(Box<ExpressionNode>, Option<CType>),
+    Sizeof(Box<ExpressionNode>, Option<CType>), 
+    AddressOf(Box<ExpressionNode>, Option<CType>),
+    Dereference(Box<ExpressionNode>, Option<CType>),
+    UnaryPlus(Box<ExpressionNode>, Option<CType>),
+    UnaryMinus(Box<ExpressionNode>, Option<CType>),
+    BitwiseNot(Box<ExpressionNode>, Option<CType>),
+    Not(Box<ExpressionNode>, Option<CType>),
 
-    PostIncrement(Box<ExpressionNode>, CType),
-    PostDecrement(Box<ExpressionNode>, CType),
-    ArraySubscript(Box<ExpressionNode>, Box<ExpressionNode>, CType),
-    FunctionCall(Box<ExpressionNode>, Vec<ExpressionNode>, CType),
-    DotAccess(Box<ExpressionNode>, Identifier),
-    ArrowAccess(Box<ExpressionNode>, Identifier),
+    PostIncrement(Box<ExpressionNode>, Option<CType>),
+    PostDecrement(Box<ExpressionNode>, Option<CType>),
+    ArraySubscript(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    FunctionCall(Box<ExpressionNode>, Vec<ExpressionNode>, Option<CType>),
+    DotAccess(Box<ExpressionNode>, Identifier, Option<CType>),
+    ArrowAccess(Box<ExpressionNode>, Identifier, Option<CType>),
     // TODO: add support for compound initializers
     // CompoundInitializer
 
-    Identifier(Identifier),
+    Identifier(Identifier, Option<CType>),
     Constant(Constant),
     StringLiteral(String)
 
