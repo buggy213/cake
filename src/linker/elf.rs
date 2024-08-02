@@ -535,14 +535,42 @@ pub struct Elf64ProgramHeader {
     align: Elf64Xword
 }
 
+pub struct StringTableView {
+    
+}
+
+pub struct StringTableSection {
+    strings: Vec<(String, usize)>,
+}
+
+pub struct SymbolTableSection {
+    entries: Vec<Elf64Symbol>
+}
+
+// representation of ELF section. Owns data associated w/ section
+pub enum Section {
+    ProgBits {
+
+    },
+    StringTable(StringTableSection),
+    SymbolTable(SymbolTableSection)
+    
+}
+
+// representation of ELF section. Does not own data associated w/ section
+pub enum SectionView {
+    StringTable(StringTableView)
+}
+
 pub struct Elf {
     header: Elf64Header,
     section_headers: Vec<Elf64SectionHeader>,
 }
 
+
 impl Elf {
 
-}
+} 
 
 pub struct ReadElf<'buffer> {
     elf: Elf,
@@ -580,15 +608,6 @@ impl<'buffer> ReadElf<'buffer> {
     }
 }
 
-trait ElfRead {
-
-}
-
 pub struct WriteElf {
     elf: Elf,
-    section_data: Vec<Vec<u8>>
-}
-
-trait ElfWrite {
-
 }
