@@ -1,9 +1,9 @@
 use core::panic;
-use std::{collections::VecDeque, env::var, num::ParseIntError};
+use std::{collections::VecDeque, env::var, num::ParseIntError, os::linux::raw::stat};
 
 use thiserror::Error;
 
-use crate::{parser::ast::Constant, scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::{symtab::{Linkage, Scope, ScopeType, StorageClass, Symbol, SymbolTable, SymtabError, TypeIdx}, types::{AggregateMember, CType, FunctionSpecifier, QualifiedType, TypeQualifier}}};
+use crate::{parser::ast::Constant, scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::{symtab::{Linkage, Scope, ScopeType, StorageClass, Symbol, SymbolTable, SymtabError, TypeIdx}, types::{AggregateMember, BasicType, CType, CanonicalType, FunctionSpecifier, QualifiedType, TypeQualifier}}};
 
 use super::ast::ASTNode;
 
@@ -113,7 +113,19 @@ enum ParseError {
     #[error("function specifier (inline) only allowed in function definitions")]
     BadFunctionSpecifier,
     #[error("only register storage class allowed in function argument list")]
-    BadStorageClassInArgumentList
+    BadStorageClassInArgumentList,
+    #[error("incomplete types (void, undefined structs, etc.) not allowed in function arguments")]
+    IncompleteFunctionArgument,
+    #[error("internal parsing error: canonical types should not be used here")]
+    CanonicalTypeOutsideSymtab,
+    #[error("unmatched parentheses in declarator")]
+    UnmatchedParensInDeclarator,
+    #[error("multiple types in declaration")]
+    MultipleTypeSpecifiersInDeclaration,
+    #[error("at least on type specifier required in declaration")]
+    MissingTypeSpecifier,
+    #[error("error while parsing basic type")]
+    BasicTypeError
 }
 
 struct ParserState {
@@ -190,104 +202,290 @@ fn parse_external_declaration(toks: &mut CTokenStream, state: &mut ParserState) 
 }
 
 struct DeclarationSpecifiers(QualifiedType, StorageClass, FunctionSpecifier);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum BasicTypeLexeme {
+    Void,
+    Unsigned,
+    Signed,
+    Char,
+    Short,
+    Long,
+    Float,
+    Double,
+    Int
+}
+
+impl TryFrom<CLexemes> for BasicTypeLexeme {
+    type Error = ParseError;
+
+    fn try_from(value: CLexemes) -> Result<Self, Self::Error> {
+        match value {
+            CLexemes::Void => Ok(Self::Void),
+            CLexemes::Unsigned => Ok(Self::Unsigned),
+            CLexemes::Signed => Ok(Self::Signed),
+            CLexemes::Char => Ok(Self::Char),
+            CLexemes::Short => Ok(Self::Short),
+            CLexemes::Long => Ok(Self::Long),
+            CLexemes::Float => Ok(Self::Float),
+            CLexemes::Double => Ok(Self::Double),
+            CLexemes::Int => Ok(Self::Int),
+            _ => Err(ParseError::BasicTypeError)
+        }
+    }
+}
+
+fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CType, ParseError> {
+    // should be ok for now, optimize later
+    match basic_type_specifiers {
+        [BasicTypeLexeme::Void] => {
+            Ok(CType::Void)
+        },
+        // default is signed char
+        [BasicTypeLexeme::Char] | [BasicTypeLexeme::Signed, BasicTypeLexeme::Char] => {
+            Ok(CType::BasicType { basic_type: BasicType::Char })
+        },
+        [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Char] => {
+            Ok(CType::BasicType { basic_type: BasicType::UChar })
+        },
+        [BasicTypeLexeme::Short] | [BasicTypeLexeme::Signed, BasicTypeLexeme::Short]
+        | [BasicTypeLexeme::Short, BasicTypeLexeme::Int]
+        | [BasicTypeLexeme::Signed, BasicTypeLexeme::Short, BasicTypeLexeme::Int] => {
+            Ok(CType::BasicType { basic_type: BasicType::Short })
+        },
+        [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Short]
+        | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Short, BasicTypeLexeme::Int] => {
+            Ok(CType::BasicType { basic_type: BasicType::UShort })
+        },
+        [BasicTypeLexeme::Int] | [BasicTypeLexeme::Signed]
+        | [BasicTypeLexeme::Signed, BasicTypeLexeme::Int] => {
+            Ok(CType::BasicType { basic_type: BasicType::Int })
+        },
+        [BasicTypeLexeme::Unsigned] | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Int] => {
+            Ok(CType::BasicType { basic_type: BasicType::UInt })
+        },
+        [BasicTypeLexeme::Long] | [BasicTypeLexeme::Signed, BasicTypeLexeme::Long]
+        | [BasicTypeLexeme::Long, BasicTypeLexeme::Int]
+        | [BasicTypeLexeme::Signed, BasicTypeLexeme::Long, BasicTypeLexeme::Int]
+        | [BasicTypeLexeme::Long, BasicTypeLexeme::Long]
+        | [BasicTypeLexeme::Signed, BasicTypeLexeme::Long, BasicTypeLexeme::Long]
+        | [BasicTypeLexeme::Long, BasicTypeLexeme::Long, BasicTypeLexeme::Int]
+        | [BasicTypeLexeme::Signed, BasicTypeLexeme::Long, BasicTypeLexeme::Long, BasicTypeLexeme::Int] => {
+            Ok(CType::BasicType { basic_type: BasicType::Long })
+        },
+        [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long]
+        | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long, BasicTypeLexeme::Int]
+        | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long, BasicTypeLexeme::Long]
+        | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long, BasicTypeLexeme::Long, BasicTypeLexeme::Int] => {
+            Ok(CType::BasicType { basic_type: BasicType::ULong })
+        },
+        [BasicTypeLexeme::Double] | [BasicTypeLexeme::Long, BasicTypeLexeme::Double] => {
+            Ok(CType::BasicType { basic_type: BasicType::Double })
+        },
+        [BasicTypeLexeme::Float] => {
+            Ok(CType::BasicType { basic_type: BasicType::Float })
+        },
+        
+        _ => { Err(ParseError::BasicTypeError) }
+    }
+}
 
 // no typedefs for now
-fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState) -> Result<DeclarationSpecifiers, ParseError> {
+fn parse_declaration_specifiers_base(toks: &mut CTokenStream, state: &mut ParserState, parse_function_specifiers: bool, parse_storage_class: bool) -> Result<DeclarationSpecifiers, ParseError> {
     let mut storage_class: StorageClass = StorageClass::None;
-    let mut type_qualifier: TypeQualifier = TypeQualifier::empty();
     let mut function_specifier: FunctionSpecifier = FunctionSpecifier::None;
-    let mut primitive_type_specifiers: Vec<CLexemes> = Vec::new();
-    let mut struct_or_union_or_enum: Option<TypeIdx> = None;
-    while let Some((lexeme, _, _)) = toks.peek() {
-        match lexeme {
-            CLexemes::Typedef => {
-                todo!("add typedef support")
-            },
-            
-            // storage class specifiers, only 1 allowed
-            CLexemes::Extern => {
-                if storage_class != StorageClass::None {
-                    return Err(ParseError::UnexpectedStorageClass);
+    let mut type_qualifier: TypeQualifier = TypeQualifier::empty();
+    let mut primitive_type_specifiers: Vec<BasicTypeLexeme> = Vec::new();
+    let mut struct_or_union_or_enum: Option<CType> = None;
+    loop {
+        match toks.peek() {
+            Some((lexeme, _, _)) => match lexeme {
+                CLexemes::Extern
+                | CLexemes::Auto
+                | CLexemes::Register
+                | CLexemes::Static
+                | CLexemes::Typedef if !parse_storage_class => {
+                    break;
                 }
-                toks.eat(CLexemes::Extern);
-                storage_class = StorageClass::Extern;
-            },
-            CLexemes::Auto => {
-                if storage_class != StorageClass::None {
-                    return Err(ParseError::UnexpectedStorageClass);
-                }
-                toks.eat(CLexemes::Auto);
-                storage_class = StorageClass::Auto;
-            },
-            CLexemes::Register => {
-                if storage_class != StorageClass::None {
-                    return Err(ParseError::UnexpectedStorageClass);
-                }
-                toks.eat(CLexemes::Register);
-                storage_class = StorageClass::Register;
-            },
-            CLexemes::Static => {
-                if storage_class != StorageClass::None {
-                    return Err(ParseError::UnexpectedStorageClass);
-                }
-                toks.eat(CLexemes::Static);
-                storage_class = StorageClass::Static;
-            },
 
-            // type qualifiers, multiple allowed 
-            CLexemes::Const => {
-                toks.eat(CLexemes::Const);
-                type_qualifier |= TypeQualifier::Const;
-            },
-            CLexemes::Restrict => {
-                return Err(ParseError::BadRestrictQualifier);
-            },
-            CLexemes::Volatile => {
-                toks.eat(CLexemes::Volatile);
-                type_qualifier |= TypeQualifier::Volatile;
-            },
-            
-            // function specifiers
-            CLexemes::Inline => {
-                toks.eat(CLexemes::Inline);
-                function_specifier = FunctionSpecifier::Inline;
-            }
+                CLexemes::Typedef => {
+                    todo!("add typedef support")
+                },
 
-            // according to standard, these are allowed in any order and allowed to be mixed w/ any part of the specifier
-            // (why???)
-            CLexemes::Void
-            | CLexemes::Char
-            | CLexemes::Short
-            | CLexemes::Int
-            | CLexemes::Long
-            | CLexemes::Float
-            | CLexemes::Double
-            | CLexemes::Signed
-            | CLexemes::Unsigned => {
-                toks.eat(lexeme);
-                primitive_type_specifiers.push(lexeme);
-            },
+                // storage class specifiers, only 1 allowed
+                CLexemes::Extern => {
+                    if storage_class != StorageClass::None {
+                        return Err(ParseError::UnexpectedStorageClass);
+                    }
+                    toks.eat(CLexemes::Extern);
+                    storage_class = StorageClass::Extern;
+                },
+                CLexemes::Auto => {
+                    if storage_class != StorageClass::None {
+                        return Err(ParseError::UnexpectedStorageClass);
+                    }
+                    toks.eat(CLexemes::Auto);
+                    storage_class = StorageClass::Auto;
+                },
+                CLexemes::Register => {
+                    if storage_class != StorageClass::None {
+                        return Err(ParseError::UnexpectedStorageClass);
+                    }
+                    toks.eat(CLexemes::Register);
+                    storage_class = StorageClass::Register;
+                },
+                CLexemes::Static => {
+                    if storage_class != StorageClass::None {
+                        return Err(ParseError::UnexpectedStorageClass);
+                    }
+                    toks.eat(CLexemes::Static);
+                    storage_class = StorageClass::Static;
+                },
 
-            // struct / union specifier (syntactically very similar!)
-            CLexemes::Struct
-            | CLexemes::Union => {
-
-            }
-
-            // enum specifier
-            CLexemes::Enum => {
+                // type qualifiers, multiple allowed 
+                CLexemes::Const => {
+                    toks.eat(CLexemes::Const);
+                    type_qualifier |= TypeQualifier::Const;
+                },
+                CLexemes::Restrict => {
+                    return Err(ParseError::BadRestrictQualifier);
+                },
+                CLexemes::Volatile => {
+                    toks.eat(CLexemes::Volatile);
+                    type_qualifier |= TypeQualifier::Volatile;
+                },
                 
-            }
+                // function specifiers
+                CLexemes::Inline => {
+                    if !parse_function_specifiers {
+                        break;
+                    }
+                    toks.eat(CLexemes::Inline);
+                    function_specifier = FunctionSpecifier::Inline;
+                }
 
-            _ => todo!()
+                // according to standard, these are allowed in any order and allowed to be mixed w/ any part of the specifier
+                // (why???)
+                CLexemes::Void
+                | CLexemes::Char
+                | CLexemes::Short
+                | CLexemes::Int
+                | CLexemes::Long
+                | CLexemes::Float
+                | CLexemes::Double
+                | CLexemes::Signed
+                | CLexemes::Unsigned if struct_or_union_or_enum.is_none() => {
+                    toks.eat(lexeme);
+                    primitive_type_specifiers.push(lexeme.try_into()?);
+                },
+
+                CLexemes::Void
+                | CLexemes::Char
+                | CLexemes::Short
+                | CLexemes::Int
+                | CLexemes::Long
+                | CLexemes::Float
+                | CLexemes::Double
+                | CLexemes::Signed
+                | CLexemes::Unsigned => {
+                    return Err(ParseError::MultipleTypeSpecifiersInDeclaration);
+                },
+
+                // struct / union specifier (syntactically very similar!)
+                CLexemes::Struct if struct_or_union_or_enum.is_none() && primitive_type_specifiers.is_empty() => {
+                    let struct_type = parse_struct_or_union_specifier(toks, state)?;
+                    struct_or_union_or_enum = Some(CType::StructureTypeRef { symtab_idx: struct_type });
+                }
+                CLexemes::Union if struct_or_union_or_enum.is_none() && primitive_type_specifiers.is_empty() => {
+                    let union_type = parse_struct_or_union_specifier(toks, state)?;
+                    struct_or_union_or_enum = Some(CType::UnionTypeRef { symtab_idx: union_type });
+                }
+
+                CLexemes::Struct
+                | CLexemes::Union => {
+                    return Err(ParseError::MultipleTypeSpecifiersInDeclaration);
+                }
+
+                // enum specifier
+                CLexemes::Enum if struct_or_union_or_enum.is_none() && primitive_type_specifiers.is_empty() => {
+                    let enum_type = parse_enum_specifier(toks, state)?;
+                    struct_or_union_or_enum = Some(CType::EnumTypeRef { symtab_idx: enum_type });
+                }
+
+                CLexemes::Enum => {
+                    return Err(ParseError::MultipleTypeSpecifiersInDeclaration);
+                }
+
+                _ => {
+                    break;
+                }
+            },
+            None => { return Err(ParseError::UnexpectedEOF); }
         }
     }
 
-    todo!()
+    let qualified_type = if !primitive_type_specifiers.is_empty() {
+        let basic_type = parse_basic_type(&mut primitive_type_specifiers)?;
+        QualifiedType {
+            base_type: basic_type,
+            qualifier: type_qualifier
+        }
+    }
+    else if let Some(ty) = struct_or_union_or_enum {
+        QualifiedType {
+            base_type: ty,
+            qualifier: type_qualifier
+        }
+    }
+    else {
+        return Err(ParseError::MissingTypeSpecifier)
+    };
+    
+    Ok(DeclarationSpecifiers(qualified_type, storage_class, function_specifier))
 }
 
-fn parse_struct_declaration(toks: &mut CTokenStream, state: &mut ParserState) {
+fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState) -> Result<DeclarationSpecifiers, ParseError> {
+    parse_declaration_specifiers_base(toks, state, true, true)
+}
 
+fn parse_struct_declaration_list(toks: &mut CTokenStream, state: &mut ParserState) -> Result<Vec<AggregateMember>, ParseError> {
+    let mut members: Vec<AggregateMember> = Vec::new();
+    loop {
+        match toks.peek() {
+            Some((CLexemes::RBrace, _, _)) => { break; }
+            Some((_, _, _)) => {
+                let base_type = parse_specifier_qualifier_list(toks, state)?;
+                parse_struct_declarator_list(toks, state, base_type, &mut members)?;
+                eat_or_error!(toks, CLexemes::Semicolon);
+            }
+            None => { return Err(ParseError::UnexpectedEOF); }
+        }
+    }
+    Ok(members)
+}
+
+fn parse_struct_declarator_list(toks: &mut CTokenStream, state: &mut ParserState, base_type: QualifiedType, members: &mut Vec<AggregateMember>) -> Result<(), ParseError> {
+    // TODO: support bitfields
+    
+    let (member_type, member_name) = parse_declarator(toks, state, base_type.clone())?;
+    members.push((member_name, member_type));
+    loop {
+        match toks.peek() {
+            Some((CLexemes::Comma, _, _)) => {
+                // hopefully cloning is not expensive in the common case
+                let (member_type, member_name) = parse_declarator(toks, state, base_type.clone())?;
+                members.push((member_name, member_type));
+            },
+            Some((_, _, _)) => {
+                return Ok(())
+            },
+            None => { return Err(ParseError::UnexpectedEOF); }
+        }
+    }
+}
+
+fn parse_specifier_qualifier_list(toks: &mut CTokenStream, state: &mut ParserState) -> Result<QualifiedType, ParseError> {
+    let DeclarationSpecifiers(qualified_type, _, _) = parse_declaration_specifiers_base(toks, state, false, false)?;
+    Ok(qualified_type)
 }
 
 fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Result<TypeIdx, ParseError> {
@@ -329,10 +527,10 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
                     match lookup {
                         Some(tag_type) => {
                             match state.symbol_table.get_type(tag_type) {
-                                CType::UnionType { .. } if specifier_type == StructOrUnion::Union => {
+                                CanonicalType::UnionType { .. } if specifier_type == StructOrUnion::Union => {
                                     return Ok(tag_type);
                                 },
-                                CType::StructureType { .. } if specifier_type == StructOrUnion::Struct => {
+                                CanonicalType::StructureType { .. } if specifier_type == StructOrUnion::Struct => {
                                     return Ok(tag_type);
                                 }
                                 _ => { 
@@ -345,10 +543,10 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
                         None => {
                             let incomplete_type = match specifier_type {
                                 StructOrUnion::Struct => {
-                                    CType::IncompleteStructureType { tag: struct_or_union_tag.clone().unwrap() }
+                                    CanonicalType::IncompleteStructureType { tag: struct_or_union_tag.clone().unwrap() }
                                 },
                                 StructOrUnion::Union => {
-                                    CType::IncompleteUnionType { tag: struct_or_union_tag.clone().unwrap() }
+                                    CanonicalType::IncompleteUnionType { tag: struct_or_union_tag.clone().unwrap() }
                                 },
                             };
                             let incomplete_type = state.symbol_table.add_type(incomplete_type);
@@ -384,13 +582,24 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
         }
     }
 
-    let members: Vec<AggregateMember> = Vec::new();
-    loop {
+    let members: Vec<AggregateMember> = parse_struct_declaration_list(toks, state)?;
+    eat_or_error!(toks, CLexemes::RBrace);
 
+    let struct_or_union_type = match specifier_type {
+        StructOrUnion::Struct => {
+            CanonicalType::StructureType { tag: struct_or_union_tag.clone(), members }
+        },
+        StructOrUnion::Union => {
+            CanonicalType::UnionType { tag: struct_or_union_tag.clone(), members }
+        },
+    };
+
+    let type_idx = state.symbol_table.add_type(struct_or_union_type);
+    if let Some(name) = struct_or_union_tag {
+        state.symbol_table.add_tag(state.current_scope, name, type_idx)?;
     }
 
-
-    todo!()
+    Ok(type_idx)
 }
 
 fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Result<TypeIdx, ParseError> {
@@ -430,7 +639,7 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
                     let lookup = state.symbol_table.lookup_tag_type_idx(state.current_scope, enum_tag.as_ref().unwrap());
                     match lookup {
                         Some(tag_type) => {
-                            if let CType::EnumerationType { .. } = state.symbol_table.get_type(tag_type) {
+                            if let CanonicalType::EnumerationType { .. } = state.symbol_table.get_type(tag_type) {
                                 let end = toks.get_location();
                                 #[cfg(debug_assertions)]
                                 state.parse_tree_stack.push_back(ParseNode::EnumSpecifier(start, end));
@@ -556,7 +765,7 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
         }
     }
 
-    let enum_type = CType::EnumerationType { 
+    let enum_type = CanonicalType::EnumerationType { 
         tag: enum_tag.clone(), 
         members: enum_members 
     };
@@ -569,7 +778,7 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
     let end = toks.get_location();
     #[cfg(debug_assertions)]
     state.parse_tree_stack.push_back(ParseNode::EnumSpecifier(start, end));
-    return Ok(enum_type_idx);
+    Ok(enum_type_idx)
 }
 
 fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
@@ -598,40 +807,27 @@ fn parse_init_declarator(toks: &mut CTokenStream, state: &mut ParserState) {
 // The concept of a declarator basically only exists during parsing and isn't semantically meaningful elsewhere
 // "abstract" declarator has no identifier
 struct Declarator(QualifiedType, Option<String>);
-fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, mut base_type: QualifiedType) -> Result<Declarator, ParseError> {
-    let mut pointers: Vec<TypeQualifier> = Vec::new();
+fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_type: QualifiedType) -> Result<Declarator, ParseError> {
+    let mut pointers: Vec<(TypeQualifier, usize)> = Vec::new();
     enum ArrayOrFunctionDeclarator { ArrayDeclarator(ArrayDeclarator), FunctionDeclarator(FunctionDeclarator) }
-    let mut array_or_function_declarators: Vec<ArrayOrFunctionDeclarator> = Vec::new();
+    let mut array_or_function_declarators: Vec<(ArrayOrFunctionDeclarator, usize)> = Vec::new();
     let mut identifier: Option<String> = None;
+    let mut level: usize = 0;
     loop {
         match toks.peek() {
             Some((CLexemes::Star, _, _)) => {
-                pointers.push(TypeQualifier::empty());
-                toks.eat(CLexemes::Star);
-            },
-            Some((CLexemes::Const, _, _)) => {
-                *pointers.last_mut().ok_or(ParseError::BadDeclarator)? |= TypeQualifier::Const;
-                toks.eat(CLexemes::Const);
-            },  
-            Some((CLexemes::Volatile, _, _)) => {
-                *pointers.last_mut().ok_or(ParseError::BadDeclarator)? |= TypeQualifier::Volatile;
-                toks.eat(CLexemes::Volatile);
-            },
-            Some((CLexemes::Restrict, _, _)) => {
-                *pointers.last_mut().ok_or(ParseError::BadDeclarator)? |= TypeQualifier::Restrict;
-                toks.eat(CLexemes::Restrict);
+                let pointer = parse_pointer_declarator(toks, state)?;
+                pointers.push((pointer.0, 0))
             },
             Some((CLexemes::LParen, _, _)) => {
                 // parse inner declarator
                 toks.eat(CLexemes::LParen);
-                let Declarator(inner_type, name) = parse_declarator_base(toks, state, base_type)?;
-                base_type = inner_type;
-                identifier = name;
-                eat_or_error!(toks, CLexemes::RParen);
+                level += 1;
                 break;
             },
             Some((CLexemes::Identifier, ident, _)) => {
                 identifier = Some(ident.to_string());
+                toks.eat(CLexemes::Identifier);
                 break;
             },
             Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)); },
@@ -643,11 +839,14 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, mut b
         match toks.peek() {
             Some((CLexemes::LBracket, _, _)) => {
                 let array = parse_array_declarator(toks, state)?;
-                array_or_function_declarators.push(ArrayOrFunctionDeclarator::ArrayDeclarator(array));
+                array_or_function_declarators.push((ArrayOrFunctionDeclarator::ArrayDeclarator(array), level));
             },
             Some((CLexemes::LParen, _, _)) => {
                 let function = parse_function_declarator(toks, state)?;
-                array_or_function_declarators.push(ArrayOrFunctionDeclarator::FunctionDeclarator(function));
+                array_or_function_declarators.push((ArrayOrFunctionDeclarator::FunctionDeclarator(function), level));
+            },
+            Some((CLexemes::RParen, _, _)) => {
+                level -= 1;
             },
             Some((other, _, _)) => {
                 break;
@@ -655,11 +854,73 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, mut b
             None => { return Err(ParseError::UnexpectedEOF); }
         }
     }
+    
+    if level != 0 {
+        return Err(ParseError::UnmatchedParensInDeclarator);
+    }
 
     // according to grammar, [] and () bind more tightly than *
-    
+    // array of array: ok
+    // array of function: not ok by 6.7.5.2 1 ("The element type shall not be an incomplete or function type.")
+    // function which return function / function which return array: not ok by 6.7.5.3 1
+    // furthermore, incomplete return type or parameter types is ok for function prototypes
+    // e.g. struct unknown function(struct unknown2);
+    // is fine; presumably this is so code which only uses its address is ok (?), but any attempt to call it is obviously
+    // not going to work until those incomplete types are filled in
+    let max_level = level;
+    let mut pointer_index: usize = 0;
+    array_or_function_declarators.reverse();
+    let mut current_type = base_type;
+    for level in 0..=max_level {
+        while pointer_index < pointers.len() && pointers[pointer_index].1 == level {
+            current_type = QualifiedType {
+                base_type: CType::PointerType { pointee_type: Box::new(current_type) },
+                qualifier: pointers[pointer_index].0
+            };
 
-    todo!()
+            pointer_index += 1;
+        }
+        while let Some((_, l)) = array_or_function_declarators.last() {
+            if *l == level {
+                let (d, _) = array_or_function_declarators.pop().unwrap();
+                match d {
+                    ArrayOrFunctionDeclarator::ArrayDeclarator(array) => {
+                        let new_type: CType;
+                        if let Some(size) = array.1 {
+                            new_type = CType::ArrayType { 
+                                size, 
+                                element_type: Box::new(current_type) 
+                            };
+                        }
+                        else {
+                            new_type = CType::IncompleteArrayType { 
+                                element_type: Box::new(current_type) 
+                            };
+                        }
+                        current_type = QualifiedType {
+                            base_type: new_type,
+                            qualifier: array.0
+                        }
+                    },
+                    ArrayOrFunctionDeclarator::FunctionDeclarator(func) => {
+                        let new_type = CType::FunctionType {
+                            parameter_types: func.argument_types,
+                            return_type: Box::new(current_type),
+                            function_specifier: FunctionSpecifier::None, // TODO: figure out inline
+                            varargs: func.varargs,
+                        };
+
+                        current_type = QualifiedType {
+                            base_type: new_type,
+                            qualifier: TypeQualifier::empty()
+                        }
+                    },
+                };
+            }
+        }
+    }
+
+    Ok(Declarator(current_type, identifier))
 }
 
 fn parse_declarator(toks: &mut CTokenStream, state: &mut ParserState, base_type: QualifiedType) -> Result<(QualifiedType, String), ParseError> {
@@ -679,6 +940,30 @@ fn parse_abstract_declarator(toks: &mut CTokenStream, state: &mut ParserState, b
     }
     else {
         Err(ParseError::UnexpectedDeclaratorName)
+    }
+}
+
+struct PointerDeclarator(TypeQualifier);
+fn parse_pointer_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> Result<PointerDeclarator, ParseError> {
+    let mut qualifier = TypeQualifier::empty();
+    eat_or_error!(toks, CLexemes::Star);
+    loop {
+        match toks.peek() {
+            Some((CLexemes::Const, _, _)) => {
+                qualifier |= TypeQualifier::Const;
+                toks.eat(CLexemes::Const);
+            },  
+            Some((CLexemes::Volatile, _, _)) => {
+                qualifier |= TypeQualifier::Volatile;
+                toks.eat(CLexemes::Volatile);
+            },
+            Some((CLexemes::Restrict, _, _)) => {
+                qualifier |= TypeQualifier::Restrict;
+                toks.eat(CLexemes::Restrict);
+            },
+            Some((other, _, _)) => { return Ok(PointerDeclarator(qualifier)); }
+            None => { return Err(ParseError::UnexpectedEOF); }
+        }
     }
 }
 struct ArrayDeclarator(TypeQualifier, Option<usize>);
@@ -720,7 +1005,11 @@ fn parse_array_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> R
 
 // only time scope is needed is if this is actually a function definition, and not
 // just a prototype
-struct FunctionDeclarator(Vec<QualifiedType>, bool, Scope);
+struct FunctionDeclarator {
+    argument_types: Vec<QualifiedType>, 
+    varargs: bool, 
+    prototype_scope: Scope
+}
 
 // will not support old-style function declarations because they are cringe
 // this code is used for both function prototypes and function definitions
@@ -737,18 +1026,76 @@ fn parse_function_declarator(toks: &mut CTokenStream, state: &mut ParserState) -
         match toks.peek() {
             Some((CLexemes::RParen, _, _)) => {
                 toks.eat(CLexemes::RParen);
-                let declarator = FunctionDeclarator(parameter_types, varargs, state.current_scope);
+                // 6.7.5.3 4, 7, 8
+                // arrays / functions decay to pointers, check that types are not incomplete
+                // special case for 1 parameter of type void
+                if parameter_types.len() == 1 {
+                    let QualifiedType { base_type, qualifier } = &parameter_types[0];
+                    if let CType::Void = base_type {
+                        if qualifier.is_empty() {
+                            parameter_types.remove(0);
+                        }
+                    }
+                }
+                
+                for arg_type in &mut parameter_types {
+                    let QualifiedType { base_type, qualifier } = arg_type;
+                    match base_type {
+                        // void not allowed unless special case above
+                        CType::Void => {
+                            return Err(ParseError::IncompleteFunctionArgument);
+                        },
+                        
+                        // decay to pointer
+                        CType::IncompleteArrayType { element_type }
+                        | CType::ArrayType { element_type, .. } =>  {
+                            // is there a more elegant way to do this?
+                            let element_type = std::mem::replace(element_type, Box::new(QualifiedType {
+                                base_type: CType::Void,
+                                qualifier: TypeQualifier::empty(),
+                            }));
+                            *arg_type = QualifiedType {
+                                base_type: CType::PointerType { pointee_type: element_type },
+                                qualifier: *qualifier
+                            };
+                        },
+                        CType::FunctionType { .. } => {
+                            let function_type = std::mem::replace(arg_type, QualifiedType { 
+                                base_type: CType::Void, qualifier: TypeQualifier::empty() }
+                            );
+                            
+                            *arg_type = QualifiedType {
+                                base_type: CType::PointerType { 
+                                    pointee_type: Box::new(function_type)
+                                },
+                                qualifier: TypeQualifier::empty(),
+                            };
+                        },
+
+                        _ => {}
+                    }
+                }
+                
+                let declarator = FunctionDeclarator {
+                    argument_types: parameter_types, 
+                    varargs, 
+                    prototype_scope: state.current_scope
+                };
                 state.close_scope()?;
                 return Ok(declarator);
-            }
+            },
             Some((CLexemes::Ellipsis, _, _)) => {
                 toks.eat(CLexemes::Ellipsis);
                 varargs = true;
                 eat_or_error!(toks, CLexemes::RParen);
-                let declarator = FunctionDeclarator(parameter_types, varargs, state.current_scope);
+                let declarator = FunctionDeclarator {
+                    argument_types: parameter_types, 
+                    varargs, 
+                    prototype_scope: state.current_scope
+                };
                 state.close_scope()?;
                 return Ok(declarator);
-            }
+            },
             Some((_, _, _)) => {
                 let parameter_base_type = parse_declaration_specifiers(toks, state)?;
                 if parameter_base_type.1 != StorageClass::None {
