@@ -1,5 +1,5 @@
 use core::panic;
-use std::{collections::VecDeque, env::var, num::ParseIntError, os::linux::raw::stat};
+use std::{collections::VecDeque, env::var, num::ParseIntError};
 
 use thiserror::Error;
 
@@ -198,6 +198,18 @@ enum Operator {
     And,
     Or,
     Assign,
+
+    MultiplyAssign,
+    DivideAssign,
+    ModuloAssign,
+    AddAssign,
+    SubAssign,
+    LShiftAssign,
+    RShiftAssign,
+    AndAssign,
+    XorAssign,
+    OrAssign,
+
     Comma,
 
     // special cases - '(' can be a function call or delimiter for a primary-expression
@@ -250,7 +262,19 @@ fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Option
         CLexemes::BitOr => ExprPart::Operator(Operator::BitOr),
         CLexemes::And => ExprPart::Operator(Operator::And),
         CLexemes::Or => ExprPart::Operator(Operator::Or),
+
         CLexemes::Assign => ExprPart::Operator(Operator::Assign),
+        CLexemes::MultAssign => ExprPart::Operator(Operator::MultiplyAssign),
+        CLexemes::DivAssign => ExprPart::Operator(Operator::DivideAssign),
+        CLexemes::ModAssign => ExprPart::Operator(Operator::ModuloAssign),
+        CLexemes::AddAssign => ExprPart::Operator(Operator::AddAssign),
+        CLexemes::SubAssign => ExprPart::Operator(Operator::SubAssign),
+        CLexemes::LShiftAssign => ExprPart::Operator(Operator::LShiftAssign),
+        CLexemes::RShiftAssign => ExprPart::Operator(Operator::RShiftAssign),
+        CLexemes::AndAssign => ExprPart::Operator(Operator::AndAssign),
+        CLexemes::XorAssign => ExprPart::Operator(Operator::XorAssign),
+        CLexemes::OrAssign => ExprPart::Operator(Operator::OrAssign),
+
         CLexemes::Comma => ExprPart::Operator(Operator::Comma),
         CLexemes::LParen => ExprPart::Operator(Operator::LParen),
         CLexemes::LBracket => ExprPart::Operator(Operator::LBracket),
@@ -305,8 +329,6 @@ fn postfix_binding_power(op: Operator) -> Option<u32> {
 
         _ => return None
     }
-    
-    todo!()
 }
 
 fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
@@ -329,9 +351,18 @@ fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
         Operator::BitOr => todo!(),
         Operator::And => todo!(),
         Operator::Or => todo!(),
-        Operator::Assign => todo!(),
-        Operator::Comma => todo!(),
 
+        Operator::Assign => todo!(),
+        Operator::MultiplyAssign => todo!(),
+        Operator::DivideAssign => todo!(),
+        Operator::ModuloAssign => todo!(),
+        Operator::AddAssign => todo!(),
+        Operator::SubAssign => todo!(),
+        Operator::LShiftAssign => todo!(),
+        Operator::RShiftAssign => todo!(),
+        Operator::AndAssign => todo!(),
+        Operator::XorAssign => todo!(),
+        Operator::OrAssign => todo!(),
         // grammatically, Dot / Arrow (member access, either directly or through a pointer)
         // are considered "postfix", left-associative operators. however, like array subscript / function calls,
         // they are a special case, since it is required for following token to be an identifier
@@ -347,15 +378,46 @@ fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
         _ => return None
     }
     
-    todo!()
 }
 
 // precedence climbing ("Pratt parsing") algorithm with some special case handling
 // for C specific syntax. in the first pass, no type checking is done
-fn parse_expr(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
-    
+fn parse_expr(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ExpressionNode, ParseError> {
+    let first = parse_assignment_expr(toks, state)?;
+    let mut assignment_exprs = Vec::new();
+    match toks.peek() {
+        Some((CLexemes::Comma, _, _)) => {
+            toks.eat(CLexemes::Comma);
+            assignment_exprs.push(first);
+            let second = parse_assignment_expr(toks, state)?;
+            assignment_exprs.push(second);
+        },
+        Some((_, _, _)) => {
+            return Ok(first);
+        }
+        None => return Err(ParseError::UnexpectedEOF)
+    }
+    loop {
+        match toks.peek() {
+            Some((CLexemes::Comma, _, _)) => {
+                toks.eat(CLexemes::Comma);
+                let next = parse_assignment_expr(toks, state)?;
+                assignment_exprs.push(next);
+            },
+            Some((_, _, _)) => {
+                let comma_expr = ExpressionNode::CommaExpr(
+                    assignment_exprs, 
+                    None
+                );
+                return Ok(comma_expr);
+            }
+            None => return Err(ParseError::UnexpectedEOF)
+        }
+    }
+}
 
-    todo!()
+fn parse_assignment_expr(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ExpressionNode, ParseError> {
+    parse_expr_rec(toks, state, 0)
 }
 
 fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32) -> Result<ExpressionNode, ParseError> {
@@ -649,9 +711,75 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
                                         None
                                     )
                                 },
-                                Operator::Comma => {
-                                    // should this be a separate function?
-                                    todo!()
+                                Operator::MultiplyAssign => {
+                                    ExpressionNode::MultiplyAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::DivideAssign => {
+                                    ExpressionNode::DivideAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::ModuloAssign => {
+                                    ExpressionNode::ModuloAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::AddAssign => {
+                                    ExpressionNode::AddAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::SubAssign => {
+                                    ExpressionNode::SubAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::LShiftAssign => {
+                                    ExpressionNode::LShiftAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::RShiftAssign => {
+                                    ExpressionNode::RShiftAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::AndAssign => {
+                                    ExpressionNode::AndAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::XorAssign => {
+                                    ExpressionNode::XorAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
+                                },
+                                Operator::OrAssign => {
+                                    ExpressionNode::OrAssign(
+                                        Box::new(lhs), 
+                                        Box::new(rhs), 
+                                        None
+                                    )
                                 },
                                 Operator::Dot => {
                                     if let ExpressionNode::Identifier(member, _) = rhs {
@@ -693,7 +821,7 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
         }
     }
 
-    todo!()
+    Ok(lhs)
 }
 
 
@@ -1708,8 +1836,20 @@ fn parse_compound_statement(toks: &mut CTokenStream, state: &mut ParserState) {
     toks.eat(CLexemes::RBrace);
 }
 
-fn parse_expression_statement(toks: &mut CTokenStream, state: &mut ParserState) {
-
+fn parse_expression_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    match toks.peek() {
+        Some((CLexemes::Semicolon, _, _)) => {
+            toks.eat(CLexemes::Semicolon);
+            Ok(ASTNode::ExpressionStatement(None, state.current_scope))
+        }
+        Some((_, _, _)) => {
+            let expr = parse_expr(toks, state)?;
+            Ok(ASTNode::ExpressionStatement(Some(Box::new(expr)), state.current_scope))
+        }
+        None => {
+            Err(ParseError::UnexpectedEOF)
+        }
+    }
 }
 
 fn parse_selection_statement(toks: &mut CTokenStream, state: &mut ParserState) {

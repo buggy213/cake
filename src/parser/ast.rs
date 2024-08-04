@@ -18,7 +18,7 @@ pub(crate) enum ASTNode {
     DefaultLabel(Box<ASTNode>),
 
     CompoundStatement(Vec<ASTNode>, Scope),
-    ExpressionStatement(Box<ExpressionNode>, Scope),
+    ExpressionStatement(Option<Box<ExpressionNode>>, Scope),
     IfStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
     SwitchStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
     WhileStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
