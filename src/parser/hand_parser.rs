@@ -1,11 +1,11 @@
 use core::panic;
-use std::{collections::VecDeque, env::var, num::ParseIntError};
+use std::{collections::VecDeque, env::var, num::{ParseFloatError, ParseIntError}, rc::Rc};
 
 use thiserror::Error;
 
 use crate::{parser::ast::Constant, scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::{symtab::{Linkage, Scope, ScopeType, StorageClass, Symbol, SymbolTable, SymtabError, TypeIdx}, types::{AggregateMember, BasicType, CType, CanonicalType, FunctionSpecifier, QualifiedType, TypeQualifier}}};
 
-use super::ast::{ASTNode, ExpressionNode, Identifier};
+use super::ast::{ASTNode, Declaration, ExpressionNode, Identifier};
 
 type CTokenStream<'a> = crate::scanner::RawTokenStream<'a, CLexemes>;
 
@@ -73,7 +73,7 @@ macro_rules! eat_or_error {
     };
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 enum ParseError {
     #[error("Unexpected end of file while parsing")]
     UnexpectedEOF,
@@ -131,6 +131,12 @@ enum ParseError {
     BasicTypeError,
     #[error("member access (with '.' or '->' operators) expects identifier, not arbitrary expression")]
     BadMemberAccess,
+    #[error("redeclared label name within same function")]
+    RedeclaredLabel(#[source] SymtabError),
+    #[error("couldn't parse int")]
+    BadInt,
+    #[error("couldn't parse float")]
+    BadFloat(#[source] ParseFloatError),
 }
 
 struct ParserState {
@@ -141,6 +147,17 @@ struct ParserState {
 }
 
 impl ParserState {
+    fn new() -> Self {
+        let mut me = Self {
+            symbol_table: SymbolTable::new(),
+            current_scope: Scope::new_file_scope(),
+            parse_tree_stack: VecDeque::new(),
+        };
+
+        me.current_scope = me.symbol_table.new_scope(None, ScopeType::FileScope);
+        me
+    }
+
     fn open_scope(&mut self, scope_type: ScopeType) {
         self.current_scope = self.symbol_table.new_scope(Some(self.current_scope), scope_type);
     }
@@ -169,7 +186,7 @@ impl From<Atom> for ExpressionNode {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operator {
     // "ordinary" operators
     Increment,
@@ -227,16 +244,183 @@ enum ExprPart {
     Operator(Operator)
 }
 
-fn parse_integer_const(text: &str) -> Constant {
-    todo!()
+fn parse_integer_const(text: &str) -> Result<Constant, ParseError> {
+    let mut text = text;
+    let mut suffix = None;
+    let hex = if text.starts_with("0x") || text.starts_with("0X") {
+        text = &text[2..];
+        true
+    }
+    else {
+        false
+    };
+    let octal = !hex && if text.starts_with("0") {
+        text = &text[1..];
+        true
+    } else {
+        false
+    };
+
+    for (index, char) in text.char_indices() {
+        if !char.is_ascii_hexdigit() {
+            suffix = Some(&text[index..]);
+            text = &text[..index];
+            break;
+        }
+    }
+
+    enum IntTypes {
+        u32,
+        u64,
+        i32,
+        i64
+    }
+
+    let conversion_attempt_list = match (suffix, hex || octal) {
+        (None, false) => {
+            [IntTypes::i32, IntTypes::i64].as_slice()
+        },
+        (None, true) => {
+            [IntTypes::i32, IntTypes::u32, IntTypes::i64, IntTypes::u64].as_slice()
+        },
+        (Some("u"), false)
+        | (Some("U"), false)
+        | (Some("u"), true)
+        | (Some("U"), true) => {
+            [IntTypes::u32, IntTypes::u64].as_slice()
+        }
+
+        (Some("l"), false)
+        | (Some("L"), false)
+        | (Some("ll"), false)
+        | (Some("LL"), false) => {
+            [IntTypes::i64].as_slice()   
+        }
+
+        (Some("l"), true)
+        | (Some("L"), true)
+        | (Some("ll"), true)
+        | (Some("LL"), true) => {
+            [IntTypes::i64, IntTypes::u64].as_slice()  
+        }
+
+        (Some("ull"), _)
+        | (Some("uLL"), _)
+        | (Some("Ull"), _)
+        | (Some("ULL"), _) => {
+            [IntTypes::u64].as_slice()
+        }
+
+        // compiler bug! shouldn't be possible due to what the lexer is matching against
+        _ => {
+            #[cfg(debug_assertions)]
+            panic!("unexpected integer constant type");
+            [IntTypes::u64].as_slice()
+        }
+    };
+
+    for conversion in conversion_attempt_list {
+        match conversion {
+            IntTypes::u32 => {
+                let result = if text.len() == 0 {
+                    Ok(0u32)
+                } 
+                else if hex {
+                    u32::from_str_radix(text, 16)
+                }
+                else if octal {
+                    u32::from_str_radix(text, 8)
+                }
+                else {
+                    u32::from_str_radix(text, 10)
+                };
+                
+                if let Ok(v) = result {
+                    return Ok(Constant::UInt(v));
+                }
+            },
+            IntTypes::u64 => {
+                let result = if text.len() == 0 {
+                    Ok(0u64)
+                } 
+                else if hex {
+                    u64::from_str_radix(text, 16)
+                } 
+                else if octal {
+                    u64::from_str_radix(text, 8)
+                }
+                else {
+                    u64::from_str_radix(text, 10)
+                };
+
+                if let Ok(v) = result {
+                    return Ok(Constant::ULongInt(v));
+                }
+            },
+            IntTypes::i32 => {
+                let result = if text.len() == 0 {
+                    Ok(0i32)
+                } 
+                else if hex {
+                    i32::from_str_radix(text, 16)
+                } 
+                else if octal {
+                    i32::from_str_radix(text, 8)
+                }
+                else {
+                    i32::from_str_radix(text, 10)
+                };
+
+                if let Ok(v) = result {
+                    return Ok(Constant::Int(v));
+                }
+            },
+            IntTypes::i64 => {
+                let result = if text.len() == 0 {
+                    Ok(0i64)
+                } 
+                else if hex {
+                    i64::from_str_radix(text, 16)
+                } 
+                else if octal {
+                    i64::from_str_radix(text, 8)
+                }
+                else {
+                    i64::from_str_radix(text, 10)
+                };
+
+                if let Ok(v) = result {
+                    return Ok(Constant::LongInt(v));
+                }
+            },
+        }
+    }
+
+    Err(ParseError::BadInt)
 }
 
-fn parse_float_const(text: &str) -> Constant {
-    todo!()
+fn parse_float_const(text: &str) -> Result<Constant, ParseError> {
+    // TODO: support binary floating point numbers
+    let mut text = text;
+    let double = if text.ends_with("f") {
+        text = &text[..text.len() - 1];
+        false
+    } else {
+        true
+    };
+
+    if double {
+        text.parse::<f64>().map(|v| Constant::Double(v))
+            .map_err(|e| ParseError::BadFloat(e))
+    }
+    else {
+        text.parse::<f32>().map(|v| Constant::Float(v))
+            .map_err(|e| ParseError::BadFloat(e))
+    }
 }
 
-fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Option<ExprPart> {
-    match lexeme {
+fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Result<ExprPart, ParseError> {
+    let expr_part = match lexeme {
         CLexemes::Increment => ExprPart::Operator(Operator::Increment),
         CLexemes::Decrement => ExprPart::Operator(Operator::Decrement),
         CLexemes::Dot => ExprPart::Operator(Operator::Dot),
@@ -287,12 +471,12 @@ fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Option
         },
 
         CLexemes::IntegerConst => {
-            let int_const = parse_integer_const(text);
+            let int_const = parse_integer_const(text)?;
             ExprPart::Atom(Atom::Constant(int_const))
         },
 
         CLexemes::FloatConst => {
-            let float_const = parse_float_const(text);
+            let float_const = parse_float_const(text)?;
             ExprPart::Atom(Atom::Constant(float_const))
         },
 
@@ -300,69 +484,36 @@ fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Option
             ExprPart::Atom(Atom::StringLiteral(text.to_string()))
         },
 
-        _ => return None
+        _ => return Err(ParseError::UnexpectedToken(lexeme))
     };
-    todo!()
+    
+    Ok(expr_part)
 }
 
 fn prefix_binding_power(op: Operator) -> Option<u32> {
     match op {
-        Operator::Increment => Some(15),
-        Operator::Decrement => Some(15),
-        Operator::Plus => Some(15),
-        Operator::Minus => Some(15),
-        Operator::Bang => Some(15),
-        Operator::Tilde => Some(15),
-        Operator::Star => Some(15),
-        Operator::BitAnd => Some(15),
-        Operator::Sizeof => Some(15),
+        // all prefix operators are implicitly right associative
+        Operator::Increment
+        | Operator::Decrement
+        | Operator::Plus
+        | Operator::Minus
+        | Operator::Bang
+        | Operator::Tilde
+        | Operator::Star
+        | Operator::BitAnd
+        | Operator::Sizeof => Some(25),
         _ => None
     }
 }
 
 fn postfix_binding_power(op: Operator) -> Option<u32> {
     match op {
-        Operator::Increment => todo!(),
-        Operator::Decrement => todo!(),
-        Operator::LParen => todo!(),
-        Operator::LBracket => todo!(),
+        // all postfix operators are implicitly left-associative
+        Operator::Increment
+        | Operator::Decrement
+        | Operator::LParen
+        | Operator::LBracket => Some(27),
 
-        _ => return None
-    }
-}
-
-fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
-    match op {
-        Operator::Plus => todo!(),
-        Operator::Minus => todo!(),
-        Operator::Star => todo!(),
-        Operator::BitAnd => todo!(),
-        Operator::Slash => todo!(),
-        Operator::Percent => todo!(),
-        Operator::RShift => todo!(),
-        Operator::LShift => todo!(),
-        Operator::Lt => todo!(),
-        Operator::Gt => todo!(),
-        Operator::Leq => todo!(),
-        Operator::Geq => todo!(),
-        Operator::Eq => todo!(),
-        Operator::Neq => todo!(),
-        Operator::Xor => todo!(),
-        Operator::BitOr => todo!(),
-        Operator::And => todo!(),
-        Operator::Or => todo!(),
-
-        Operator::Assign => todo!(),
-        Operator::MultiplyAssign => todo!(),
-        Operator::DivideAssign => todo!(),
-        Operator::ModuloAssign => todo!(),
-        Operator::AddAssign => todo!(),
-        Operator::SubAssign => todo!(),
-        Operator::LShiftAssign => todo!(),
-        Operator::RShiftAssign => todo!(),
-        Operator::AndAssign => todo!(),
-        Operator::XorAssign => todo!(),
-        Operator::OrAssign => todo!(),
         // grammatically, Dot / Arrow (member access, either directly or through a pointer)
         // are considered "postfix", left-associative operators. however, like array subscript / function calls,
         // they are a special case, since it is required for following token to be an identifier
@@ -372,8 +523,62 @@ fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
         // s->(a + b);
         // ```
         // is clearly nonsensical;
-        Operator::Dot => todo!(),
-        Operator::Arrow => todo!(),
+        Operator::Dot
+        | Operator::Arrow => Some(27),
+
+        _ => return None
+    }
+}
+
+fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
+    match op {
+        // multiply, divide, modulo are left-associative and equal precedence
+        Operator::Star => Some((23, 24)),
+        Operator::Slash => Some((23, 24)),
+        Operator::Percent => Some((23, 24)),
+
+        // addition, subtraction are left-associative and equal precedence
+        Operator::Plus => Some((21, 22)),
+        Operator::Minus => Some((21, 22)),
+
+        // shift operators are left-associative and equal precedence
+        Operator::RShift => Some((19, 20)),
+        Operator::LShift => Some((19, 20)),
+
+        // relational operators are left-associative and equal precedence
+        Operator::Lt => Some((17, 18)),
+        Operator::Gt => Some((17, 18)),
+        Operator::Leq => Some((17, 18)),
+        Operator::Geq => Some((17, 18)),
+
+        // equality operators are left-associative and equal precedence
+        Operator::Eq => Some((15, 16)),
+        Operator::Neq => Some((15, 16)),
+
+        // bitwise and logical operators are all left-associative
+        Operator::BitAnd => Some((13, 14)),
+        Operator::Xor => Some((11, 12)),
+        Operator::BitOr => Some((9, 10)),
+        Operator::And => Some((7, 8)),
+        Operator::Or => Some((5, 6)),
+
+        // ternary operator is right associative, is also a special case
+        // a ? b : c is grammatically isomorphic to a (b) c and is handled
+        // as a special case by expression parser
+        Operator::Question => Some((4, 3)),
+
+        // assignment operators all have same precedence, right-associativity
+        Operator::Assign
+        | Operator::MultiplyAssign
+        | Operator::DivideAssign
+        | Operator::ModuloAssign
+        | Operator::AddAssign
+        | Operator::SubAssign
+        | Operator::LShiftAssign
+        | Operator::RShiftAssign
+        | Operator::AndAssign
+        | Operator::XorAssign
+        | Operator::OrAssign => Some((2, 1)),
 
         _ => return None
     }
@@ -395,7 +600,7 @@ fn parse_expr(toks: &mut CTokenStream, state: &mut ParserState) -> Result<Expres
         Some((_, _, _)) => {
             return Ok(first);
         }
-        None => return Err(ParseError::UnexpectedEOF)
+        None => return Ok(first)
     }
     loop {
         match toks.peek() {
@@ -424,15 +629,15 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
     let mut lhs: ExpressionNode;
     match toks.advance() {
         Some((lexeme, text, _)) => {
-            match to_expr_part(lexeme, text, state) {
-                Some(ExprPart::Atom(atom)) => {
+            match to_expr_part(lexeme, text, state)? {
+                ExprPart::Atom(atom) => {
                     lhs = atom.into();
                 },
-                Some(ExprPart::Operator(Operator::LParen)) => {
+                ExprPart::Operator(Operator::LParen) => {
                     lhs = parse_expr_rec(toks, state, 0)?;
                     eat_or_error!(toks, CLexemes::LParen)?;
                 },
-                Some(ExprPart::Operator(op)) => {
+                ExprPart::Operator(op) => {
                     // it must be a prefix operator
                     if let Some(power) = prefix_binding_power(op) {
                         let rhs = parse_expr_rec(toks, state, power)?;
@@ -502,8 +707,7 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
                     else {
                         return Err(ParseError::UnexpectedToken(lexeme));
                     }
-                },
-                None => return Err(ParseError::UnexpectedToken(lexeme)),
+                }
             }
         },
         None => return Err(ParseError::UnexpectedEOF)
@@ -512,8 +716,8 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
     loop {
         match toks.peek() {
             Some((lexeme, text, _)) => {
-                match to_expr_part(lexeme, text, state) {
-                    Some(ExprPart::Operator(op)) => {
+                match to_expr_part(lexeme, text, state)? {
+                    ExprPart::Operator(op) => {
                         if let Some(left_bp) = postfix_binding_power(op) {
                             if left_bp < min_bp {
                                 // some higher precedence operator binds to lhs before op does
@@ -538,13 +742,16 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
                             
                                 // function call / array subscript
                                 Operator::LParen => {
-                                    let arguments;
-                                    if let Some((CLexemes::RParen, _, _)) = toks.peek() {
-                                        arguments = Vec::new();
+                                    
+                                    let arguments = if let Some((CLexemes::RParen, _, _)) = toks.peek() {
+                                        Vec::new()
                                     }
                                     else {
-                                        arguments = todo!();
-                                    }
+                                        match parse_expr(toks, state)? {
+                                            ExpressionNode::CommaExpr(arg_exprs, _) => arg_exprs,
+                                            single => vec![single]
+                                        }
+                                    };
 
                                     eat_or_error!(toks, CLexemes::RParen)?;
 
@@ -576,6 +783,21 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
                             }
 
                             toks.eat(lexeme);
+
+                            // special case for ternary operator
+                            if op == Operator::Question {
+                                let middle = parse_expr_rec(toks, state, 0)?;
+                                eat_or_error!(toks, CLexemes::Colon)?;
+                                let rhs = parse_expr_rec(toks, state, right_bp)?;
+                                lhs = ExpressionNode::Ternary(
+                                    Box::new(lhs), 
+                                    Box::new(middle), 
+                                    Box::new(rhs), 
+                                    None
+                                );
+                                continue;
+                            }
+
                             let rhs = parse_expr_rec(toks, state, right_bp)?;
                             lhs = match op {
                                 Operator::Plus => {
@@ -813,11 +1035,10 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
 
                         break; // ? is this the right thing to do
                     },
-                    Some(ExprPart::Atom(_)) => return Err(ParseError::UnexpectedToken(lexeme)),
-                    None => break,
+                    ExprPart::Atom(_) => return Err(ParseError::UnexpectedToken(lexeme)),
                 }
             },
-            None => return Err(ParseError::UnexpectedEOF)
+            None => { break; }
         }
     }
 
@@ -828,11 +1049,17 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
 // <translation-unit> ::= <external-declaration>
 // | <translation-unit> <external-declaration>
 fn parse_translation_unit(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    let mut external_declarations = Vec::new();
     while let Some(_) = toks.peek() {
-        parse_external_declaration(toks, state)?;
+        external_declarations.push(parse_external_declaration(toks, state)?);
     }
+    
+    let translation_unit = ASTNode::TranslationUnit(
+        external_declarations, 
+        state.current_scope
+    );
 
-    todo!()
+    Ok(translation_unit)
 }
 
 // <external-declaration> ::= <function-definition>
@@ -841,18 +1068,121 @@ fn parse_translation_unit(toks: &mut CTokenStream, state: &mut ParserState) -> R
 // have a compound statement
 fn parse_external_declaration(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
     // both will include declaration specifiers
-    parse_declaration_specifiers(toks, state);
-    if let Some((CLexemes::Semicolon, _, _)) = toks.peek() {
-        // 6.7, clause 2: must have declared struct / union with tag
-        // or enum constants
-
-    }
+    let declaration_specifiers = parse_declaration_specifiers(toks, state)?;
+    let DeclarationSpecifiers(
+        base_type, 
+        storage_class, 
+        function_specifier
+    ) = declaration_specifiers.clone();
     
-    todo!()
+    // both will include a (concrete) declarator
+    let (declaration_type, name) = parse_declarator(toks, state, base_type)?;
+    let mut declarations: Vec<Declaration> = Vec::new();
+
+    match toks.peek() {
+        Some((CLexemes::LBrace, _, _)) => {
+            // must be a function definition
+            let function_body = parse_compound_statement(toks, state)?;
+
+            let function_node = ASTNode::FunctionDefinition(
+                Box::new(function_body), 
+                state.current_scope
+            );
+
+            return Ok(function_node);
+        },
+
+        // otherwise, must be a declaration
+        // try to parse initializer; some duplicated logic from parse_init_declarators but
+        // this is hard to avoid
+        Some((CLexemes::Eq, _, _)) => {
+            toks.eat(CLexemes::Eq);
+            let initializer = parse_initializer(toks, state)?;
+            let declaration = Declaration::new(
+                Identifier::new(state.current_scope, name),
+                declaration_type,
+                storage_class,
+                function_specifier,
+                Some(Box::new(initializer))
+            );
+            declarations.push(declaration)
+        },
+        Some((_, _, _)) => {
+            let declaration = Declaration::new(
+                Identifier::new(state.current_scope, name),
+                declaration_type,
+                storage_class,
+                function_specifier,
+                None
+            );
+            declarations.push(declaration);
+        },
+        None => { return Err(ParseError::UnexpectedEOF); }
+    }
+
+    loop {
+        match toks.peek() {
+            Some((CLexemes::Comma, _, _)) => {
+                toks.eat(CLexemes::Comma);
+                let declaration = parse_init_declarator(toks, state, declaration_specifiers.clone())?;
+                declarations.push(declaration);
+            }
+            Some((CLexemes::Semicolon, _, _)) => {
+                let decl_node = ASTNode::Declaration(declarations);
+                return Ok(decl_node);
+            }
+            Some((other, _, _)) => {
+                return Err(ParseError::UnexpectedToken(other));
+            }
+            None => {
+                return Err(ParseError::UnexpectedEOF);
+            }
+        }
+    }
 }
 
+fn parse_declaration(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    let declaration_specifiers = parse_declaration_specifiers(toks, state)?;
+    let res = parse_init_declarators(toks, state, declaration_specifiers);
+    eat_or_error!(toks, CLexemes::Semicolon)?;
+
+    res
+}
+
+// distinguish between a declaration vs. expression
+// will need to be careful with typedefs here
+fn is_lookahead_declaration(toks: &mut CTokenStream, state: &mut ParserState) -> bool {
+    match toks.peek() {
+        Some((lexeme, _, _)) => {
+            match lexeme {
+                CLexemes::Typedef
+                | CLexemes::Extern
+                | CLexemes::Static
+                | CLexemes::Auto
+                | CLexemes::Register
+                | CLexemes::Void
+                | CLexemes::Char
+                | CLexemes::Short
+                | CLexemes::Int
+                | CLexemes::Long
+                | CLexemes::Float
+                | CLexemes::Double
+                | CLexemes::Unsigned
+                | CLexemes::Signed
+                | CLexemes::Struct
+                | CLexemes::Union
+                | CLexemes::Enum => true,
+                _ => false
+            }
+        }
+        None => false
+    }
+}
+
+#[derive(Debug, Clone)]
 struct DeclarationSpecifiers(QualifiedType, StorageClass, FunctionSpecifier);
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum BasicTypeLexeme {
     Void,
     Unsigned,
@@ -940,7 +1270,12 @@ fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CTy
 }
 
 // no typedefs for now
-fn parse_declaration_specifiers_base(toks: &mut CTokenStream, state: &mut ParserState, parse_function_specifiers: bool, parse_storage_class: bool) -> Result<DeclarationSpecifiers, ParseError> {
+fn parse_declaration_specifiers_base(
+    toks: &mut CTokenStream, 
+    state: &mut ParserState, 
+    parse_function_specifiers: bool, 
+    parse_storage_class: bool
+) -> Result<DeclarationSpecifiers, ParseError> {
     let mut storage_class: StorageClass = StorageClass::None;
     let mut function_specifier: FunctionSpecifier = FunctionSpecifier::None;
     let mut type_qualifier: TypeQualifier = TypeQualifier::empty();
@@ -1431,27 +1766,65 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
     Ok(enum_type_idx)
 }
 
-fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
-    let start = toks.get_location();
-    parse_init_declarator(toks, state);
-    while let Some((lexeme, _, _)) = toks.peek() {
-        match lexeme {
-            CLexemes::Comma => {
+fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState, declaration_specifiers: DeclarationSpecifiers) -> Result<ASTNode, ParseError> {
+    let mut declarations = Vec::new();
+    let declaration = parse_init_declarator(toks, state, declaration_specifiers.clone())?;
+    declarations.push(declaration);
+    loop {
+        match toks.peek() {
+            Some((CLexemes::Comma, _, _)) => {
                 toks.eat(CLexemes::Comma);
-            },
-            CLexemes::Semicolon => {
-                
+                let declaration = parse_init_declarator(toks, state, declaration_specifiers.clone())?;
+                declarations.push(declaration);
             }
-            other => return Err(ParseError::UnexpectedToken(other))
+            Some((CLexemes::Semicolon, _, _)) => {
+                let decl_node = ASTNode::Declaration(declarations);
+                return Ok(decl_node);
+            }
+            Some((other, _, _)) => {
+                return Err(ParseError::UnexpectedToken(other));
+            }
+            None => {
+                return Err(ParseError::UnexpectedEOF);
+            }
         }
     }
-
-    // unexpected EOF
-    Err(ParseError::UnexpectedEOF)
 }
 
-fn parse_init_declarator(toks: &mut CTokenStream, state: &mut ParserState) {
+fn parse_init_declarator(toks: &mut CTokenStream, state: &mut ParserState, declaration_specifiers: DeclarationSpecifiers) -> Result<Declaration, ParseError> {
+    let DeclarationSpecifiers(base_type, storage_class, function_specifier) = declaration_specifiers;
+    let (qualified_type, name) = parse_declarator(toks, state, base_type)?;
+    let initializer = match toks.peek() {
+        Some((CLexemes::Eq, _, _)) => {
+            toks.eat(CLexemes::Eq);
+            let initializer = parse_initializer(toks, state)?;
+            Some(Box::new(initializer))
+        }
+        Some((_, _, _)) => None,
+        None => return Err(ParseError::UnexpectedEOF)
+    };
+    
+    let declaration = Declaration::new(
+        Identifier::new(state.current_scope, name),
+        qualified_type,
+        storage_class,
+        function_specifier,
+        initializer
+    );
 
+    Ok(declaration)
+}
+
+fn parse_initializer(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ExpressionNode, ParseError> {
+    match toks.peek() {
+        Some((CLexemes::LBrace, _, _)) => {
+            todo!("compound initializers not implemented yet")
+        }
+        Some((_, _, _)) => {
+            parse_assignment_expr(toks, state)
+        }
+        None => Err(ParseError::UnexpectedEOF)
+    }
 }
 
 // The concept of a declarator basically only exists during parsing and isn't semantically meaningful elsewhere
@@ -1793,58 +2166,170 @@ fn parse_function_declarator(toks: &mut CTokenStream, state: &mut ParserState) -
     }
 }
 
-fn parse_statement(toks: &mut CTokenStream, state: &mut ParserState) {
-    let (lexeme, s, p) = toks.peek()
-        .expect("statement: unexpected EOF");
+fn parse_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    // only 1-2 token lookahead required to check for what type of statement it is
+    if is_lookahead_label(toks, state) {
+        return parse_labeled_statement(toks, state);
+    }
 
-    match lexeme {
-        CLexemes::If | CLexemes::Switch => {}
-        CLexemes::While | CLexemes::Do | CLexemes::For => {}
-        CLexemes::Goto | CLexemes::Continue | CLexemes::Break | CLexemes::Return => {}
-        CLexemes::Case | CLexemes::Default => {}
-        CLexemes::LParen => {}
-        CLexemes::Identifier => {
-            // need one additional lookahead
-            let (additional_lookahead, _, _) = toks.peekn(1)
-                .expect("unexpected eof");
+    match toks.peek() {
+        Some((CLexemes::LBrace, _, _)) => {
+            parse_compound_statement(toks, state)
+        },
+        Some((CLexemes::If, _, _)) | Some((CLexemes::Switch, _, _)) => {
+            parse_selection_statement(toks, state)
+        },
+        Some((CLexemes::While, _, _))
+        | Some((CLexemes::Do, _, _))
+        | Some((CLexemes::For, _, _)) => {
+            parse_iteration_statement(toks, state)
+        },
+        Some((CLexemes::Goto, _, _))
+        | Some((CLexemes::Continue, _, _))
+        | Some((CLexemes::Break, _, _))
+        | Some((CLexemes::Return, _, _)) => {
+            parse_jump_statement(toks, state)
+        },
+        Some((_, _, _)) => {
+            parse_expression_statement(toks, state)
+        }
+        None => Err(ParseError::UnexpectedEOF)
+    }    
+}
 
-            if additional_lookahead == CLexemes::Colon {
-
-            }
-            else {
-
+fn is_lookahead_label(toks: &mut CTokenStream, state: &mut ParserState) -> bool {
+    match toks.peek() {
+        Some((lexeme, _, _)) => {
+            match lexeme {
+                CLexemes::Default
+                | CLexemes::Case => true,
+                CLexemes::Identifier => {
+                    // only other place colon appears in grammar is for ternaries
+                    // which should get completely parsed by parse_expr
+                    if let Some((CLexemes::Colon, _, _)) = toks.peekn(1) {
+                        true
+                    }
+                    else {
+                        false
+                    }
+                },
+                _ => false
             }
         }
-        _ => panic!("error while parsing statement")
+        None => false
     }
 }
 
-fn parse_labeled_statement(toks: &mut CTokenStream, state: &mut ParserState) {
+fn parse_labeled_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    match toks.peek() {
+        Some((CLexemes::Identifier, label, _)) => {
+            let label = label.to_string();
+            toks.eat(CLexemes::Identifier);
+            eat_or_error!(toks, CLexemes::Colon)?;
+            
+            // C99 does not allow labeled statement at end of compound statement
+            // but gcc and clang will (only complaining on -Wpedantic)
+            // follow standard for now
+            let labelee = parse_statement(toks, state)?;
+            let labelee = Rc::new(labelee);
+            let res = state.symbol_table.add_label(
+                state.current_scope, 
+                label.clone(), 
+                Rc::clone(&labelee)
+            );
 
+            match res {
+                Ok(()) => {}
+                Err(e @ SymtabError::LabelAlreadyDeclared(_)) => return Err(ParseError::RedeclaredLabel(e)),
+                Err(e) => return Err(ParseError::OtherSymtabError(e))
+            }
+
+            let label_ident = Identifier::new(state.current_scope, label);
+            let label_node = ASTNode::Label(
+                labelee, 
+                label_ident
+            );
+
+            Ok(label_node)
+        }
+        Some((CLexemes::Case, _, _)) => {
+            // again, clang / gcc allow empty case
+            // but we won't
+            toks.eat(CLexemes::Case);
+            let case = parse_expr(toks, state)?;
+            eat_or_error!(toks, CLexemes::Colon)?;
+            let case_body = parse_statement(toks, state)?;
+
+            let case_node = ASTNode::CaseLabel(
+                Box::new(case_body), 
+                Box::new(case)
+            );
+            
+            Ok(case_node)
+        }
+        Some((CLexemes::Default, _, _)) => {
+            toks.eat(CLexemes::Default);
+            eat_or_error!(toks, CLexemes::Colon)?;
+            let default_body = parse_statement(toks, state)?;
+            let default_node = ASTNode::DefaultLabel(
+                Box::new(default_body)
+            );
+
+            Ok(default_node)
+        }
+        Some((other, _, _)) => Err(ParseError::UnexpectedToken(other)),
+        None => Err(ParseError::UnexpectedEOF)
+    }
 }
 
-fn parse_compound_statement(toks: &mut CTokenStream, state: &mut ParserState) {
-    toks.eat(CLexemes::LBrace);
-    while let Some((lexeme, _, _)) = toks.peek() {
-        if lexeme != CLexemes::RBrace {
-            // how to disambiguate declaration vs statement?
+fn parse_compound_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    eat_or_error!(toks, CLexemes::LBrace)?;
+    // open a new block scope
+    state.open_scope(ScopeType::BlockScope);
+    let mut items = Vec::new();
+    loop {
+        let ast_node = if is_lookahead_declaration(toks, state) {
+            // upcoming tokens must be declaration
+            parse_declaration(toks, state)?
         }
         else {
-            break;
+            // upcoming tokens must be statement
+            parse_statement(toks, state)?
+        };
+        items.push(ast_node);
+        match toks.peek() {
+            Some((CLexemes::RBrace, _, _)) => {
+                break;
+            },
+            Some((_, _, _)) => {
+                continue;
+            },
+            None => {
+                return Err(ParseError::UnexpectedEOF);
+            }
         }
     }
-    toks.eat(CLexemes::RBrace);
+    state.close_scope()?;
+    eat_or_error!(toks, CLexemes::RBrace)?;
+    
+    let compound_node = ASTNode::CompoundStatement(
+        items, 
+        state.current_scope
+    );
+
+    Ok(compound_node)
 }
 
 fn parse_expression_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
     match toks.peek() {
         Some((CLexemes::Semicolon, _, _)) => {
             toks.eat(CLexemes::Semicolon);
-            Ok(ASTNode::ExpressionStatement(None, state.current_scope))
+            Ok(ASTNode::NullStatement)
         }
         Some((_, _, _)) => {
             let expr = parse_expr(toks, state)?;
-            Ok(ASTNode::ExpressionStatement(Some(Box::new(expr)), state.current_scope))
+            eat_or_error!(toks, CLexemes::Semicolon)?;
+            Ok(ASTNode::ExpressionStatement(Box::new(expr), state.current_scope))
         }
         None => {
             Err(ParseError::UnexpectedEOF)
@@ -1852,14 +2337,301 @@ fn parse_expression_statement(toks: &mut CTokenStream, state: &mut ParserState) 
     }
 }
 
-fn parse_selection_statement(toks: &mut CTokenStream, state: &mut ParserState) {
+fn parse_selection_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    match toks.peek() {
+        Some((CLexemes::If, _, _)) => {
+            toks.eat(CLexemes::If);
+            eat_or_error!(toks, CLexemes::LParen)?;
+            let condition = parse_expr(toks, state)?;
+            eat_or_error!(toks, CLexemes::RParen)?;
+            let body = parse_statement(toks, state)?;
+            // Dangling else attaches to lexically *closest* if statement
+            let if_node = match toks.peek() {
+                Some((CLexemes::Else, _, _)) => {
+                    toks.eat(CLexemes::Else);
+                    let else_body = parse_statement(toks, state)?;
+                    ASTNode::IfStatement(
+                        Box::new(condition), 
+                        Box::new(body), 
+                        Some(Box::new(else_body)), 
+                        state.current_scope
+                    )
+                }
+                Some((_, _, _)) => {
+                    ASTNode::IfStatement(
+                        Box::new(condition), 
+                        Box::new(body), 
+                        None, 
+                        state.current_scope
+                    )
+                }
+                None => {
+                    return Err(ParseError::UnexpectedEOF);
+                }
+            };
 
+            Ok(if_node)
+        }
+        Some((CLexemes::Switch, _, _)) => {
+            toks.eat(CLexemes::Switch);
+            eat_or_error!(toks, CLexemes::LParen)?;
+            let switch_expr = parse_expr(toks, state)?;
+            eat_or_error!(toks, CLexemes::RParen)?;
+            let body = parse_statement(toks, state)?;
+            let switch_node = ASTNode::SwitchStatement(
+                Box::new(switch_expr), 
+                Box::new(body), 
+                state.current_scope
+            );
+
+            Ok(switch_node)
+        }
+        Some((other, _, _)) => {
+            return Err(ParseError::UnexpectedToken(other));
+        }
+        None => {
+            return Err(ParseError::UnexpectedEOF);
+        }
+    }
 }
 
-fn parse_iteration_statement(toks: &mut CTokenStream, state: &mut ParserState) {
+fn parse_iteration_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    match toks.peek() {
+        Some((CLexemes::While, _, _)) => {
+            toks.eat(CLexemes::While);
+            eat_or_error!(toks, CLexemes::LParen)?;
+            let expr = parse_expr(toks, state)?;
+            eat_or_error!(toks, CLexemes::RParen)?;
+            let statement = parse_statement(toks, state)?;
+            let while_statement = ASTNode::WhileStatement(
+                Box::new(expr), 
+                Box::new(statement), 
+                state.current_scope
+            );
+            Ok(while_statement)
+        }
+        Some((CLexemes::Do, _, _)) => {
+            toks.eat(CLexemes::Do);
+            let statement = parse_statement(toks, state)?;
+            eat_or_error!(toks, CLexemes::While)?;
+            eat_or_error!(toks, CLexemes::LParen)?;
+            let expr = parse_expr(toks, state)?;
+            eat_or_error!(toks, CLexemes::RParen)?;
+            eat_or_error!(toks, CLexemes::Semicolon)?;
+            let do_while_statement = ASTNode::DoWhileStatement(
+                Box::new(expr), 
+                Box::new(statement), 
+                state.current_scope
+            );
+            Ok(do_while_statement)
+        }
+        Some((CLexemes::For, _, _)) => {
+            // for loop requires some care; clause 1 being possibly a declaration
+            // e.g. for(int i = 0; i < 5; i += 1)
+            // or just an expression
+            toks.eat(CLexemes::For);
+            eat_or_error!(toks, CLexemes::LParen)?;
+            let first_clause = if is_lookahead_declaration(toks, state) {
+                state.open_scope(ScopeType::BlockScope);
+                let declaration = parse_declaration(toks, state)?;
+                state.close_scope()?;
+                Some(declaration)
+            }
+            else {
+                match toks.peek() {
+                    Some((CLexemes::Semicolon, _, _)) => {
+                        None
+                    }
+                    Some((_, _, _)) => {
+                        let expr = parse_expr(toks, state)?;
+                        Some(ASTNode::ExpressionStatement(Box::new(expr), state.current_scope))
+                    }
+                    None => return Err(ParseError::UnexpectedEOF)
+                }
+            };
+            eat_or_error!(toks, CLexemes::Semicolon)?;
+            let second_clause = match toks.peek() {
+                Some((CLexemes::Semicolon, _, _)) => None,
+                Some((_, _, _)) => Some(parse_expr(toks, state)?),
+                None => return Err(ParseError::UnexpectedEOF)
+            };
+            eat_or_error!(toks, CLexemes::Semicolon)?;
+            let third_clause = match toks.peek() {
+                Some((CLexemes::Semicolon, _, _)) => None,
+                Some((_, _, _)) => Some(parse_expr(toks, state)?),
+                None => return Err(ParseError::UnexpectedEOF)
+            };
+            eat_or_error!(toks, CLexemes::RParen)?;
 
+            let loop_body = parse_statement(toks, state)?;
+            let for_node = ASTNode::ForStatement(
+                first_clause.map(Box::new), 
+                second_clause.map(Box::new), 
+                third_clause.map(Box::new), 
+                state.current_scope
+            );
+            
+            Ok(for_node)
+        }
+        Some((other, _, _)) => {
+            Err(ParseError::UnexpectedToken(other))
+        }
+        None => {
+            Err(ParseError::UnexpectedEOF)
+        }
+    }
 }
 
-fn parse_jump_statement(toks: &mut CTokenStream, state: &mut ParserState) {
+fn parse_jump_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+    match toks.peek() {
+        Some((CLexemes::Goto, _, _)) => {
+            toks.eat(CLexemes::Goto);
+            match toks.peek() {
+                Some((CLexemes::Identifier, ident, _)) => {
+                    let ident = Identifier::new(
+                        state.current_scope, 
+                        ident.to_string()
+                    );
+                    eat_or_error!(toks, CLexemes::Semicolon)?;
+                    Ok(ASTNode::GotoStatement(ident))
+                },
+                Some((other, _, _)) => {
+                    Err(ParseError::UnexpectedToken(other))
+                }
+                None => {
+                    Err(ParseError::UnexpectedEOF)
+                }
+            }
+        }
+        Some((CLexemes::Continue, _, _)) => {
+            toks.eat(CLexemes::Continue);
+            eat_or_error!(toks, CLexemes::Semicolon)?;
+            Ok(ASTNode::ContinueStatement)
+        }
+        Some((CLexemes::Break, _, _)) => {
+            toks.eat(CLexemes::Break);
+            eat_or_error!(toks, CLexemes::Semicolon)?;
+            Ok(ASTNode::BreakStatement)
+        }
+        Some((CLexemes::Return, _, _)) => {
+            toks.eat(CLexemes::Return);
+            match toks.peek() {
+                Some((CLexemes::Semicolon, _, _)) => {
+                    toks.eat(CLexemes::Semicolon);
+                    Ok(ASTNode::ReturnStatement(None))
+                },
+                Some((_, _, _)) => {
+                    let expr = parse_expr(toks, state)?;
+                    eat_or_error!(toks, CLexemes::Semicolon)?;
+                    Ok(ASTNode::ReturnStatement(Some(Box::new(expr))))
+                },
+                None => {
+                    Err(ParseError::UnexpectedEOF)
+                }
+            }
+        }
+        Some((other, _, _)) => {
+            Err(ParseError::UnexpectedToken(other))
+        }
+        None => {
+            Err(ParseError::UnexpectedEOF)
+        }
+    }
+}
 
+#[cfg(test)]
+mod tests {
+    use crate::scanner::table_scanner::DFAScanner;
+
+    use super::*;
+
+    fn text_test_harness<'text>(text: &'text str) -> (CTokenStream<'text>, ParserState) {
+        let scanner = DFAScanner::from_lexeme_set::<CLexemes>();
+        let toks = CTokenStream::new(scanner, text.as_bytes());
+        let state = ParserState::new();
+
+        (toks, state)
+    }
+
+    fn make_identifier(state: &mut ParserState, name: &str) -> ExpressionNode {
+        let ident = Identifier::new(state.current_scope, name.to_string());
+        ExpressionNode::Identifier(ident, None)
+    }
+
+    macro_rules! make_expr {
+        ($expr_type:path, $($subexpr:expr),+) => {
+            $expr_type(
+                $(Box::new($subexpr)),+,
+                None
+            )
+        };
+    }
+    
+    #[test]
+    fn test_parse_expr_basic() {
+        let basic_expr = r#"
+        a = a + 1
+        "#;
+        let (mut toks, mut state) = text_test_harness(basic_expr);
+        
+        let lhs = Box::new(
+            make_identifier(&mut state, "a")
+        );
+
+        let rhs = {
+            let lhs = lhs.clone();
+            let rhs = ExpressionNode::Constant(
+                Constant::Int(1)
+            );
+            Box::new(
+                ExpressionNode::Add(
+                    lhs, 
+                    Box::new(rhs), 
+                    None
+                )
+            )
+        };
+
+        assert_eq!(
+            parse_expr(&mut toks, &mut state),
+            Ok(ExpressionNode::SimpleAssign(
+                lhs, 
+                rhs, 
+                None
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_expr_precedence() {
+        let basic_expr = r#"
+        a || b && c + d / e
+        "#;
+        let (mut toks, mut state) = text_test_harness(basic_expr);
+        
+        // (a || (b && (c + (d / e))))
+        let a = make_identifier(&mut state, "a");
+        let b = make_identifier(&mut state, "b");
+        let c = make_identifier(&mut state, "c");
+        let d = make_identifier(&mut state, "d");
+        let e = make_identifier(&mut state, "e");
+
+        let expr = {
+            let rhs = {
+                let rhs = {
+                    let rhs = make_expr!(ExpressionNode::Divide, d, e);
+                    make_expr!(ExpressionNode::Add, c, rhs)
+                };
+                make_expr!(ExpressionNode::LogicalAnd, b, rhs)
+            };
+            make_expr!(ExpressionNode::LogicalOr, a, rhs)
+        };
+
+        assert_eq!(
+            parse_expr(&mut toks, &mut state),
+            Ok(expr)
+        );
+    }
+
+    
 }

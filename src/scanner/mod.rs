@@ -78,7 +78,7 @@ impl <'a, T: LexemeSet> RawTokenStream<'a, T> {
 impl<'a, T> TokenStream<T> for RawTokenStream<'a, T> where T: LexemeSet {
     fn eat(&mut self, expected_lexeme: T) -> bool {
         self.refill_buffer();
-        let matched = match self.buffer.front().copied() {
+        let matched = match self.buffer.pop_front() {
             Some((lexeme, _, _)) if lexeme == expected_lexeme => true,
             _ => false,
         };

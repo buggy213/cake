@@ -38,7 +38,7 @@ pub(crate) enum FunctionSpecifier {
 }
 
 pub(crate) type AggregateMember = (String, QualifiedType);
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QualifiedType {
     pub(crate) base_type: CType,
     pub(crate) qualifier: TypeQualifier
@@ -68,7 +68,7 @@ pub(crate) enum CanonicalType {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CType {
     // Derived / basic types can be passed around more freely
     BasicType {

@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use crate::semantics::{symtab::Scope, types::CType};
+use crate::semantics::{symtab::{Scope, StorageClass}, types::{CType, FunctionSpecifier, QualifiedType}};
 
 // AST does not record declarations directly, instead just points to symbol table
 // might want to look into more advanced allocation strategy if requiring mutability in AST
@@ -11,15 +11,16 @@ pub(crate) enum ASTNode {
     TranslationUnit(Vec<ASTNode>, Scope),
 
     FunctionDefinition(Box<ASTNode>, Scope),
-    Declaration(Vec<Identifier>),
+    Declaration(Vec<Declaration>), // identifier + (optional) initializer
 
     Label(Rc<ASTNode>, Identifier), // both symbol table and AST keep a reference to labeled statement
-    CaseLabel(Box<ASTNode>),
+    CaseLabel(Box<ASTNode>, Box<ExpressionNode>),
     DefaultLabel(Box<ASTNode>),
 
     CompoundStatement(Vec<ASTNode>, Scope),
-    ExpressionStatement(Option<Box<ExpressionNode>>, Scope),
-    IfStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
+    ExpressionStatement(Box<ExpressionNode>, Scope),
+    NullStatement,
+    IfStatement(Box<ExpressionNode>, Box<ASTNode>, Option<Box<ASTNode>>, Scope),
     SwitchStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
     WhileStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
     DoWhileStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
@@ -31,8 +32,34 @@ pub(crate) enum ASTNode {
     ReturnStatement(Option<Box<ExpressionNode>>)
 }
 
+pub(crate) struct Declaration {
+    name: Identifier,
+    qualified_type: QualifiedType,
+    storage_class: StorageClass,
+    function_specifier: FunctionSpecifier,
+    initializer: Option<Box<ExpressionNode>>
+}
+
+impl Declaration {
+    pub fn new(
+        name: Identifier, 
+        qualified_type: QualifiedType, 
+        storage_class: StorageClass, 
+        function_specifier: FunctionSpecifier, 
+        initializer: Option<Box<ExpressionNode>>
+    ) -> Self {
+        Self {
+            name,
+            qualified_type,
+            storage_class,
+            function_specifier,
+            initializer,
+        }
+    }
+}
+
 // Essentially just an index into symbol table. Borrow checker makes reference difficult (though maybe this is something to look into)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Identifier {
     scope: Scope,
     name: String
@@ -47,7 +74,7 @@ impl Identifier {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Constant {
     // won't make distinction between long / long long
     Int(i32),
@@ -62,6 +89,7 @@ pub(crate) enum Constant {
     // enums have type int (6.4.4.3)
 }
 
+#[derive(Clone, PartialEq, Debug)]
 pub(crate) enum ExpressionNode {
     CommaExpr(Vec<ExpressionNode>, Option<CType>),
     

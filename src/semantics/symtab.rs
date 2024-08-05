@@ -15,14 +15,24 @@ pub(crate) enum ScopeType {
     FileScope
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Scope {
     scope_type: ScopeType,
     parent_scope: Option<usize>,
     index: usize,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+impl Scope {
+    pub(crate) fn new_file_scope() -> Self {
+        Self {
+            scope_type: ScopeType::FileScope,
+            parent_scope: None,
+            index: 0,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum StorageClass {
     Extern,
     Static,
@@ -31,6 +41,7 @@ pub(crate) enum StorageClass {
     None,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Linkage {
     External,
     Internal,
@@ -46,7 +57,7 @@ pub(crate) enum Symbol {
     Constant(Constant)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TypeIdx(usize);
 impl Index<TypeIdx> for Vec<CanonicalType> {
     type Output = CanonicalType;
@@ -77,15 +88,28 @@ pub(crate) struct ImmutableScopedSymbolTable<'a> {
     scope: Scope
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum SymtabError {
     #[error("Symbol `{0}` already declared")]
     AlreadyDeclared(String),
     #[error("type provided is not a tag")]
-    NotATag(String)
+    NotATag(String),
+    #[error("label `{0}` already declared within function")]
+    LabelAlreadyDeclared(String),
+
 }
 
 impl SymbolTable {
+    pub(crate) fn new() -> Self {
+        Self {
+            scopes: Vec::new(),
+            symbols: Vec::new(),
+            labels: Vec::new(),
+            tags: Vec::new(),
+            types: Vec::new(),
+        }
+    }
+
     pub(crate) fn create_scoped_view(&self, scope: Scope) -> ImmutableScopedSymbolTable {
         ImmutableScopedSymbolTable {
             table: self,
@@ -162,6 +186,32 @@ impl SymbolTable {
         Ok(())
     }
 
+    pub(crate) fn add_label(&mut self, scope: Scope, name: String, labeled_statement: Rc<ASTNode>) -> Result<(), SymtabError> {
+        // label names must be unique within a function
+        // -> easiest is just to associate labels w/ function scopes.
+        let mut scope = scope;
+        loop {
+            if scope.scope_type == ScopeType::FunctionScope {
+                break;
+            }
+            else if let Some(parent) = scope.parent_scope {
+                scope = self.scopes[parent];
+            }
+            else {
+                // maybe not unrecoverable, but grammar should 100% prevent this from happening
+                panic!("label statement declared with no function scope as ancestor (should be impossible)");
+            }
+        }
+
+        let fn_scope = &mut self.labels[scope.index];
+        if fn_scope.contains_key(&name) {
+            return Err(SymtabError::LabelAlreadyDeclared(name));
+        }
+
+        fn_scope.insert(name, labeled_statement);
+        Ok(())
+    }
+
     pub(crate) fn get_type(&self, idx: TypeIdx) -> &CanonicalType {
         &self.types[idx]
     }
@@ -182,6 +232,10 @@ impl SymbolTable {
         };
 
         self.scopes.push(new_scope);
+        // a little bit inefficient to keep around many empty hashmaps, but hopefully it's ok
+        self.symbols.push(Default::default());
+        self.labels.push(Default::default());
+        self.tags.push(Default::default());
         new_scope
     }
 
