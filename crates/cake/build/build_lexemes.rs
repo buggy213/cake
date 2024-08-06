@@ -1,4 +1,4 @@
-use std::{path::{PathBuf, Path}, fs, error::Error};
+use std::{error::Error, fs::{self, Metadata}, path::{Path, PathBuf}};
 
 use anyhow::Context;
 use codegen::*;
@@ -59,11 +59,13 @@ pub(super) struct Lexeme {
 pub(super) struct LexemeSetDef {
     name: String,
     pascal_case_name: String,
-    lexemes: Vec<Lexeme>
+    lexemes: Vec<Lexeme>,
+    file_metadata: std::fs::Metadata
 }
 
 fn parse_lexeme_def(def_path: &PathBuf) -> Result<LexemeSetDef, anyhow::Error> {
-    let def_string = fs::read_to_string(def_path.clone())
+    let def_metadata = fs::metadata(&def_path)?;
+    let def_string = fs::read_to_string(&def_path)
         .with_context(|| "unable to read def")?;
     
     
@@ -101,12 +103,31 @@ fn parse_lexeme_def(def_path: &PathBuf) -> Result<LexemeSetDef, anyhow::Error> {
         name,
         pascal_case_name,
         lexemes,
+        file_metadata: def_metadata
     };
 
     Ok(lexeme_set_def)
 }
 
 fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<(), anyhow::Error> {
+    // check if rs file already exists and if it is more recently modified than lexeme def
+    let rs_path = mod_path.join(format!("{}.rs", &lexeme_set_def.name));
+    match fs::metadata(&rs_path) {
+        Ok(metadata) => {
+            let target_mtime = metadata.modified()
+                .with_context(|| "error while checking rs output target mtime")?;
+            let dependency_mtime = lexeme_set_def.file_metadata.modified()
+                .with_context(|| "error while checking def file target mtime")?;
+
+            // target newer than dependency, no need to write rs file
+            if target_mtime > dependency_mtime {
+                return Ok(());
+            }
+        },
+        // no-op, might not exist (or might not have permissions) - in either case, writing is ok
+        Err(_) => {}, 
+    }
+    
     let mut base = Scope::new();
     base.import("crate::scanner::lexemes", "LexemeSet");
 
@@ -210,7 +231,6 @@ fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<
     base.push_impl(lexeme_set_impl);
 
     // write it out
-    let rs_path = mod_path.join(format!("{}.rs", &lexeme_set_def.name));
     fs::write(rs_path, base.to_string())?;
 
     Ok(())

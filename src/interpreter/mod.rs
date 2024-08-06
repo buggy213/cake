@@ -1,1 +1,0 @@
-// interpreter directly walks AST in order to evaluate a C program

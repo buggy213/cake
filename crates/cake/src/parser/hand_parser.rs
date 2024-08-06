@@ -151,6 +151,7 @@ impl ParserState {
         let mut me = Self {
             symbol_table: SymbolTable::new(),
             current_scope: Scope::new_file_scope(),
+            #[cfg(debug_assertions)]
             parse_tree_stack: VecDeque::new(),
         };
 
