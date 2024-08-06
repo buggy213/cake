@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use serde::{Deserialize, Serialize};
+
 use crate::scanner::regex::Regex;
 
 use super::{fa::FA, alphabet::AsciiChar, lexemes::LexemeSet};
@@ -7,6 +9,7 @@ use super::{fa::FA, alphabet::AsciiChar, lexemes::LexemeSet};
 // states = rows, 1 additional error state
 // characters = columns
 // -1 = invalid transition
+#[derive(Serialize, Deserialize)]
 struct DFATable {
     data: Vec<usize>,
     actions: Vec<i32>,

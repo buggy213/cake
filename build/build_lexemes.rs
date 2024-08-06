@@ -1,45 +1,72 @@
 use std::{path::{PathBuf, Path}, fs, error::Error};
 
+use anyhow::Context;
 use codegen::*;
 use convert_case::{Casing, Case};
 use glob::*;
+use lazy_static::lazy_static;
 
 // relative to root of package
 const LEXEME_DIR: &str = "src/scanner/lexeme_sets";
 const LEXEME_DIR_DEFS: &str = "src/scanner/lexeme_sets/defs";
+const LEXEME_DIR_TABLES: &str = "src/scanner/lexeme_sets/tables";
 
-pub fn parse_lexeme_defs() {
-    let package_root = std::env::var("CARGO_MANIFEST_DIR").expect("must use cargo as build system");
-    let lexeme_dir_abs = Path::new(package_root.as_str()).join(LEXEME_DIR);
-    let lexeme_dir_defs_abs = Path::new(package_root.as_str()).join(LEXEME_DIR_DEFS);
-    let lexeme_dir_defs_str = lexeme_dir_defs_abs.to_str().expect("path to package contains non-UTF8 characters, which cargo does not like");
-    println!("cargo:rerun-if-changed={}", lexeme_dir_defs_str);
+lazy_static! {
+    static ref PACKAGE_ROOT: String = std::env::var("CARGO_MANIFEST_DIR").expect("must use cargo as build system");
     
-    let mut mod_rs = Scope::new();
+    static ref LEXEME_DIR_ABS: PathBuf = Path::new(PACKAGE_ROOT.as_str()).join(LEXEME_DIR);
     
-    for entry in glob(&format!("{}/*.def", lexeme_dir_defs_str)).expect("failed to read glob pattern") {
-        
-        match entry {
-            Ok(p) => {
-                match parse_lexeme_def(&p, &lexeme_dir_abs) {
-                    Ok(s) => {
-                        mod_rs.raw(format!("pub mod {};", s).as_str());
-                    },
-                    Err(e) => panic!("{}", e),
-                }
-            },
-            Err(e) => panic!("{:?}", e),
-        }
-    }
-
-    let mod_rs_path = lexeme_dir_abs.join("mod.rs");
-    let _ = fs::write(mod_rs_path, mod_rs.to_string());
+    static ref LEXEME_DIR_DEF_ABS: PathBuf = Path::new(PACKAGE_ROOT.as_str()).join(LEXEME_DIR_DEFS);
+    static ref LEXEME_DIR_DEF_STR: String = LEXEME_DIR_DEF_ABS.to_str().expect("path to package contains non-UTF8 characters, which cargo does not like").to_string();
+    
+    static ref LEXEME_DIR_TABLES_ABS: PathBuf = Path::new(PACKAGE_ROOT.as_str()).join(LEXEME_DIR_TABLES);
+    static ref LEXEME_DIR_TABLES_STR: String = LEXEME_DIR_DEF_ABS.to_str().expect("path to package contains non-UTF8 characters, which cargo does not like").to_string();
 }
 
-fn parse_lexeme_def(def_path: &PathBuf, mod_path: &PathBuf) -> Result<String, Box<dyn Error>> {
-    let def_string = fs::read_to_string(def_path.clone())?;
+pub fn parse_lexeme_defs() -> Result<Vec<LexemeSetDef>, anyhow::Error> {
+    println!("cargo:rerun-if-changed={}", *LEXEME_DIR_DEF_STR);
     
-    let mut base = Scope::new();
+    let mut lexeme_set_defs = Vec::new();
+    for entry in glob(&format!("{}/*.def", *LEXEME_DIR_DEF_STR))? {
+        let entry = entry?;
+        let lexeme_set_def = parse_lexeme_def(&entry)?;
+        lexeme_set_defs.push(lexeme_set_def);
+    }
+
+    Ok(lexeme_set_defs)
+}
+
+pub fn write_lexeme_defs(lexeme_set_defs: &[LexemeSetDef]) -> Result<(), anyhow::Error> {
+    let mut mod_rs = Scope::new();
+
+    for lexeme_set_def in lexeme_set_defs {
+        write_lexeme_rs(&lexeme_set_def, &LEXEME_DIR_ABS)?;
+        mod_rs.raw(format!("pub mod {};", &lexeme_set_def.name).as_str());
+    }
+
+    let mod_rs_path = LEXEME_DIR_ABS.join("mod.rs");
+    fs::write(mod_rs_path, mod_rs.to_string())?;
+
+    Ok(())
+}
+
+
+pub(super) struct Lexeme {
+    name: String,
+    pattern: String,
+}
+
+pub(super) struct LexemeSetDef {
+    name: String,
+    pascal_case_name: String,
+    lexemes: Vec<Lexeme>
+}
+
+fn parse_lexeme_def(def_path: &PathBuf) -> Result<LexemeSetDef, anyhow::Error> {
+    let def_string = fs::read_to_string(def_path.clone())
+        .with_context(|| "unable to read def")?;
+    
+    
     let name = def_path.file_name()
         .expect("strange filename")
         .to_str()
@@ -47,40 +74,7 @@ fn parse_lexeme_def(def_path: &PathBuf, mod_path: &PathBuf) -> Result<String, Bo
         .replace(".def", "");
 
     let pascal_case_name = name.to_case(Case::Pascal);
-
-    let mut lexeme_enum = Enum::new(&pascal_case_name);
-    let mut lexeme_set_impl = Impl::new(&pascal_case_name);
-
-    let mut from_name = Function::new("from_name");
-    from_name.arg("name", "&str")
-        .ret("Option<Self>");
-
-    let mut from_name_match = Block::new("match name");
-
-    let mut from_id = Function::new("from_id");
-    from_id.arg("id", "u32")
-        .ret("Option<Self>");
-
-    let mut from_id_match = Block::new("match id");
-
-    let mut to_name = Function::new("to_name");
-    to_name.arg_self()
-        .ret("&'static str");
-
-    let mut to_name_match = Block::new("match self");
-
-    let mut to_id = Function::new("to_id");
-    to_id.arg_self()
-        .ret(Type::new("u32"))
-        .line("self as u32");
-
-    let mut pattern = Function::new("pattern");
-    pattern.arg_self()
-        .ret("&'static str");
-
-    let mut pattern_match = Block::new("match self");
-
-    let mut variants = 0;
+    let mut lexemes = Vec::new();
     let lines = def_string.split("\n");
     for line in lines {
         let name_string;
@@ -97,31 +91,26 @@ fn parse_lexeme_def(def_path: &PathBuf, mod_path: &PathBuf) -> Result<String, Bo
         }
         let name = name.trim();
         let pattern = pattern.trim();
-        
-        lexeme_enum.new_variant(name);
-        
-        let escaped_pattern = pattern.escape_default();
-        from_name_match.line(format!("\"{}\" => Some({}::{}),", name, pascal_case_name, name));
-        from_id_match.line(format!("{} => Some({}::{}),", variants, pascal_case_name, name));
-        to_name_match.line(format!("{}::{} => \"{}\",", pascal_case_name, name, name));
-        pattern_match.line(format!("{}::{} => \"{}\",", pascal_case_name, name, escaped_pattern));
-        variants += 1;
+        lexemes.push(Lexeme {
+            name: name.to_string(),
+            pattern: pattern.to_string(),
+        });
     }
+    
+    let lexeme_set_def = LexemeSetDef {
+        name,
+        pascal_case_name,
+        lexemes,
+    };
 
-    from_name_match.line("_ => None");
-    from_id_match.line("_ => None");
+    Ok(lexeme_set_def)
+}
 
-    let mut next = Function::new("next");
-    next.arg_self()
-        .ret("Option<Self>")
-        .line(format!("if self.to_id() >= {} - 1 {{ None }} else {{ Self::from_id(self.to_id() + 1) }}", variants));
-
-    let mut size = Function::new("size");
-    size.ret("u32")
-        .line(format!("{}", variants));
-
+fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<(), anyhow::Error> {
+    let mut base = Scope::new();
     base.import("crate::scanner::lexemes", "LexemeSet");
 
+    let mut lexeme_enum = Enum::new(&lexeme_set_def.pascal_case_name);
     lexeme_enum.derive("Clone");
     lexeme_enum.derive("Copy");
     lexeme_enum.derive("PartialEq");
@@ -130,32 +119,106 @@ fn parse_lexeme_def(def_path: &PathBuf, mod_path: &PathBuf) -> Result<String, Bo
     lexeme_enum.derive("Hash");
     lexeme_enum.repr("u32");
     lexeme_enum.vis("pub");
-    base.push_enum(lexeme_enum);
+    
+    let mut lexeme_set_impl = Impl::new(&lexeme_set_def.pascal_case_name);
 
+    // populate enum variants
+    lexeme_set_def.lexemes.iter()
+        .for_each(|x| { lexeme_enum.new_variant(&x.name); });
+
+    // populate (name: String) -> (Option<LexemeSet>) mapping
+    let mut from_name = Function::new("from_name");
+    from_name.arg("name", "&str")
+        .ret("Option<Self>");
+
+    let mut from_name_match = Block::new("match name");
+    lexeme_set_def.lexemes.iter()
+        .for_each(|x| {
+            from_name_match.line(format!("\"{}\" => Some({}::{}),", &x.name, &lexeme_set_def.pascal_case_name, &x.name));
+        });
+    
+    from_name_match.line("_ => None");
     from_name.push_block(from_name_match);
-    lexeme_set_impl.push_fn(from_name);
 
+    // populate (id: u32) -> (Option<LexemeSet>) mapping
+    let mut from_id = Function::new("from_id");
+    from_id.arg("id", "u32")
+        .ret("Option<Self>");
+
+    let mut from_id_match = Block::new("match id");
+    lexeme_set_def.lexemes.iter().enumerate()
+        .for_each(|(id, x)| {
+            from_id_match.line(format!("{} => Some({}::{}),", id, &lexeme_set_def.pascal_case_name, &x.name));
+        });
+    from_id_match.line("_ => None");
     from_id.push_block(from_id_match);
-    lexeme_set_impl.push_fn(from_id);
-    
+
+    // populate (EnumVariant) -> (name: String) mapping
+    let mut to_name = Function::new("to_name");
+    to_name.arg_self()
+        .ret("&'static str");
+
+    let mut to_name_match = Block::new("match self");
+    lexeme_set_def.lexemes.iter()
+        .for_each(|x| {
+            to_name_match.line(format!("{}::{} => \"{}\",", &lexeme_set_def.pascal_case_name, &x.name, &x.name));
+        });
     to_name.push_block(to_name_match);
-    lexeme_set_impl.push_fn(to_name);
     
-    lexeme_set_impl.push_fn(to_id);
+    // (EnumVariant) -> (id: u32) is just a cast since the lexeme set enum is always repr(u32)
+    let mut to_id = Function::new("to_id");
+    to_id.arg_self()
+        .ret(Type::new("u32"))
+        .line("self as u32");
 
+    // populate (EnumVariant) -> (pattern: String) mapping
+    let mut pattern = Function::new("pattern");
+    pattern.arg_self()
+        .ret("&'static str");
+
+    let mut pattern_match = Block::new("match self");
+    lexeme_set_def.lexemes.iter()
+        .for_each(|x| {
+            let escaped_pattern = x.pattern.escape_default();
+            pattern_match.line(format!("{}::{} => \"{}\",", &lexeme_set_def.pascal_case_name, &x.name, escaped_pattern));
+        });
     pattern.push_block(pattern_match);
-    lexeme_set_impl.push_fn(pattern);
-
-    lexeme_set_impl.push_fn(next);
-
-    lexeme_set_impl.push_fn(size);
     
+    let mut next = Function::new("next");
+    next.arg_self()
+        .ret("Option<Self>")
+        .line(format!("if self.to_id() >= {} - 1 {{ None }} else {{ Self::from_id(self.to_id() + 1) }}", lexeme_set_def.lexemes.len()));
+
+    let mut size = Function::new("size");
+    size.ret("u32")
+        .line(format!("{}", lexeme_set_def.lexemes.len()));
+    
+    // push trait functions into impl
+    lexeme_set_impl.push_fn(from_name);
+    lexeme_set_impl.push_fn(from_id);
+    lexeme_set_impl.push_fn(to_name);
+    lexeme_set_impl.push_fn(to_id);
+    lexeme_set_impl.push_fn(pattern);
+    lexeme_set_impl.push_fn(next);
+    lexeme_set_impl.push_fn(size);
+
+    // impl LexemeSet
     lexeme_set_impl.impl_trait("LexemeSet");
 
+    // push enum + implementation of LexemeSet into root
+    base.push_enum(lexeme_enum);
     base.push_impl(lexeme_set_impl);
 
-    let rs_path = mod_path.join(format!("{}.rs", name));
+    // write it out
+    let rs_path = mod_path.join(format!("{}.rs", &lexeme_set_def.name));
     fs::write(rs_path, base.to_string())?;
 
-    Ok(name)
+    Ok(())
 }
+
+pub fn write_lexeme_tables(lexeme_set_defs: &[LexemeSetDef]) -> Result<(), anyhow::Error> {
+    for lexeme_set_def in lexeme_set_defs {
+
+    }
+    todo!()
+} 
