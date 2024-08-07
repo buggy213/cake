@@ -482,7 +482,11 @@ fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Result
         },
 
         CLexemes::StringConst => {
-            ExprPart::Atom(Atom::StringLiteral(text.to_string()))
+            let mut text = text.to_string();
+            // remove quotes
+            text.pop();
+            text.remove(0);
+            ExprPart::Atom(Atom::StringLiteral(text))
         },
 
         _ => return Err(ParseError::UnexpectedToken(lexeme))
@@ -2635,5 +2639,45 @@ mod tests {
         );
     }
 
-    
+    #[test]
+    fn test_parse_hello_world() {
+        let hello_world = r#"
+        int main(int argc, char **argv) {
+            printf("Hello world!");
+            return 0;
+        }
+        "#;
+        
+        let mut dummy_state = ParserState::new();
+        let translation_unit = {
+            let main = {
+                let body = {
+                    dummy_state.open_scope(ScopeType::BlockScope);
+                    let printf = {
+                        let printf_ident = make_identifier(&mut dummy_state, "printf");
+                        let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
+                        let printf_expr = ExpressionNode::FunctionCall(
+                            Box::new(printf_ident), 
+                            vec![printf_arg], 
+                            None
+                        );
+                        ASTNode::ExpressionStatement(Box::new(printf_expr), dummy_state.current_scope)
+                    };
+                    let return_stmt = {
+                        let zero = ExpressionNode::Constant(Constant::Int(0));
+                        ASTNode::ReturnStatement(Some(Box::new(zero)))
+                    };
+                    dummy_state.close_scope().unwrap();
+                    ASTNode::CompoundStatement(vec![printf, return_stmt], dummy_state.current_scope)
+                };
+                ASTNode::FunctionDefinition(Box::new(body), dummy_state.current_scope)
+            };
+
+            ASTNode::TranslationUnit(vec![main], dummy_state.current_scope)
+        };
+
+        let (mut toks, mut state) = text_test_harness(hello_world);
+        let translation_unit_parsed = parse_translation_unit(&mut toks, &mut state).expect("parse failed");
+        assert_eq!(translation_unit, translation_unit_parsed);
+    }
 }

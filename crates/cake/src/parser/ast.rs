@@ -7,6 +7,7 @@ use crate::semantics::{symtab::{Scope, StorageClass}, types::{CType, FunctionSpe
 // AST does not record declarations directly, instead just points to symbol table
 // might want to look into more advanced allocation strategy if requiring mutability in AST
 // i think this should be ok for now
+#[derive(Debug, PartialEq)]
 pub(crate) enum ASTNode {
     TranslationUnit(Vec<ASTNode>, Scope),
 
@@ -32,6 +33,7 @@ pub(crate) enum ASTNode {
     ReturnStatement(Option<Box<ExpressionNode>>)
 }
 
+#[derive(Debug, PartialEq)]
 pub(crate) struct Declaration {
     name: Identifier,
     qualified_type: QualifiedType,
