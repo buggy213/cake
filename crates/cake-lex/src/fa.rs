@@ -1,7 +1,7 @@
 use std::{collections::{VecDeque, HashMap}, fmt::Debug, iter};
 
-use crate::scanner::alphabet::AsciiCharIterator;
-use crate::scanner::{alphabet::AsciiChar, regex::Regex};
+use crate::alphabet::AsciiCharIterator;
+use crate::{alphabet::AsciiChar, regex::Regex};
 
 use bit_set::BitSet;
 

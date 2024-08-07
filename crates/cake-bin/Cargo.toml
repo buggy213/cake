@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 petgraph = "0.6.4"
 cake = { path = "../cake" }
+cake-lex = { path = "../cake-lex" }

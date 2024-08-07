@@ -1,6 +1,6 @@
-use cake::scanner::fa::FA;
-use cake::scanner::regex::Regex;
-use cake::scanner::alphabet::AsciiChar;
+use crate::fa::FA;
+use crate::regex::Regex;
+use crate::alphabet::AsciiChar;
 
 fn compile_regex(re_str: &str, quiet: bool) -> FA<AsciiChar> {
     let regex = Regex::from_str(re_str).expect("failed to parse regex");

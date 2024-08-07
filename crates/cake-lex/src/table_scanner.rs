@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-use crate::scanner::regex::Regex;
+use crate::regex::Regex;
 
 use super::{fa::FA, alphabet::AsciiChar, lexemes::LexemeSet};
 
@@ -10,16 +10,16 @@ use super::{fa::FA, alphabet::AsciiChar, lexemes::LexemeSet};
 // characters = columns
 // -1 = invalid transition
 #[derive(Serialize, Deserialize)]
-struct DFATable {
+pub struct DFATable {
     data: Vec<usize>,
     actions: Vec<i32>,
     states: usize,
-    inputs: usize
+    inputs: usize,
+    initial_state: usize,
 }
 
 pub struct DFAScanner {
     table: DFATable,
-    initial_state: usize,
     state: usize
 }
 
@@ -28,7 +28,7 @@ impl DFATable {
         self.data[current_state * self.inputs + ch as usize]
     }
 
-    fn from_ascii_dfa(dfa: &FA<AsciiChar>) -> DFATable {
+    pub fn from_ascii_dfa(dfa: &FA<AsciiChar>) -> DFATable {
         let num_states: usize = dfa.nodes.len() + 1;
         let num_inputs: usize = 128;
         let mut data: Vec<usize> = Vec::with_capacity(num_states * num_inputs);
@@ -52,7 +52,8 @@ impl DFATable {
             data, 
             actions, 
             states: num_states, 
-            inputs: num_inputs 
+            inputs: num_inputs,
+            initial_state: dfa.initial_state
         }
     } 
 }
@@ -61,7 +62,6 @@ impl DFAScanner {
     pub fn from_ascii_dfa(dfa: &FA<AsciiChar>) -> DFAScanner {
         DFAScanner {
             table: DFATable::from_ascii_dfa(dfa),
-            initial_state: dfa.initial_state,
             state: dfa.initial_state,
         }
     }
@@ -90,7 +90,7 @@ impl DFAScanner {
         let mut failed: Vec<bool> = Vec::new();
         failed.resize(input.len() * self.table.states, false);
 
-        self.state = self.initial_state;
+        self.state = self.table.initial_state;
         let mut stack: VecDeque<usize> = VecDeque::new();
         stack.push_back(usize::MAX); // MAX as sentinel
         

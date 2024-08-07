@@ -12,7 +12,7 @@ use petgraph::adj::NodeIndex;
 use petgraph::graph::DiGraph;
 
 use crate::scanner::TokenStream;
-use crate::scanner::lexemes::LexemeSet;
+use cake_lex::LexemeSet;
 
 use super::grammar::Grammar;
 use super::grammar::NT;

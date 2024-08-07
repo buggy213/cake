@@ -1,6 +1,8 @@
 use std::time::Instant;
 
-use cake::{parser::{grammar::{EBNF, Grammar}, earley::{self}}, scanner::{lexeme_sets::c_lexemes::CLexemes, table_scanner::DFAScanner, RawTokenStream}};
+use cake::{parser::{grammar::{EBNF, Grammar}, earley::{self}}, scanner::{lexeme_sets::c_lexemes::CLexemes, RawTokenStream}};
+use cake_lex::DFAScanner;
+
 use petgraph::dot::{Dot, Config};
 
 fn main() {

@@ -2542,7 +2542,7 @@ fn parse_jump_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Res
 
 #[cfg(test)]
 mod tests {
-    use crate::scanner::table_scanner::DFAScanner;
+    use cake_lex::DFAScanner;
 
     use super::*;
 

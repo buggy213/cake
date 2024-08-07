@@ -1,6 +1,7 @@
 use std::{error::Error, fs::{self, Metadata}, path::{Path, PathBuf}};
 
 use anyhow::Context;
+use cake_lex::{fa::FA, regex::Regex, DFATable, LexemeSet};
 use codegen::*;
 use convert_case::{Casing, Case};
 use glob::*;
@@ -129,7 +130,8 @@ fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<
     }
     
     let mut base = Scope::new();
-    base.import("crate::scanner::lexemes", "LexemeSet");
+    base.import("cake_lex", "LexemeSet");
+    base.import("cake_lex", "DFATable");
 
     let mut lexeme_enum = Enum::new(&lexeme_set_def.pascal_case_name);
     lexeme_enum.derive("Clone");
@@ -226,9 +228,17 @@ fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<
     // impl LexemeSet
     lexeme_set_impl.impl_trait("LexemeSet");
 
+    // impl for loading DFATable
+    let mut enum_impl = Impl::new(lexeme_enum.ty());
+    let load_table_fn = enum_impl.new_fn("load_table");
+    load_table_fn.ret("DFATable");
+    let de_statement = format!("serde_json::from_str(include_str!(\"tables/{}\")).expect(\"bad precompiled table\")", &lexeme_set_def.name);
+    load_table_fn.line(de_statement);
+
     // push enum + implementation of LexemeSet into root
     base.push_enum(lexeme_enum);
     base.push_impl(lexeme_set_impl);
+    base.push_impl(enum_impl);
 
     // write it out
     fs::write(rs_path, base.to_string())?;
@@ -238,7 +248,45 @@ fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<
 
 pub fn write_lexeme_tables(lexeme_set_defs: &[LexemeSetDef]) -> Result<(), anyhow::Error> {
     for lexeme_set_def in lexeme_set_defs {
-
+        write_lexeme_table(lexeme_set_def, &LEXEME_DIR_TABLES_ABS)?;
     }
-    todo!()
+    
+    Ok(())
 } 
+
+fn write_lexeme_table(lexeme_set_def: &LexemeSetDef, path: &PathBuf) -> Result<(), anyhow::Error> {
+    // check if table is newer than definition
+    let table_path = path.join(&lexeme_set_def.name);
+    match fs::metadata(&table_path) {
+        Ok(metadata) => {
+            let target_mtime = metadata.modified()
+                .with_context(|| "error while checking rs output target mtime")?;
+            let dependency_mtime = lexeme_set_def.file_metadata.modified()
+                .with_context(|| "error while checking def file target mtime")?;
+
+            // target newer than dependency, no need to write DFA table file
+            if target_mtime > dependency_mtime {
+                return Ok(());
+            }
+        },
+        // doesn't exist / not accessible - try to write either way
+        Err(_) => {},
+    }
+
+    let regexes: Result<Vec<_>, _> = lexeme_set_def.lexemes.iter()
+        .map(|l| Regex::from_str(&l.pattern))
+        .collect();
+    let regexes = regexes
+        .with_context(|| format!("error while processing regex patterns for {:?}", path))?;
+    let nfa = FA::combine_res(&regexes);
+    let dfa = FA::dfa_from_nfa(&nfa);
+    let dfa = FA::minimize_dfa(&dfa, true);
+    let dfa_table = DFATable::from_ascii_dfa(&dfa);
+    let serialized_table = serde_json::to_string(&dfa_table)
+        .with_context(|| format!("failed while serializing {:?}", path))?;
+    
+    fs::write(&table_path, &serialized_table)
+        .with_context(|| format!("failed while writing serialized table for {:?}", path))?;
+
+    Ok(())
+}

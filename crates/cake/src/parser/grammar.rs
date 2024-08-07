@@ -2,7 +2,8 @@ use std::{marker::PhantomData, collections::{HashMap, VecDeque, HashSet}};
 
 use bit_set::BitSet;
 
-use crate::{scanner::lexemes::LexemeSet, util::RangeUInt};
+use cake_lex::LexemeSet;
+use cake_util::RangeUInt;
 
 pub type NT = usize;
 

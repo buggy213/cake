@@ -25,7 +25,8 @@
 
 use std::collections::VecDeque;
 
-use crate::util::RangeUInt;
+use cake_util::RangeUInt;
+use thiserror::Error;
 
 use super::alphabet::AsciiChar;
 
@@ -53,8 +54,9 @@ enum ClassItem<A: Eq> {
     RangeEnd(A),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum RegexError {
+    #[error("Malformed regex")]
     Malformed
 }
 

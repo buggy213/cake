@@ -1,4 +1,5 @@
-use cake::{scanner::{lexeme_sets::expressions::Expressions, table_scanner::DFAScanner, RawTokenStream}, parser::{grammar::{EBNF, Grammar}, earley}};
+use cake::{scanner::{lexeme_sets::expressions::Expressions, RawTokenStream}, parser::{grammar::{EBNF, Grammar}, earley}};
+use cake_lex::DFAScanner;
 use petgraph::dot::{Dot, Config};
 
 

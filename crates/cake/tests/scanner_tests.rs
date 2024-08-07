@@ -1,10 +1,14 @@
-use cake::scanner::{regex::Regex, fa::FA, lexeme_sets::c_lexemes::CLexemes, table_scanner::DFAScanner, lexemes::LexemeSet};
+use cake_lex::fa::FA;
+use cake_lex::regex::Regex;
+use cake_lex::LexemeSet;
+use cake_lex::DFAScanner;
+use cake::scanner::lexeme_sets::c_lexemes::CLexemes;
 
 #[test]
 fn test_basic() {
-    let c_lexemes: Vec<Regex<_>> = CLexemes::iter()
+    let c_lexemes = CLexemes::iter()
         .map(|x| Regex::from_str(x.pattern()).expect("failed to parse regex"))
-        .collect();
+        .collect::<Vec<_>>();
 
     let nfa = FA::combine_res(&c_lexemes);
     println!("nfa = {:?}", nfa);

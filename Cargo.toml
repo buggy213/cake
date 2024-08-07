@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/cake*"]
+resolver = "2"
 
 # improve test performance slightly
 [profile.test]
