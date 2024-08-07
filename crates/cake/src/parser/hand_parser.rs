@@ -137,6 +137,12 @@ enum ParseError {
     BadInt,
     #[error("couldn't parse float")]
     BadFloat(#[source] ParseFloatError),
+    #[error("bad function definition")]
+    BadFunctionDefinition,
+    #[error("cannot crate array of incomplete type")]
+    ArrayOfIncompleteType,
+    #[error("function cannot return function / array")]
+    BadFunctionReturnType,
 }
 
 struct ParserState {
@@ -721,7 +727,13 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
     loop {
         match toks.peek() {
             Some((lexeme, text, _)) => {
-                match to_expr_part(lexeme, text, state)? {
+                let expr_part = match to_expr_part(lexeme, text, state) {
+                    Ok(expr_part) => expr_part,
+                    // next token might not be part of expression at all
+                    Err(ParseError::UnexpectedToken(_)) => break,
+                    Err(e @ _) => return Err(e)
+                };
+                match expr_part {
                     ExprPart::Operator(op) => {
                         if let Some(left_bp) = postfix_binding_power(op) {
                             if left_bp < min_bp {
@@ -1079,15 +1091,22 @@ fn parse_external_declaration(toks: &mut CTokenStream, state: &mut ParserState) 
         storage_class, 
         function_specifier
     ) = declaration_specifiers.clone();
-    
     // both will include a (concrete) declarator
     let (declaration_type, name) = parse_declarator(toks, state, base_type)?;
     let mut declarations: Vec<Declaration> = Vec::new();
-
+    
     match toks.peek() {
         Some((CLexemes::LBrace, _, _)) => {
-            // must be a function definition
+            // must be a function definition; declarator must be function type
+            match declaration_type.base_type {
+                CType::FunctionType { prototype_scope, .. } => {
+                    // set scope to function prototype scope so that we inherit parameter names
+                    state.current_scope = prototype_scope;
+                },
+                _ => return Err(ParseError::BadFunctionDefinition)
+            }
             let function_body = parse_compound_statement(toks, state)?;
+            state.close_scope()?;
 
             let function_node = ASTNode::FunctionDefinition(
                 Box::new(function_body), 
@@ -1834,12 +1853,13 @@ fn parse_initializer(toks: &mut CTokenStream, state: &mut ParserState) -> Result
 
 // The concept of a declarator basically only exists during parsing and isn't semantically meaningful elsewhere
 // "abstract" declarator has no identifier
-struct Declarator(QualifiedType, Option<String>);
+struct Declarator(QualifiedType, Option<String>, Option<Scope>);
 fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_type: QualifiedType) -> Result<Declarator, ParseError> {
     let mut pointers: Vec<(TypeQualifier, usize)> = Vec::new();
     enum ArrayOrFunctionDeclarator { ArrayDeclarator(ArrayDeclarator), FunctionDeclarator(FunctionDeclarator) }
     let mut array_or_function_declarators: Vec<(ArrayOrFunctionDeclarator, usize)> = Vec::new();
     let mut identifier: Option<String> = None;
+    let mut outer_fn_scope: Option<Scope> = None;
     let mut level: usize = 0;
     loop {
         match toks.peek() {
@@ -1874,6 +1894,11 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                 array_or_function_declarators.push((ArrayOrFunctionDeclarator::FunctionDeclarator(function), level));
             },
             Some((CLexemes::RParen, _, _)) => {
+                // e.g. void f(int a, int b)
+                // don't want declarator of b to be confused w/ right paren
+                if level == 0 {
+                    break;
+                }
                 level -= 1;
             },
             Some((other, _, _)) => {
@@ -1913,6 +1938,26 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                 let (d, _) = array_or_function_declarators.pop().unwrap();
                 match d {
                     ArrayOrFunctionDeclarator::ArrayDeclarator(array) => {
+                        match current_type.base_type {
+                            CType::IncompleteArrayType { .. }
+                            | CType::FunctionType { .. }
+                            | CType::Void => {
+                                return Err(ParseError::ArrayOfIncompleteType);
+                            },
+                            // have to do lookup to check if its incomplete
+                            CType::StructureTypeRef { symtab_idx }
+                            | CType::UnionTypeRef { symtab_idx } => {
+                                match state.symbol_table.get_type(symtab_idx) {
+                                    CanonicalType::IncompleteUnionType { .. }
+                                    | CanonicalType::IncompleteStructureType { .. } => {
+                                        return Err(ParseError::ArrayOfIncompleteType);
+                                    }
+                                    _ => {}
+                                }
+                            },
+                            _ => {}
+                        }
+                        
                         let new_type: CType;
                         if let Some(size) = array.1 {
                             new_type = CType::ArrayType { 
@@ -1925,18 +1970,37 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                                 element_type: Box::new(current_type) 
                             };
                         }
+
+                        if level == 0 {
+                            outer_fn_scope = None;
+                        }
+
                         current_type = QualifiedType {
                             base_type: new_type,
                             qualifier: array.0
                         }
                     },
                     ArrayOrFunctionDeclarator::FunctionDeclarator(func) => {
+                        match current_type.base_type {
+                            CType::IncompleteArrayType { .. }
+                            | CType::ArrayType { .. }
+                            | CType::FunctionType { .. } => {
+                                return Err(ParseError::BadFunctionReturnType);
+                            }
+                            _ => {}
+                        }
+                        
                         let new_type = CType::FunctionType {
                             parameter_types: func.argument_types,
                             return_type: Box::new(current_type),
                             function_specifier: FunctionSpecifier::None, // TODO: figure out inline
                             varargs: func.varargs,
+                            prototype_scope: func.prototype_scope
                         };
+
+                        if level == 0 {
+                            outer_fn_scope = Some(func.prototype_scope);
+                        }
 
                         current_type = QualifiedType {
                             base_type: new_type,
@@ -1948,7 +2012,7 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
         }
     }
 
-    Ok(Declarator(current_type, identifier))
+    Ok(Declarator(current_type, identifier, outer_fn_scope))
 }
 
 fn parse_declarator(toks: &mut CTokenStream, state: &mut ParserState, base_type: QualifiedType) -> Result<(QualifiedType, String), ParseError> {
@@ -2023,6 +2087,7 @@ fn parse_array_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> R
             },
             Some((other, _, _)) => {
                 // TODO: support integer constant expressions here
+                todo!();
                 return Err(ParseError::UnexpectedToken(other));
             }
             None => { return Err(ParseError::UnexpectedEOF); }
@@ -2651,6 +2716,7 @@ mod tests {
         let mut dummy_state = ParserState::new();
         let translation_unit = {
             let main = {
+                dummy_state.open_scope(ScopeType::FunctionScope);
                 let body = {
                     dummy_state.open_scope(ScopeType::BlockScope);
                     let printf = {
@@ -2670,6 +2736,7 @@ mod tests {
                     dummy_state.close_scope().unwrap();
                     ASTNode::CompoundStatement(vec![printf, return_stmt], dummy_state.current_scope)
                 };
+                dummy_state.close_scope().unwrap();
                 ASTNode::FunctionDefinition(Box::new(body), dummy_state.current_scope)
             };
 
@@ -2678,6 +2745,34 @@ mod tests {
 
         let (mut toks, mut state) = text_test_harness(hello_world);
         let translation_unit_parsed = parse_translation_unit(&mut toks, &mut state).expect("parse failed");
-        assert_eq!(translation_unit, translation_unit_parsed);
+        assert_eq!(dbg!(translation_unit), dbg!(translation_unit_parsed));
+    }
+
+    #[test]
+    fn parse_function_definition_bad_1() {
+        // no arguments
+        let function_bad_1 = r#"
+        int main {
+            printf("Hello world!");
+            return 0;
+        }
+        "#;
+
+        let (mut toks, mut state) = text_test_harness(&function_bad_1);
+        assert!(parse_external_declaration(&mut toks, &mut state).is_err());
+    }
+
+    #[test]
+    fn parse_function_definition_bad_2() {
+        // pointer to function
+        let function_bad_2 = r#"
+        int (*main)(int argc, char *argv[]) {
+            printf("Hello world!");
+            return 0;
+        }
+        "#;
+
+        let (mut toks, mut state) = text_test_harness(&function_bad_2);
+        assert!(parse_external_declaration(&mut toks, &mut state).is_err());
     }
 }

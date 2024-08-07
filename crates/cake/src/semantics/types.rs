@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use super::symtab::TypeIdx;
+use super::symtab::{Scope, TypeIdx};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BasicType {
@@ -85,7 +85,8 @@ pub(crate) enum CType {
         parameter_types: Vec<QualifiedType>,
         return_type: Box<QualifiedType>,
         function_specifier: FunctionSpecifier,
-        varargs: bool
+        varargs: bool,
+        prototype_scope: Scope
     },
     PointerType {
         pointee_type: Box<QualifiedType>,
