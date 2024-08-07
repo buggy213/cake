@@ -231,9 +231,11 @@ fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<
     // impl for loading DFATable
     let mut enum_impl = Impl::new(lexeme_enum.ty());
     let load_table_fn = enum_impl.new_fn("load_table");
+    load_table_fn.vis("pub(crate)");
     load_table_fn.ret("DFATable");
     let de_statement = format!("serde_json::from_str(include_str!(\"tables/{}\")).expect(\"bad precompiled table\")", &lexeme_set_def.name);
     load_table_fn.line(de_statement);
+    
 
     // push enum + implementation of LexemeSet into root
     base.push_enum(lexeme_enum);

@@ -80,6 +80,14 @@ impl DFAScanner {
         scanner
     }
 
+    pub fn new(table: DFATable) -> Self {
+        let state = table.initial_state;
+        Self {
+            table,
+            state
+        }
+    }
+
     // output: lexeme + action + next token cursor
     pub fn next_word<'a>(&mut self, input: &'a [u8], start_cursor: usize) -> (&'a str, i32, usize) {
         if start_cursor >= input.len() {
