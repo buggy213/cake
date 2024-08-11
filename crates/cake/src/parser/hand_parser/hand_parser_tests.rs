@@ -222,3 +222,139 @@ fn parse_function_definition_bad_2() {
     let (mut toks, mut state) = text_test_harness(&function_bad_2);
     assert!(parse_external_declaration(&mut toks, &mut state).is_err());
 }
+
+#[test]
+fn parse_abstract_type_test_basic() {
+    let abstract_type_str = r#"
+    int
+    "#;
+
+    let abstract_type = QualifiedType {
+        base_type: CType::BasicType { basic_type: BasicType::Int },
+        qualifier: TypeQualifier::empty(),
+    };
+
+    let (mut toks, mut state) = text_test_harness(&abstract_type_str);
+    let base_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
+    assert_eq!(abstract_type, base_type_parsed);
+}
+
+// test lookahead to distinguish grouping parens in (abstract) declarator and function params
+#[test]
+fn parse_abstract_type_test_1() { 
+    let ptr_abstract_type_str = r#"
+    int (*)
+    "#;
+    
+    let base_type = QualifiedType {
+        base_type: CType::BasicType { basic_type: BasicType::Int },
+        qualifier: TypeQualifier::empty()
+    };
+    
+    let abstract_type = {
+        QualifiedType {
+            base_type: CType::PointerType { pointee_type: Box::new(base_type) },
+            qualifier: TypeQualifier::empty(),
+        }
+    };
+
+    let (mut toks, mut state) = text_test_harness(&ptr_abstract_type_str);
+    let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
+    assert_eq!(abstract_type, abstract_type_parsed);
+}
+
+// test lookahead to distinguish grouping parens in (abstract) declarator and function params
+#[test]
+fn parse_abstract_type_test_2() {
+    let fn_abstract_type_str = r#"
+    int ()
+    "#;
+
+    let base_type = QualifiedType {
+        base_type: CType::BasicType { basic_type: BasicType::Int },
+        qualifier: TypeQualifier::empty()
+    };
+    
+    let mut dummy_state = ParserState::new();
+    let abstract_type = {
+        let fn_type_idx = {
+            dummy_state.open_scope(ScopeType::FunctionScope);
+            let fn_type = CanonicalType::FunctionType { 
+                parameter_types: vec![], 
+                return_type: Box::new(base_type), 
+                function_specifier: FunctionSpecifier::None, 
+                varargs: false, 
+                prototype_scope: dummy_state.current_scope
+            };
+            dummy_state.close_scope().unwrap();
+            dummy_state.add_type(fn_type)
+        };
+        QualifiedType {
+            base_type: CType::FunctionTypeRef { symtab_idx: fn_type_idx },
+            qualifier: TypeQualifier::empty(),
+        }
+    };
+
+    let (mut toks, mut state) = text_test_harness(&fn_abstract_type_str);
+    let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
+    assert_eq!(abstract_type, abstract_type_parsed);
+    assert_eq!(state.types, dummy_state.types);
+}
+
+#[test]
+fn parse_abstract_type_test_3() {
+    // "array of constant pointers to functions which take an unsigned int and varargs and return int"
+    let abstract_type_str = r#"
+    int (*const [])(unsigned int, ...)
+    "#;
+    
+    let base_type = QualifiedType {
+        base_type: CType::BasicType { basic_type: BasicType::Int },
+        qualifier: TypeQualifier::empty()
+    };
+    let mut dummy_state = ParserState::new();
+    let abstract_type = {
+        let const_ptr = {
+            let fn_type = {
+                let uint_type = {
+                    QualifiedType {
+                        base_type: CType::BasicType { basic_type: BasicType::UInt },
+                        qualifier: TypeQualifier::empty(),
+                    }
+                };
+                dummy_state.open_scope(ScopeType::FunctionScope);
+                let anon_fn_type = CanonicalType::FunctionType { 
+                    parameter_types: vec![
+                        (None, uint_type)
+                    ], 
+                    return_type: Box::new(base_type), 
+                    function_specifier: FunctionSpecifier::None, 
+                    varargs: true, 
+                    prototype_scope: dummy_state.current_scope
+                };
+                dummy_state.close_scope().unwrap();
+                let anon_fn_type_idx = dummy_state.add_type(anon_fn_type);
+
+                QualifiedType {
+                    base_type: CType::FunctionTypeRef { symtab_idx: anon_fn_type_idx },
+                    qualifier: TypeQualifier::empty()
+                }
+            };
+
+            QualifiedType {
+                base_type: CType::PointerType { pointee_type: Box::new(fn_type) },
+                qualifier: TypeQualifier::Const,
+            }
+        };
+
+        QualifiedType {
+            base_type: CType::IncompleteArrayType { element_type: Box::new(const_ptr) },
+            qualifier: TypeQualifier::empty(),
+        }
+    };
+
+    let (mut toks, mut state) = text_test_harness(&abstract_type_str);
+    let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
+    assert_eq!(abstract_type, abstract_type_parsed);
+    assert_eq!(state.types, dummy_state.types);
+}

@@ -1213,6 +1213,14 @@ fn parse_declaration(toks: &mut CTokenStream, state: &mut ParserState) -> Result
     res
 }
 
+// may need to change this interface later
+// type names are used during cast expressions, as argument of sizeof, and in compound initializers
+fn parse_type_name(toks: &mut CTokenStream, state: &mut ParserState) -> Result<QualifiedType, ParseError> {
+    let base_type = parse_specifier_qualifier_list(toks, state)?;
+    let derived_type = parse_abstract_declarator(toks, state, base_type)?;
+    Ok(derived_type)
+}
+
 // distinguish between a declaration vs. expression
 // will need to be careful with typedefs here
 fn is_lookahead_declaration(toks: &mut CTokenStream, _state: &mut ParserState) -> bool {
@@ -1472,7 +1480,7 @@ fn parse_declaration_specifiers_base(
                     break;
                 }
             },
-            None => { return Err(ParseError::UnexpectedEOF); }
+            None => { break; }
         }
     }
 
@@ -1924,29 +1932,50 @@ fn parse_initializer(toks: &mut CTokenStream, state: &mut ParserState) -> Result
 struct Declarator(QualifiedType, Option<String>);
 fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_type: QualifiedType) -> Result<Declarator, ParseError> {
     let mut pointers: Vec<(TypeQualifier, usize)> = Vec::new();
+    #[derive(Debug)]
     enum ArrayOrFunctionDeclarator { ArrayDeclarator(ArrayDeclarator), FunctionDeclarator(FunctionDeclarator) }
     let mut array_or_function_declarators: Vec<(ArrayOrFunctionDeclarator, usize)> = Vec::new();
     let mut identifier: Option<String> = None;
     let mut level: usize = 0;
+    let mut max_level: usize = 0;
     loop {
         match toks.peek() {
             Some((CLexemes::Star, _, _)) => {
                 let pointer = parse_pointer_declarator(toks, state)?;
-                pointers.push((pointer.0, 0))
+                pointers.push((pointer.0, level))
             },
             Some((CLexemes::LParen, _, _)) => {
-                // parse inner declarator
-                toks.eat(CLexemes::LParen);
-                level += 1;
-                break;
+                // problem: in abstract declarator, identifer is omitted, so this might be grouping paren 
+                // or a function. need lookahead to determine which
+                match toks.peekn(1) {
+                    Some((CLexemes::Star, _, _))
+                    | Some((CLexemes::LParen, _, _))
+                    | Some((CLexemes::LBracket, _, _)) => {
+                        // "declarator part", could not appear in a parameter type list 
+                        // since parameter type requires a type specifier, which is disjoint from these lexemes
+                        toks.eat(CLexemes::LParen);
+                        level += 1;
+                        max_level += 1;
+                    }
+                    Some((CLexemes::RParen, _, _)) => {
+                        // must be void function, so fall through without consuming LParen
+                        break;
+                    }
+                    Some((_, _, _)) => {
+                        // must be function declarator by earlier reasoning, fall through
+                        break;
+                    }
+                    None => {
+                        return Err(ParseError::UnmatchedParensInDeclarator);
+                    }
+                }
             },
             Some((CLexemes::Identifier, ident, _)) => {
                 identifier = Some(ident.to_string());
                 toks.eat(CLexemes::Identifier);
                 break;
             },
-            Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)); },
-            None => { return Err(ParseError::UnexpectedEOF); }
+            Some((_, _, _)) | None => { break; }
         }
     }
 
@@ -1962,16 +1991,14 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
             },
             Some((CLexemes::RParen, _, _)) => {
                 // e.g. void f(int a, int b)
-                // don't want declarator of b to be confused w/ right paren
+                // don't want declarator of b to be confused w/ right paren of f's function declaration
                 if level == 0 {
                     break;
                 }
+                toks.eat(CLexemes::RParen);
                 level -= 1;
             },
-            Some((other, _, _)) => {
-                break;
-            },
-            None => { return Err(ParseError::UnexpectedEOF); }
+            Some((_, _, _)) | None => { break; }
         }
     }
     
@@ -1987,9 +2014,7 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
     // e.g. struct unknown function(struct unknown2);
     // is fine; presumably this is so code which only uses its address is ok (?), but any attempt to call it is obviously
     // not going to work until those incomplete types are filled in
-    let max_level = level;
     let mut pointer_index: usize = 0;
-    array_or_function_declarators.reverse();
     let mut current_type = base_type;
     for level in 0..=max_level {
         while pointer_index < pointers.len() && pointers[pointer_index].1 == level {
@@ -2077,6 +2102,7 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                     },
                 };
             }
+            break;
         }
     }
 
@@ -2103,6 +2129,7 @@ fn parse_abstract_declarator(toks: &mut CTokenStream, state: &mut ParserState, b
     }
 }
 
+#[derive(Debug)]
 struct PointerDeclarator(TypeQualifier);
 fn parse_pointer_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> Result<PointerDeclarator, ParseError> {
     let mut qualifier = TypeQualifier::empty();
@@ -2126,6 +2153,7 @@ fn parse_pointer_declarator(toks: &mut CTokenStream, state: &mut ParserState) ->
         }
     }
 }
+#[derive(Debug, Clone, Copy)]
 struct ArrayDeclarator(TypeQualifier, Option<usize>);
 fn parse_array_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ArrayDeclarator, ParseError> {
     let mut qualifier = TypeQualifier::empty();
@@ -2166,6 +2194,7 @@ fn parse_array_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> R
 
 // only time scope is needed is if this is actually a function definition, and not
 // just a prototype
+#[derive(Debug, Clone)]
 struct FunctionDeclarator {
     argument_types: Vec<FunctionArgument>, 
     varargs: bool, 
