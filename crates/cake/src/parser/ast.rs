@@ -4,17 +4,14 @@ use std::rc::Rc;
 
 use crate::semantics::{symtab::{Scope, StorageClass}, types::{CType, FunctionSpecifier, QualifiedType}};
 
-// AST does not record declarations directly, instead just points to symbol table
-// might want to look into more advanced allocation strategy if requiring mutability in AST
-// i think this should be ok for now
 #[derive(Debug, PartialEq)]
 pub(crate) enum ASTNode {
     TranslationUnit(Vec<ASTNode>, Scope),
 
-    FunctionDefinition(Box<ASTNode>, Scope),
+    FunctionDefinition(Box<Declaration>, Box<ASTNode>, Scope),
     Declaration(Vec<Declaration>), // identifier + (optional) initializer
 
-    Label(Rc<ASTNode>, Identifier), // both symbol table and AST keep a reference to labeled statement
+    Label(Rc<ASTNode>, Identifier), // both symbol table and label node will have reference to labeled stmt
     CaseLabel(Box<ASTNode>, Box<ExpressionNode>),
     DefaultLabel(Box<ASTNode>),
 
@@ -25,7 +22,13 @@ pub(crate) enum ASTNode {
     SwitchStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
     WhileStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
     DoWhileStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
-    ForStatement(Option<Box<ASTNode>>, Option<Box<ExpressionNode>>, Option<Box<ExpressionNode>>, Scope),
+    ForStatement(
+        Option<Box<ASTNode>>, 
+        Option<Box<ExpressionNode>>, 
+        Option<Box<ExpressionNode>>,
+        Box<ASTNode>, 
+        Scope
+    ),
     
     GotoStatement(Identifier),
     ContinueStatement,

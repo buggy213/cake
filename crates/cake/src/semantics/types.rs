@@ -44,6 +44,9 @@ pub(crate) struct QualifiedType {
     pub(crate) qualifier: TypeQualifier
 }
 
+pub(crate) type FunctionArgument = (Option<String>, QualifiedType);
+
+#[derive(Debug, PartialEq)]
 pub(crate) enum CanonicalType {
     // "Canonical" types go into symbol table, should try to only keep 1 around
     // if possible. Incomplete types can be std::mem::replace'd once they are completed
@@ -66,6 +69,13 @@ pub(crate) enum CanonicalType {
         tag: Option<String>,
         members: Vec<EnumVariant>,
     },
+    FunctionType {
+        parameter_types: Vec<FunctionArgument>,
+        return_type: Box<QualifiedType>,
+        function_specifier: FunctionSpecifier,
+        varargs: bool,
+        prototype_scope: Scope
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,13 +91,7 @@ pub(crate) enum CType {
         size: usize,
         element_type: Box<QualifiedType>,
     },
-    FunctionType {
-        parameter_types: Vec<QualifiedType>,
-        return_type: Box<QualifiedType>,
-        function_specifier: FunctionSpecifier,
-        varargs: bool,
-        prototype_scope: Scope
-    },
+    
     PointerType {
         pointee_type: Box<QualifiedType>,
     },
@@ -102,6 +106,9 @@ pub(crate) enum CType {
         symtab_idx: TypeIdx
     },
     EnumTypeRef {
+        symtab_idx: TypeIdx
+    },
+    FunctionTypeRef {
         symtab_idx: TypeIdx
     }
 }

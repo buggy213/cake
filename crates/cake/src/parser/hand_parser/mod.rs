@@ -1,17 +1,19 @@
 use core::panic;
-use std::{collections::VecDeque, env::var, num::{ParseFloatError, ParseIntError}, rc::Rc};
+use std::{collections::VecDeque, num::{ParseFloatError, ParseIntError}, rc::Rc};
 
 use thiserror::Error;
 
-use crate::{parser::ast::Constant, scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::{symtab::{Linkage, Scope, ScopeType, StorageClass, Symbol, SymbolTable, SymtabError, TypeIdx}, types::{AggregateMember, BasicType, CType, CanonicalType, FunctionSpecifier, QualifiedType, TypeQualifier}}};
+use crate::{parser::ast::Constant, scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream}, semantics::{symtab::{Linkage, Scope, ScopeType, StorageClass, Symbol, SymtabError, TypeIdx}, types::{AggregateMember, BasicType, CType, CanonicalType, FunctionArgument, FunctionSpecifier, QualifiedType, TypeQualifier}}};
 
 use super::ast::{ASTNode, Declaration, ExpressionNode, Identifier};
 
 type CTokenStream<'a> = crate::scanner::RawTokenStream<'a, CLexemes>;
 
+
+
 // can explicitly materialize parse tree for debugging purposes, though not required
 #[cfg(debug_assertions)]
-enum ParseNode {
+enum DebugParseNode {
     EnumSpecifier(usize, usize),
     StructSpecifier(usize, usize),
     UnionSpecifier(usize, usize)
@@ -22,12 +24,16 @@ enum ParseNode {
 // variant is the enum variant for this parse node
 // non-leaf parse nodes must be tuple structs (Box<ParseNode>, usize, usize) or (Vec<ParseNode>, usize, usize)
 // leaf parse nodes must be tuple structs of (usize, usize)
-macro_rules! materialize_parse_node {
+macro_rules! materialize_debug_parse_node {
     // child count must be tt for it to be matched correctly by sub-macro
     ($start:expr, $end:expr, $variant:expr, $child_count:tt, $node_vec:expr) => {
         {
             // generates either a Box or Vec
-            let parse_node_children = materialize_parse_node_children![$child_count, $node_vec];
+            let parse_node_children = materialize_debug_parse_node! {
+                @MATERIALIZE_CHILDREN,
+                $child_count, 
+                $node_vec
+            };
             let parse_node = $variant(parse_node_children, $start, $end);
             $node_vec.push_back(parse_node);
         }
@@ -40,15 +46,12 @@ macro_rules! materialize_parse_node {
             $node_vec.push_back(parse_node);
         }
     };
-}
 
-#[cfg(debug_assertions)]
-macro_rules! materialize_parse_node_children {
-    (1, $node_vec:expr) => {
+    (@MATERIALIZE_CHILDREN, 1, $node_vec:expr) => {
         Box::new($node_vec.pop_back().expect("Expected at least one element in parse stack"))
     };
 
-    ($n:literal, $node_vec:expr) => {
+    (@MATERIALIZE_CHILDREN, $n:literal, $node_vec:expr) => {
         {
             let mut children = Vec::with_capacity($n);
             for _ in 0..$n {
@@ -57,7 +60,7 @@ macro_rules! materialize_parse_node_children {
             children.reverse(); // Reverse to maintain the original order
             children
         }
-    }
+    };
 }
 
 macro_rules! eat_or_error {
@@ -146,32 +149,48 @@ enum ParseError {
 }
 
 struct ParserState {
-    symbol_table: SymbolTable,
+    scopes: Vec<Scope>,
     current_scope: Scope,
+    types: Vec<CanonicalType>,
+    
     #[cfg(debug_assertions)]
-    parse_tree_stack: VecDeque<ParseNode>
+    parse_tree_stack: VecDeque<DebugParseNode>
 }
 
 impl ParserState {
     fn new() -> Self {
-        let mut me = Self {
-            symbol_table: SymbolTable::new(),
-            current_scope: Scope::new_file_scope(),
+        let file_scope = Scope::new_file_scope();
+        Self {
+            scopes: vec![file_scope],
+            current_scope: file_scope,
+            types: Vec::new(),
+            
             #[cfg(debug_assertions)]
             parse_tree_stack: VecDeque::new(),
-        };
-
-        me.current_scope = me.symbol_table.new_scope(None, ScopeType::FileScope);
-        me
+        }
     }
 
     fn open_scope(&mut self, scope_type: ScopeType) {
-        self.current_scope = self.symbol_table.new_scope(Some(self.current_scope), scope_type);
+        let new_scope = Scope::new(
+            scope_type, 
+            self.current_scope.index, 
+            self.scopes.len()
+        );
+        self.scopes.push(new_scope);
+        self.current_scope = new_scope;
     }
 
     fn close_scope(&mut self) -> Result<(), ParseError> {
-        self.current_scope = self.symbol_table.get_parent_scope(self.current_scope).ok_or(ParseError::ClosedFileScope)?;
+        let parent_index = self.current_scope.parent_scope.ok_or(ParseError::ClosedFileScope)?;
+        self.current_scope = self.scopes[parent_index];
+
         Ok(())
+    }
+
+    fn add_type(&mut self, canonical_type: CanonicalType) -> TypeIdx {
+        let idx = self.types.len();
+        self.types.push(canonical_type);
+        TypeIdx(idx)
     }
 }
 
@@ -314,7 +333,11 @@ fn parse_integer_const(text: &str) -> Result<Constant, ParseError> {
         (Some("ull"), _)
         | (Some("uLL"), _)
         | (Some("Ull"), _)
-        | (Some("ULL"), _) => {
+        | (Some("ULL"), _)
+        | (Some("llu"), _)
+        | (Some("LLu"), _)
+        | (Some("llU"), _)
+        | (Some("LLU"), _) => {
             [IntTypes::u64].as_slice()
         }
 
@@ -1050,7 +1073,8 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
                             continue;
                         }
 
-                        break; // ? is this the right thing to do
+                        // must be a prefix operator, e.g. a + !b
+                        break;
                     },
                     ExprPart::Atom(_) => return Err(ParseError::UnexpectedToken(lexeme)),
                 }
@@ -1065,7 +1089,7 @@ fn parse_expr_rec(toks: &mut CTokenStream, state: &mut ParserState, min_bp: u32)
 
 // <translation-unit> ::= <external-declaration>
 // | <translation-unit> <external-declaration>
-fn parse_translation_unit(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
+pub fn parse_translation_unit(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
     let mut external_declarations = Vec::new();
     while let Some(_) = toks.peek() {
         external_declarations.push(parse_external_declaration(toks, state)?);
@@ -1099,16 +1123,32 @@ fn parse_external_declaration(toks: &mut CTokenStream, state: &mut ParserState) 
         Some((CLexemes::LBrace, _, _)) => {
             // must be a function definition; declarator must be function type
             match declaration_type.base_type {
-                CType::FunctionType { prototype_scope, .. } => {
+                CType::FunctionTypeRef { symtab_idx } => {
                     // set scope to function prototype scope so that we inherit parameter names
-                    state.current_scope = prototype_scope;
+                    let fn_type = &state.types[symtab_idx];
+                    if let CanonicalType::FunctionType { prototype_scope, .. } = fn_type {
+                        state.current_scope = *prototype_scope;
+                    }
+                    else {
+                        panic!("type table is corrupted");
+                    }
                 },
                 _ => return Err(ParseError::BadFunctionDefinition)
             }
             let function_body = parse_compound_statement(toks, state)?;
+            // go back to file scope
             state.close_scope()?;
 
+            let fn_declaration = Declaration::new(
+                Identifier::new(state.current_scope, name),
+                declaration_type,
+                storage_class,
+                function_specifier,
+                None,
+            );
+
             let function_node = ASTNode::FunctionDefinition(
+                Box::new(fn_declaration),
                 Box::new(function_body), 
                 state.current_scope
             );
@@ -1175,7 +1215,7 @@ fn parse_declaration(toks: &mut CTokenStream, state: &mut ParserState) -> Result
 
 // distinguish between a declaration vs. expression
 // will need to be careful with typedefs here
-fn is_lookahead_declaration(toks: &mut CTokenStream, state: &mut ParserState) -> bool {
+fn is_lookahead_declaration(toks: &mut CTokenStream, _state: &mut ParserState) -> bool {
     match toks.peek() {
         Some((lexeme, _, _)) => {
             match lexeme {
@@ -1356,7 +1396,11 @@ fn parse_declaration_specifiers_base(
                     type_qualifier |= TypeQualifier::Const;
                 },
                 CLexemes::Restrict => {
+                    /* RESOLVE LOGIC
                     return Err(ParseError::BadRestrictQualifier);
+                     */
+                    toks.eat(CLexemes::Restrict);
+                    type_qualifier |= TypeQualifier::Restrict;
                 },
                 CLexemes::Volatile => {
                     toks.eat(CLexemes::Volatile);
@@ -1480,7 +1524,7 @@ fn parse_struct_declarator_list(toks: &mut CTokenStream, state: &mut ParserState
     loop {
         match toks.peek() {
             Some((CLexemes::Comma, _, _)) => {
-                // hopefully cloning is not expensive in the common case
+                // cloning is not expensive since base_type is not a derived type
                 let (member_type, member_name) = parse_declarator(toks, state, base_type.clone())?;
                 members.push((member_name, member_type));
             },
@@ -1503,7 +1547,6 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
         Struct, Union
     }
     
-    let start = toks.get_location();
     let specifier_type: StructOrUnion;
     match toks.peek() {
         Some((CLexemes::Struct, _, _)) => {
@@ -1518,20 +1561,21 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
         None => { return Err(ParseError::UnexpectedEOF); }
     }
 
-    let struct_or_union_tag: Option<String>;
-    match toks.peek() {
+    let struct_or_union_tag = match toks.peek() {
         Some((CLexemes::LBrace, _, _)) => {
             // untagged, won't conflict and always declares a new type (6.7.2.3 5)
-            struct_or_union_tag = None;
+            None
         },
         Some((CLexemes::Identifier, tag, _)) => {
-            struct_or_union_tag = Some(tag.to_string());
             // do lookup, insert incomplete type if not present
+            let tag = String::from(tag);
             match toks.peek() {
                 Some((CLexemes::LBrace, _, _)) => {
                     toks.eat(CLexemes::LBrace);
+                    Some(tag)
                 },
                 Some((_, _, _)) => {
+                    /* RESOLVE LOGIC
                     let lookup = state.symbol_table.lookup_tag_type_idx(state.current_scope, struct_or_union_tag.as_ref().unwrap());
                     match lookup {
                         Some(tag_type) => {
@@ -1564,22 +1608,32 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
                             let end = toks.get_location();
                             #[cfg(debug_assertions)]
                             match specifier_type {
-                                StructOrUnion::Struct => state.parse_tree_stack.push_back(ParseNode::StructSpecifier(start, end)),
-                                StructOrUnion::Union => state.parse_tree_stack.push_back(ParseNode::UnionSpecifier(start, end)),
+                                StructOrUnion::Struct => state.parse_tree_stack.push_back(DebugParseNode::StructSpecifier(start, end)),
+                                StructOrUnion::Union => state.parse_tree_stack.push_back(DebugParseNode::UnionSpecifier(start, end)),
                             }
                             return Ok(incomplete_type);
                         }
                     }
+                    */
+
+                    let incomplete_type = match specifier_type {
+                        StructOrUnion::Struct => CanonicalType::IncompleteStructureType { tag },
+                        StructOrUnion::Union => CanonicalType::IncompleteUnionType { tag },
+                    };
+
+                    let incomplete_type_idx = state.add_type(incomplete_type);
+                    return Ok(incomplete_type_idx);
                 },
                 None => { return Err(ParseError::UnexpectedEOF); }
             }
         },
         Some((other, _, _)) => { return Err(ParseError::UnexpectedToken(other)); }
         None => { return Err(ParseError::UnexpectedEOF); }
-    }
+    };
 
     // declaring a new struct / union
     // 1. not allowed to redeclare enum
+    /* RESOLVE LOGIC
     if let Some(struct_or_union_tag) = &struct_or_union_tag {
         let direct_lookup = state.symbol_table.direct_lookup_tag_type(state.current_scope, &struct_or_union_tag);
         if direct_lookup.is_some() {
@@ -1590,23 +1644,26 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
             return Err(err);
         }
     }
+     */
 
     let members: Vec<AggregateMember> = parse_struct_declaration_list(toks, state)?;
     eat_or_error!(toks, CLexemes::RBrace)?;
 
     let struct_or_union_type = match specifier_type {
         StructOrUnion::Struct => {
-            CanonicalType::StructureType { tag: struct_or_union_tag.clone(), members }
+            CanonicalType::StructureType { tag: struct_or_union_tag, members }
         },
         StructOrUnion::Union => {
-            CanonicalType::UnionType { tag: struct_or_union_tag.clone(), members }
+            CanonicalType::UnionType { tag: struct_or_union_tag, members }
         },
     };
 
-    let type_idx = state.symbol_table.add_type(struct_or_union_type);
+    let type_idx = state.add_type(struct_or_union_type);
+    /* RESOLVE LOGIC
     if let Some(name) = struct_or_union_tag {
         state.symbol_table.add_tag(state.current_scope, name, type_idx)?;
     }
+    */
 
     Ok(type_idx)
 }
@@ -1642,6 +1699,7 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
                     toks.eat(CLexemes::LBrace);
                 },
                 Some(_) => {
+                    /* RESOLVE LOGIC
                     // incomplete enum, need to do lookup (6.7.2.3 3)
                     // GCC / Clang both support extension which allows enum to be incomplete type
                     // (only complains if using -Wpedantic)
@@ -1651,7 +1709,7 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
                             if let CanonicalType::EnumerationType { .. } = state.symbol_table.get_type(tag_type) {
                                 let end = toks.get_location();
                                 #[cfg(debug_assertions)]
-                                state.parse_tree_stack.push_back(ParseNode::EnumSpecifier(start, end));
+                                state.parse_tree_stack.push_back(DebugParseNode::EnumSpecifier(start, end));
                                 return Ok(tag_type);
                             }
                             else {
@@ -1662,6 +1720,7 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
                         // incomplete enum not allowed
                         None => return Err(ParseError::LookupError(enum_tag.unwrap()))
                     }
+                    */
                 },
                 None => return Err(ParseError::UnexpectedEOF)
             };
@@ -1670,6 +1729,7 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
         None => { return Err(ParseError::UnexpectedEOF) }
     }
 
+    /* RESOLVE LOGIC
     // 6.7.2.3 1, not allowed to redeclare enum (or struct or union) contents
     if let Some(enum_tag) = &enum_tag {
         let direct_lookup = state.symbol_table.direct_lookup_tag_type(state.current_scope, &enum_tag);
@@ -1678,6 +1738,7 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
             return Err(ParseError::RedeclaredEnum(enum_tag.to_string()))
         }
     }
+    */
     
     // footnote 109 - enum constants share namespace with eachother and with "ordinary" identifiers
     // so, just put them into symbol table with everything else
@@ -1699,14 +1760,16 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
         // 2. comma -> go next, brace -> break, other -> bad token, equal -> expect int
         match toks.peek() {
             Some((CLexemes::Comma, _, _)) => {
-                let enum_constant_value = Symbol::Constant(Constant::Int(counter));
                 enum_members.push((enum_constant_name.clone(), counter));
                 
                 // ensure enum constants don't conflict with existing symbols
+                /* RESOLVE LOGIC
+                let enum_constant_value = Symbol::Constant(Constant::Int(counter));
                 match state.symbol_table.add_symbol(state.current_scope, enum_constant_name, enum_constant_value) {
                     Err(e) => { return Err(ParseError::RedeclaredEnumConstant(e)); }
                     Ok(_) => {}
                 }
+                 */
 
                 toks.eat(CLexemes::Comma);
                 counter += 1;
@@ -1737,13 +1800,15 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
                 let enum_value = int_str.parse::<i32>()
                     .map_err(|_| ParseError::InvalidEnumConstant(int_str.to_string()))?;
                 
-                let enum_constant_value = Symbol::Constant(Constant::Int(enum_value));
                 enum_members.push((enum_constant_name.clone(), enum_value));
 
+                /* RESOLVE LOGIC
+                let enum_constant_value = Symbol::Constant(Constant::Int(enum_value));
                 match state.symbol_table.add_symbol(state.current_scope, enum_constant_name, enum_constant_value) {
                     Err(e) => { return Err(ParseError::RedeclaredEnumConstant(e)); }
                     Ok(_) => {}
                 }
+                */
 
                 counter = enum_value + 1;
                 toks.eat(CLexemes::IntegerConst);
@@ -1779,14 +1844,17 @@ fn parse_enum_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Res
         members: enum_members 
     };
     
-    let enum_type_idx = state.symbol_table.add_type(enum_type);
+    let enum_type_idx = state.add_type(enum_type);
+    
+    /* RESOLVE LOGIC
     if enum_tag.is_some() {
         state.symbol_table.add_tag(state.current_scope, enum_tag.unwrap(), enum_type_idx)?;
     }
+    */
 
     let end = toks.get_location();
     #[cfg(debug_assertions)]
-    state.parse_tree_stack.push_back(ParseNode::EnumSpecifier(start, end));
+    state.parse_tree_stack.push_back(DebugParseNode::EnumSpecifier(start, end));
     Ok(enum_type_idx)
 }
 
@@ -1853,13 +1921,12 @@ fn parse_initializer(toks: &mut CTokenStream, state: &mut ParserState) -> Result
 
 // The concept of a declarator basically only exists during parsing and isn't semantically meaningful elsewhere
 // "abstract" declarator has no identifier
-struct Declarator(QualifiedType, Option<String>, Option<Scope>);
+struct Declarator(QualifiedType, Option<String>);
 fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_type: QualifiedType) -> Result<Declarator, ParseError> {
     let mut pointers: Vec<(TypeQualifier, usize)> = Vec::new();
     enum ArrayOrFunctionDeclarator { ArrayDeclarator(ArrayDeclarator), FunctionDeclarator(FunctionDeclarator) }
     let mut array_or_function_declarators: Vec<(ArrayOrFunctionDeclarator, usize)> = Vec::new();
     let mut identifier: Option<String> = None;
-    let mut outer_fn_scope: Option<Scope> = None;
     let mut level: usize = 0;
     loop {
         match toks.peek() {
@@ -1939,6 +2006,7 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                 match d {
                     ArrayOrFunctionDeclarator::ArrayDeclarator(array) => {
                         match current_type.base_type {
+                            /* RESOLVE LOGIC
                             CType::IncompleteArrayType { .. }
                             | CType::FunctionType { .. }
                             | CType::Void => {
@@ -1947,6 +2015,7 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                             // have to do lookup to check if its incomplete
                             CType::StructureTypeRef { symtab_idx }
                             | CType::UnionTypeRef { symtab_idx } => {
+                                 
                                 match state.symbol_table.get_type(symtab_idx) {
                                     CanonicalType::IncompleteUnionType { .. }
                                     | CanonicalType::IncompleteStructureType { .. } => {
@@ -1954,7 +2023,9 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                                     }
                                     _ => {}
                                 }
+                                
                             },
+                            */
                             _ => {}
                         }
                         
@@ -1971,16 +2042,13 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                             };
                         }
 
-                        if level == 0 {
-                            outer_fn_scope = None;
-                        }
-
                         current_type = QualifiedType {
                             base_type: new_type,
                             qualifier: array.0
                         }
                     },
                     ArrayOrFunctionDeclarator::FunctionDeclarator(func) => {
+                        /* RESOLVE LOGIC
                         match current_type.base_type {
                             CType::IncompleteArrayType { .. }
                             | CType::ArrayType { .. }
@@ -1989,8 +2057,9 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                             }
                             _ => {}
                         }
+                        */
                         
-                        let new_type = CType::FunctionType {
+                        let fn_type = CanonicalType::FunctionType {
                             parameter_types: func.argument_types,
                             return_type: Box::new(current_type),
                             function_specifier: FunctionSpecifier::None, // TODO: figure out inline
@@ -1998,9 +2067,8 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
                             prototype_scope: func.prototype_scope
                         };
 
-                        if level == 0 {
-                            outer_fn_scope = Some(func.prototype_scope);
-                        }
+                        let fn_type_idx = state.add_type(fn_type);
+                        let new_type = CType::FunctionTypeRef { symtab_idx: fn_type_idx };
 
                         current_type = QualifiedType {
                             base_type: new_type,
@@ -2012,7 +2080,7 @@ fn parse_declarator_base(toks: &mut CTokenStream, state: &mut ParserState, base_
         }
     }
 
-    Ok(Declarator(current_type, identifier, outer_fn_scope))
+    Ok(Declarator(current_type, identifier))
 }
 
 fn parse_declarator(toks: &mut CTokenStream, state: &mut ParserState, base_type: QualifiedType) -> Result<(QualifiedType, String), ParseError> {
@@ -2099,7 +2167,7 @@ fn parse_array_declarator(toks: &mut CTokenStream, state: &mut ParserState) -> R
 // only time scope is needed is if this is actually a function definition, and not
 // just a prototype
 struct FunctionDeclarator {
-    argument_types: Vec<QualifiedType>, 
+    argument_types: Vec<FunctionArgument>, 
     varargs: bool, 
     prototype_scope: Scope
 }
@@ -2113,12 +2181,13 @@ fn parse_function_declarator(toks: &mut CTokenStream, state: &mut ParserState) -
     // ignore special case for empty parameter list
     // technically, this has special behavior (completed by later declarations / usages),
     // a sort of "incomplete" function type. not used very much, won't support
-    let mut parameter_types: Vec<QualifiedType> = Vec::new();
+    let mut parameter_types: Vec<FunctionArgument> = Vec::new();
     let mut varargs = false;
     loop {
         match toks.peek() {
             Some((CLexemes::RParen, _, _)) => {
                 toks.eat(CLexemes::RParen);
+                /* RESOLVE LOGIC
                 // 6.7.5.3 4, 7, 8
                 // arrays / functions decay to pointers, check that types are not incomplete
                 // special case for 1 parameter of type void
@@ -2152,7 +2221,7 @@ fn parse_function_declarator(toks: &mut CTokenStream, state: &mut ParserState) -
                                 qualifier: *qualifier
                             };
                         },
-                        CType::FunctionType { .. } => {
+                        CType::FunctionTypeRef { .. } => {
                             let function_type = std::mem::replace(arg_type, QualifiedType { 
                                 base_type: CType::Void, qualifier: TypeQualifier::empty() }
                             );
@@ -2168,6 +2237,7 @@ fn parse_function_declarator(toks: &mut CTokenStream, state: &mut ParserState) -
                         _ => {}
                     }
                 }
+                */
                 
                 let declarator = FunctionDeclarator {
                     argument_types: parameter_types, 
@@ -2190,34 +2260,39 @@ fn parse_function_declarator(toks: &mut CTokenStream, state: &mut ParserState) -
                 return Ok(declarator);
             },
             Some((_, _, _)) => {
-                let parameter_base_type = parse_declaration_specifiers(toks, state)?;
-                if parameter_base_type.1 != StorageClass::None {
-                    return Err(ParseError::BadStorageClassInArgumentList);
-                }
-                if parameter_base_type.2 != FunctionSpecifier::None {
-                    return Err(ParseError::BadFunctionSpecifier);
-                }
+                let parameter_base_type = parse_declaration_specifiers_base(
+                    toks, 
+                    state, 
+                    false, 
+                    false
+                )?;
 
                 match toks.peek() {
                     Some((CLexemes::Comma, _, _)) => {
-                        parameter_types.push(parameter_base_type.0);
+                        parameter_types.push((None, parameter_base_type.0));
                         toks.eat(CLexemes::Comma);
                     }
                     Some((CLexemes::RParen, _, _)) => {
-                        parameter_types.push(parameter_base_type.0);
+                        parameter_types.push((None, parameter_base_type.0));
+                        // fall through after loop to close function arm
                     }
                     Some((_, _, _)) => {
                         let DeclarationSpecifiers(parameter_base_type, storage_class, _) = parameter_base_type;
-                        let parameter_type = parse_declarator_base(toks, state, parameter_base_type)?;
-                        if let Some(parameter_name) = parameter_type.1 {
+                        let Declarator(parameter_type, parameter_name) = parse_declarator_base(toks, state, parameter_base_type)?;
+                        if let Some(ref parameter_name) = parameter_name {
+                            /* RESOLVE LOGIC
                             let parameter = Symbol::Variable { 
                                 symbol_type: parameter_type.0.clone(), 
                                 storage_class, 
                                 linkage: Linkage::None 
                             };
                             state.symbol_table.add_symbol(state.current_scope, parameter_name, parameter)?;
+                            */
+                            
                         }
-                        parameter_types.push(parameter_type.0);
+
+                        parameter_types.push((parameter_name, parameter_type));
+                        
                         match toks.peek() {
                             Some((CLexemes::Comma, _, _)) => {
                                 toks.eat(CLexemes::Comma);
@@ -2302,17 +2377,19 @@ fn parse_labeled_statement(toks: &mut CTokenStream, state: &mut ParserState) -> 
             // follow standard for now
             let labelee = parse_statement(toks, state)?;
             let labelee = Rc::new(labelee);
-            let res = state.symbol_table.add_label(
-                state.current_scope, 
-                label.clone(), 
-                Rc::clone(&labelee)
-            );
+            /* RESOLVE LOGIC
+            // let res = state.symbol_table.add_label(
+            //     state.current_scope, 
+            //     label.clone(), 
+            //     Rc::clone(&labelee)
+            // );
 
-            match res {
-                Ok(()) => {}
-                Err(e @ SymtabError::LabelAlreadyDeclared(_)) => return Err(ParseError::RedeclaredLabel(e)),
-                Err(e) => return Err(ParseError::OtherSymtabError(e))
-            }
+            // match res {
+            //     Ok(()) => {}
+            //     Err(e @ SymtabError::LabelAlreadyDeclared(_)) => return Err(ParseError::RedeclaredLabel(e)),
+            //     Err(e) => return Err(ParseError::OtherSymtabError(e))
+            // }
+            */
 
             let label_ident = Identifier::new(state.current_scope, label);
             let label_node = ASTNode::Label(
@@ -2538,6 +2615,7 @@ fn parse_iteration_statement(toks: &mut CTokenStream, state: &mut ParserState) -
                 first_clause.map(Box::new), 
                 second_clause.map(Box::new), 
                 third_clause.map(Box::new), 
+                Box::new(loop_body),
                 state.current_scope
             );
             
@@ -2610,169 +2688,4 @@ fn parse_jump_statement(toks: &mut CTokenStream, state: &mut ParserState) -> Res
 }
 
 #[cfg(test)]
-mod tests {
-    use cake_lex::DFAScanner;
-
-    use super::*;
-
-    fn text_test_harness<'text>(text: &'text str) -> (CTokenStream<'text>, ParserState) {
-        let c_table = CLexemes::load_table();
-        let scanner = DFAScanner::new(c_table);
-        let toks = CTokenStream::new(scanner, text.as_bytes());
-        let state = ParserState::new();
-
-        (toks, state)
-    }
-
-    fn make_identifier(state: &mut ParserState, name: &str) -> ExpressionNode {
-        let ident = Identifier::new(state.current_scope, name.to_string());
-        ExpressionNode::Identifier(ident, None)
-    }
-
-    macro_rules! make_expr {
-        ($expr_type:path, $($subexpr:expr),+) => {
-            $expr_type(
-                $(Box::new($subexpr)),+,
-                None
-            )
-        };
-    }
-    
-    #[test]
-    fn test_parse_expr_basic() {
-        let basic_expr = r#"
-        a = a + 1
-        "#;
-        let (mut toks, mut state) = text_test_harness(basic_expr);
-        
-        let lhs = Box::new(
-            make_identifier(&mut state, "a")
-        );
-
-        let rhs = {
-            let lhs = lhs.clone();
-            let rhs = ExpressionNode::Constant(
-                Constant::Int(1)
-            );
-            Box::new(
-                ExpressionNode::Add(
-                    lhs, 
-                    Box::new(rhs), 
-                    None
-                )
-            )
-        };
-
-        assert_eq!(
-            parse_expr(&mut toks, &mut state),
-            Ok(ExpressionNode::SimpleAssign(
-                lhs, 
-                rhs, 
-                None
-            ))
-        );
-    }
-
-    #[test]
-    fn test_parse_expr_precedence() {
-        let basic_expr = r#"
-        a || b && c + d / e
-        "#;
-        let (mut toks, mut state) = text_test_harness(basic_expr);
-        
-        // (a || (b && (c + (d / e))))
-        let a = make_identifier(&mut state, "a");
-        let b = make_identifier(&mut state, "b");
-        let c = make_identifier(&mut state, "c");
-        let d = make_identifier(&mut state, "d");
-        let e = make_identifier(&mut state, "e");
-
-        let expr = {
-            let rhs = {
-                let rhs = {
-                    let rhs = make_expr!(ExpressionNode::Divide, d, e);
-                    make_expr!(ExpressionNode::Add, c, rhs)
-                };
-                make_expr!(ExpressionNode::LogicalAnd, b, rhs)
-            };
-            make_expr!(ExpressionNode::LogicalOr, a, rhs)
-        };
-
-        assert_eq!(
-            parse_expr(&mut toks, &mut state),
-            Ok(expr)
-        );
-    }
-
-    #[test]
-    fn test_parse_hello_world() {
-        let hello_world = r#"
-        int main(int argc, char **argv) {
-            printf("Hello world!");
-            return 0;
-        }
-        "#;
-        
-        let mut dummy_state = ParserState::new();
-        let translation_unit = {
-            let main = {
-                dummy_state.open_scope(ScopeType::FunctionScope);
-                let body = {
-                    dummy_state.open_scope(ScopeType::BlockScope);
-                    let printf = {
-                        let printf_ident = make_identifier(&mut dummy_state, "printf");
-                        let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
-                        let printf_expr = ExpressionNode::FunctionCall(
-                            Box::new(printf_ident), 
-                            vec![printf_arg], 
-                            None
-                        );
-                        ASTNode::ExpressionStatement(Box::new(printf_expr), dummy_state.current_scope)
-                    };
-                    let return_stmt = {
-                        let zero = ExpressionNode::Constant(Constant::Int(0));
-                        ASTNode::ReturnStatement(Some(Box::new(zero)))
-                    };
-                    dummy_state.close_scope().unwrap();
-                    ASTNode::CompoundStatement(vec![printf, return_stmt], dummy_state.current_scope)
-                };
-                dummy_state.close_scope().unwrap();
-                ASTNode::FunctionDefinition(Box::new(body), dummy_state.current_scope)
-            };
-
-            ASTNode::TranslationUnit(vec![main], dummy_state.current_scope)
-        };
-
-        let (mut toks, mut state) = text_test_harness(hello_world);
-        let translation_unit_parsed = parse_translation_unit(&mut toks, &mut state).expect("parse failed");
-        assert_eq!(dbg!(translation_unit), dbg!(translation_unit_parsed));
-    }
-
-    #[test]
-    fn parse_function_definition_bad_1() {
-        // no arguments
-        let function_bad_1 = r#"
-        int main {
-            printf("Hello world!");
-            return 0;
-        }
-        "#;
-
-        let (mut toks, mut state) = text_test_harness(&function_bad_1);
-        assert!(parse_external_declaration(&mut toks, &mut state).is_err());
-    }
-
-    #[test]
-    fn parse_function_definition_bad_2() {
-        // pointer to function
-        let function_bad_2 = r#"
-        int (*main)(int argc, char *argv[]) {
-            printf("Hello world!");
-            return 0;
-        }
-        "#;
-
-        let (mut toks, mut state) = text_test_harness(&function_bad_2);
-        assert!(parse_external_declaration(&mut toks, &mut state).is_err());
-    }
-}
+mod hand_parser_tests;

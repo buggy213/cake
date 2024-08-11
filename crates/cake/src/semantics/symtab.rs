@@ -17,9 +17,9 @@ pub(crate) enum ScopeType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Scope {
-    scope_type: ScopeType,
-    parent_scope: Option<usize>,
-    index: usize,
+    pub(crate) scope_type: ScopeType,
+    pub(crate) parent_scope: Option<usize>,
+    pub(crate) index: usize,
 }
 
 impl Scope {
@@ -28,6 +28,14 @@ impl Scope {
             scope_type: ScopeType::FileScope,
             parent_scope: None,
             index: 0,
+        }
+    }
+
+    pub(crate) fn new(scope_type: ScopeType, parent_scope: usize, index: usize) -> Self {
+        Self {
+            scope_type,
+            parent_scope: Some(parent_scope),
+            index,
         }
     }
 }
@@ -58,7 +66,7 @@ pub(crate) enum Symbol {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TypeIdx(usize);
+pub(crate) struct TypeIdx(pub(crate) usize);
 impl Index<TypeIdx> for Vec<CanonicalType> {
     type Output = CanonicalType;
 
