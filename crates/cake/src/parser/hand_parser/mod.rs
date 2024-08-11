@@ -1507,7 +1507,7 @@ fn parse_declaration_specifiers_base(
     let declaration_specifiers = DeclarationSpecifiers{
         qualified_type, storage_class, function_specifier
     };
-    
+
     Ok(declaration_specifiers)
 }
 
@@ -1584,9 +1584,10 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
         Some((CLexemes::Identifier, tag, _)) => {
             // do lookup, insert incomplete type if not present
             let tag = String::from(tag);
+            toks.eat(CLexemes::Identifier);
+            
             match toks.peek() {
                 Some((CLexemes::LBrace, _, _)) => {
-                    toks.eat(CLexemes::LBrace);
                     Some(tag)
                 },
                 Some((_, _, _)) => {
@@ -1647,6 +1648,8 @@ fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserSt
     };
 
     // declaring a new struct / union
+    toks.eat(CLexemes::LBrace);
+
     // 1. not allowed to redeclare enum
     /* RESOLVE LOGIC
     if let Some(struct_or_union_tag) = &struct_or_union_tag {

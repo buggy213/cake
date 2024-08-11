@@ -358,3 +358,167 @@ fn parse_abstract_type_test_3() {
     assert_eq!(abstract_type, abstract_type_parsed);
     assert_eq!(state.types, dummy_state.types);
 }
+
+#[test]
+fn parse_struct_declaration_incomplete() {
+    let incomplete_struct_str = r#"struct test s;"#;
+    let mut dummy_state = ParserState::new();
+    let struct_type = CanonicalType::IncompleteStructureType { tag: String::from("test") };
+    let struct_type_idx = dummy_state.add_type(struct_type);
+    let struct_type = QualifiedType {
+        base_type: CType::StructureTypeRef { symtab_idx: struct_type_idx },
+        qualifier: TypeQualifier::empty(),
+    };
+
+    let (mut toks, mut state) = text_test_harness(&incomplete_struct_str);
+    let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
+    let declaration_parsed_expected = ASTNode::Declaration(
+        vec![Declaration::new(
+            Identifier::new(dummy_state.current_scope, String::from("s")), 
+            struct_type, 
+            StorageClass::None, 
+            FunctionSpecifier::None, 
+            None
+        )]
+    );
+
+    assert_eq!(declaration_parsed, declaration_parsed_expected);
+    assert_eq!(state.types, dummy_state.types);
+}
+
+#[test]
+fn parse_struct_declaration_anonymous() {
+    let anonymous_struct = r#"
+    struct {
+        int k;
+    } s;
+    "#;
+
+    let mut dummy_state = ParserState::new();
+    let struct_type = CanonicalType::StructureType { 
+        tag: None, 
+        members: vec![
+            (String::from("k"), QualifiedType { base_type: CType::BasicType { basic_type: BasicType::Int }, qualifier: TypeQualifier::empty() })
+        ] 
+    };
+
+    let struct_type_idx = dummy_state.add_type(struct_type);
+    let struct_type = QualifiedType {
+        base_type: CType::StructureTypeRef { symtab_idx: struct_type_idx },
+        qualifier: TypeQualifier::empty(),
+    };
+
+    let (mut toks, mut state) = text_test_harness(&anonymous_struct);
+    let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
+    let declaration_parsed_expected = ASTNode::Declaration(
+        vec![Declaration::new(
+            Identifier::new(dummy_state.current_scope, String::from("s")), 
+            struct_type, 
+            StorageClass::None, 
+            FunctionSpecifier::None, 
+            None
+        )]
+    );
+
+    assert_eq!(declaration_parsed, declaration_parsed_expected);
+    assert_eq!(state.types, dummy_state.types);
+}
+
+#[test]
+fn parse_struct_declaration() {
+    let complete_struct = r#"
+    struct complete {
+        int k;
+    } t;
+    "#;
+
+    let mut dummy_state = ParserState::new();
+    let struct_type = CanonicalType::StructureType { 
+        tag: Some(String::from("complete")), 
+        members: vec![
+            (String::from("k"), QualifiedType { base_type: CType::BasicType { basic_type: BasicType::Int }, qualifier: TypeQualifier::empty() })
+        ] 
+    };
+
+    let struct_type_idx = dummy_state.add_type(struct_type);
+    let struct_type = QualifiedType {
+        base_type: CType::StructureTypeRef { symtab_idx: struct_type_idx },
+        qualifier: TypeQualifier::empty(),
+    };
+
+    let (mut toks, mut state) = text_test_harness(&complete_struct);
+    let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
+    let declaration_parsed_expected = ASTNode::Declaration(
+        vec![Declaration::new(
+            Identifier::new(dummy_state.current_scope, String::from("t")), 
+            struct_type, 
+            StorageClass::None, 
+            FunctionSpecifier::None, 
+            None
+        )]
+    );
+
+    assert_eq!(declaration_parsed, declaration_parsed_expected);
+    assert_eq!(state.types, dummy_state.types);
+}
+
+
+// parser does not check for directly / indirectly recursive struct (which would have infinite size)
+#[test]
+fn parse_struct_declaration_recursive() {
+    let recursive_struct = r#"
+    struct recursive {
+        struct inner {
+            int k;
+        } inner;
+        struct recursive* next;
+    } recursive_struct;
+    "#;
+
+    let mut dummy_state = ParserState::new();
+    let outer_struct_type = { 
+        
+        let k = (String::from("k"), QualifiedType { base_type: CType::BasicType { basic_type: BasicType::Int }, qualifier: TypeQualifier::empty() });
+        let inner_struct_type = CanonicalType::StructureType { 
+            tag: Some(String::from("inner")), 
+            members: vec![k] 
+        };
+        let inner_struct_type_idx = dummy_state.add_type(inner_struct_type);
+        let inner = QualifiedType { base_type: CType::StructureTypeRef { symtab_idx: inner_struct_type_idx }, qualifier: TypeQualifier::empty() };
+        let next = {
+            let recursive_struct_type = CanonicalType::IncompleteStructureType { tag: String::from("recursive") };
+            let recursive_struct_type_idx = dummy_state.add_type(recursive_struct_type);
+            let ptr = QualifiedType { base_type: CType::StructureTypeRef { symtab_idx: recursive_struct_type_idx }, qualifier: TypeQualifier::empty() };
+            QualifiedType { base_type: CType::PointerType { pointee_type: Box::new(ptr) }, qualifier: TypeQualifier::empty() }
+        };
+
+        CanonicalType::StructureType { 
+            tag: Some(String::from("recursive")), 
+            members: vec![
+                (String::from("inner"), inner),
+                (String::from("next"), next)
+            ] 
+        }
+    };
+
+    let outer_struct_type_idx = dummy_state.add_type(outer_struct_type);
+    let outer_struct_type = QualifiedType {
+        base_type: CType::StructureTypeRef { symtab_idx: outer_struct_type_idx },
+        qualifier: TypeQualifier::empty(),
+    };
+
+    let (mut toks, mut state) = text_test_harness(&recursive_struct);
+    let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
+    let declaration_parsed_expected = ASTNode::Declaration(
+        vec![Declaration::new(
+            Identifier::new(dummy_state.current_scope, String::from("recursive_struct")), 
+            outer_struct_type, 
+            StorageClass::None, 
+            FunctionSpecifier::None, 
+            None
+        )]
+    );
+
+    assert_eq!(declaration_parsed, declaration_parsed_expected);
+    assert_eq!(state.types, dummy_state.types);
+}
