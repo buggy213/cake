@@ -1110,13 +1110,13 @@ pub fn parse_translation_unit(toks: &mut CTokenStream, state: &mut ParserState) 
 fn parse_external_declaration(toks: &mut CTokenStream, state: &mut ParserState) -> Result<ASTNode, ParseError> {
     // both will include declaration specifiers
     let declaration_specifiers = parse_declaration_specifiers(toks, state)?;
-    let DeclarationSpecifiers(
-        base_type, 
+    let DeclarationSpecifiers {
+        qualified_type, 
         storage_class, 
         function_specifier
-    ) = declaration_specifiers.clone();
+    } = declaration_specifiers.clone();
     // both will include a (concrete) declarator
-    let (declaration_type, name) = parse_declarator(toks, state, base_type)?;
+    let (declaration_type, name) = parse_declarator(toks, state, qualified_type)?;
     let mut declarations: Vec<Declaration> = Vec::new();
     
     match toks.peek() {
@@ -1252,7 +1252,11 @@ fn is_lookahead_declaration(toks: &mut CTokenStream, _state: &mut ParserState) -
 }
 
 #[derive(Debug, Clone)]
-struct DeclarationSpecifiers(QualifiedType, StorageClass, FunctionSpecifier);
+struct DeclarationSpecifiers {
+    qualified_type: QualifiedType, 
+    storage_class: StorageClass, 
+    function_specifier: FunctionSpecifier
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum BasicTypeLexeme {
@@ -1500,12 +1504,20 @@ fn parse_declaration_specifiers_base(
     else {
         return Err(ParseError::MissingTypeSpecifier)
     };
+    let declaration_specifiers = DeclarationSpecifiers{
+        qualified_type, storage_class, function_specifier
+    };
     
-    Ok(DeclarationSpecifiers(qualified_type, storage_class, function_specifier))
+    Ok(declaration_specifiers)
 }
 
 fn parse_declaration_specifiers(toks: &mut CTokenStream, state: &mut ParserState) -> Result<DeclarationSpecifiers, ParseError> {
     parse_declaration_specifiers_base(toks, state, true, true)
+}
+
+fn parse_specifier_qualifier_list(toks: &mut CTokenStream, state: &mut ParserState) -> Result<QualifiedType, ParseError> {
+    let DeclarationSpecifiers { qualified_type, .. } = parse_declaration_specifiers_base(toks, state, false, false)?;
+    Ok(qualified_type)
 }
 
 fn parse_struct_declaration_list(toks: &mut CTokenStream, state: &mut ParserState) -> Result<Vec<AggregateMember>, ParseError> {
@@ -1542,11 +1554,6 @@ fn parse_struct_declarator_list(toks: &mut CTokenStream, state: &mut ParserState
             None => { return Err(ParseError::UnexpectedEOF); }
         }
     }
-}
-
-fn parse_specifier_qualifier_list(toks: &mut CTokenStream, state: &mut ParserState) -> Result<QualifiedType, ParseError> {
-    let DeclarationSpecifiers(qualified_type, _, _) = parse_declaration_specifiers_base(toks, state, false, false)?;
-    Ok(qualified_type)
 }
 
 fn parse_struct_or_union_specifier(toks: &mut CTokenStream, state: &mut ParserState) -> Result<TypeIdx, ParseError> {
@@ -1892,7 +1899,10 @@ fn parse_init_declarators(toks: &mut CTokenStream, state: &mut ParserState, decl
 }
 
 fn parse_init_declarator(toks: &mut CTokenStream, state: &mut ParserState, declaration_specifiers: DeclarationSpecifiers) -> Result<Declaration, ParseError> {
-    let DeclarationSpecifiers(base_type, storage_class, function_specifier) = declaration_specifiers;
+    let DeclarationSpecifiers {
+        qualified_type, storage_class, function_specifier
+    } = declaration_specifiers;
+    let base_type = qualified_type;
     let (qualified_type, name) = parse_declarator(toks, state, base_type)?;
     let initializer = match toks.peek() {
         Some((CLexemes::Eq, _, _)) => {
@@ -2298,15 +2308,18 @@ fn parse_function_declarator(toks: &mut CTokenStream, state: &mut ParserState) -
 
                 match toks.peek() {
                     Some((CLexemes::Comma, _, _)) => {
-                        parameter_types.push((None, parameter_base_type.0));
+                        parameter_types.push((None, parameter_base_type.qualified_type));
                         toks.eat(CLexemes::Comma);
                     }
                     Some((CLexemes::RParen, _, _)) => {
-                        parameter_types.push((None, parameter_base_type.0));
+                        parameter_types.push((None, parameter_base_type.qualified_type));
                         // fall through after loop to close function arm
                     }
                     Some((_, _, _)) => {
-                        let DeclarationSpecifiers(parameter_base_type, storage_class, _) = parameter_base_type;
+                        let DeclarationSpecifiers {
+                            qualified_type, ..
+                        } = parameter_base_type;
+                        let parameter_base_type = qualified_type;
                         let Declarator(parameter_type, parameter_name) = parse_declarator_base(toks, state, parameter_base_type)?;
                         if let Some(ref parameter_name) = parameter_name {
                             /* RESOLVE LOGIC
