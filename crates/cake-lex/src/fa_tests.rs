@@ -1,19 +1,27 @@
+use crate::alphabet::AsciiChar;
 use crate::fa::FA;
 use crate::regex::Regex;
-use crate::alphabet::AsciiChar;
 
 fn compile_regex(re_str: &str, quiet: bool) -> FA<AsciiChar> {
     let regex = Regex::from_str(re_str).expect("failed to parse regex");
-    if !quiet { println!("regex = {:?}", regex); }
+    if !quiet {
+        println!("regex = {:?}", regex);
+    }
 
     let nfa = FA::nfa_from_re(&regex);
-    if !quiet { println!("nfa = {:?}", nfa); }
+    if !quiet {
+        println!("nfa = {:?}", nfa);
+    }
 
     let dfa = FA::dfa_from_nfa(&nfa);
-    if !quiet { println!("dfa = {:?}", dfa); }
+    if !quiet {
+        println!("dfa = {:?}", dfa);
+    }
 
     let dfa = FA::minimize_dfa(&dfa, false);
-    if !quiet { println!("minimized = {:?}", dfa); }
+    if !quiet {
+        println!("minimized = {:?}", dfa);
+    }
 
     dfa
 }
@@ -21,12 +29,10 @@ fn compile_regex(re_str: &str, quiet: bool) -> FA<AsciiChar> {
 fn run_vectors(tests: &Vec<(&str, bool)>, dfa: &FA<AsciiChar>, re_str: &str) {
     for (test, expected_result) in tests {
         let result = FA::simulate_dfa(&dfa, test);
-        assert_eq!(result, *expected_result, 
+        assert_eq!(
+            result, *expected_result,
             "'{}' failed on input '{}', expect match: {}, actual match: {}",
-            re_str,
-            test,
-            expected_result,
-            result
+            re_str, test, expected_result, result
         );
     }
 }
@@ -45,7 +51,7 @@ fn basic() {
         ("abcbc", true),
         ("acbcb", true),
         ("bcbc", false),
-        ("abbbbbbbbbb", true)
+        ("abbbbbbbbbb", true),
     ];
 
     run_vectors(&test_vectors, &dfa, re_str)
@@ -65,7 +71,7 @@ fn basic_extended_regex() {
         ("g", false),
         ("GG", true),
         ("1234", false),
-        ("qqqqq", false)
+        ("qqqqq", false),
     ];
 
     run_vectors(&test_vectors, &dfa, re_str)
@@ -95,7 +101,7 @@ fn floating_point_regex() {
         ("-99.99e12", true),
         ("-99.99e1a2", false),
         ("3..14", false),
-        ("314.1592e-2", true)
+        ("314.1592e-2", true),
     ];
 
     run_vectors(&test_vectors, &dfa, re_str)

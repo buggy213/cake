@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::regex::Regex;
 
-use super::{fa::FA, alphabet::AsciiChar, lexemes::LexemeSet};
+use super::{alphabet::AsciiChar, fa::FA, lexemes::LexemeSet};
 
 // states = rows, 1 additional error state
 // characters = columns
@@ -42,19 +42,21 @@ impl DFATable {
             }
         }
 
-        let mut actions = dfa.actions.as_ref()
+        let mut actions = dfa
+            .actions
+            .as_ref()
             .expect("using DFA for table requires associated lexing actions")
             .clone();
         actions.push(-1); // add implicit error state
-        
-        DFATable { 
-            data, 
-            actions, 
-            states: num_states, 
+
+        DFATable {
+            data,
+            actions,
+            states: num_states,
             inputs: num_inputs,
-            initial_state: dfa.initial_state
+            initial_state: dfa.initial_state,
         }
-    } 
+    }
 }
 
 impl DFAScanner {
@@ -73,15 +75,13 @@ impl DFAScanner {
         let nfa = FA::combine_res(&lexemes);
         let dfa = FA::dfa_from_nfa(&nfa);
         let dfa = FA::minimize_dfa(&dfa, true);
-        
+
         let scanner = DFAScanner::from_ascii_dfa(&dfa);
         scanner
     }
 
     pub fn new(table: DFATable) -> Self {
-        Self {
-            table,
-        }
+        Self { table }
     }
 
     // output: lexeme + action + next token cursor
@@ -97,9 +97,9 @@ impl DFAScanner {
         let mut state = self.table.initial_state;
         let mut stack: VecDeque<usize> = VecDeque::new();
         stack.push_back(usize::MAX); // MAX as sentinel
-        
+
         let mut lexeme = String::new();
-        
+
         while state != self.table.states - 1 {
             if cursor >= input.len() {
                 break; // hit EOF
@@ -135,8 +135,7 @@ impl DFAScanner {
         let slice = unsafe { std::str::from_utf8_unchecked(&input[start_cursor..cursor]) };
         if state == usize::MAX {
             (slice, -1, cursor)
-        }
-        else {
+        } else {
             (slice, self.table.actions[state], cursor)
         }
     }
@@ -145,7 +144,7 @@ impl DFAScanner {
     pub fn scan_string(&mut self, input: &str) {
         // TODO: add support for unicode
         assert!(input.is_ascii(), "only ascii supported");
-        
+
         // TODO: add preprocessor
         let mut cursor = 0;
         let input = input.as_bytes();
@@ -154,12 +153,10 @@ impl DFAScanner {
             let (lexeme, action, next_cursor) = self.next_word(input, cursor);
             if action == -1 {
                 panic!("failed to tokenize string");
-            }
-            else {
+            } else {
                 println!("'{}', {}", lexeme, action);
                 cursor = next_cursor;
             }
         }
     }
 }
-

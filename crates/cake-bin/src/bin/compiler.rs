@@ -1,9 +1,15 @@
 use std::time::Instant;
 
-use cake::{parser::{grammar::{EBNF, Grammar}, earley::{self}}, scanner::{lexeme_sets::c_lexemes::CLexemes, RawTokenStream}};
+use cake::{
+    parser::{
+        earley::{self},
+        grammar::{Grammar, EBNF},
+    },
+    scanner::{lexeme_sets::c_lexemes::CLexemes, RawTokenStream},
+};
 use cake_lex::DFAScanner;
 
-use petgraph::dot::{Dot, Config};
+use petgraph::dot::{Config, Dot};
 
 fn main() {
     let c_grammar = include_str!("../../../cake/src/parser/grammars/c_grammar.def");
@@ -14,7 +20,7 @@ fn main() {
 
     let expression = "a = 17, *b = 56, *c = a++ * ++b";
     let expression_scanner = DFAScanner::from_lexeme_set::<CLexemes>();
-    let mut expression_tokenizer: RawTokenStream<'_, CLexemes> = 
+    let mut expression_tokenizer: RawTokenStream<'_, CLexemes> =
         RawTokenStream::new(expression_scanner, expression.as_bytes());
 
     let now = Instant::now();
@@ -22,5 +28,8 @@ fn main() {
     let elapsed = now.elapsed();
     println!("Parsing took {:.2?}", elapsed);
     let sppf_graph = earley::sppf_to_graph(&sppf, &c_grammar);
-    println!("{:?}", Dot::with_config(&sppf_graph, &[Config::EdgeNoLabel, ]))
+    println!(
+        "{:?}",
+        Dot::with_config(&sppf_graph, &[Config::EdgeNoLabel,])
+    )
 }

@@ -1,5 +1,3 @@
 use cake::elf;
 
-fn main() {
-
-}
+fn main() {}

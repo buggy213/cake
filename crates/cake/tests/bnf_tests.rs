@@ -1,4 +1,7 @@
-use cake::{parser::grammar::{EBNF, Grammar}, scanner::lexeme_sets::{expressions::Expressions, ebnf::Ebnf}};
+use cake::{
+    parser::grammar::{Grammar, EBNF},
+    scanner::lexeme_sets::{ebnf::Ebnf, expressions::Expressions},
+};
 
 #[test]
 fn expression_grammar() {

@@ -1,8 +1,8 @@
+use cake::scanner::lexeme_sets::c_lexemes::CLexemes;
 use cake_lex::fa::FA;
 use cake_lex::regex::Regex;
-use cake_lex::LexemeSet;
 use cake_lex::DFAScanner;
-use cake::scanner::lexeme_sets::c_lexemes::CLexemes;
+use cake_lex::LexemeSet;
 
 #[test]
 fn test_basic() {
@@ -20,5 +20,7 @@ fn test_basic() {
     println!("minimized = {:?}", dfa);
 
     let mut scanner = DFAScanner::from_ascii_dfa(&dfa);
-    scanner.scan_string("#include <stdio.h> void main() { int x = 0; while (x != 999) x++; return x; }");
+    scanner.scan_string(
+        "#include <stdio.h> void main() { int x = 0; while (x != 999) x++; return x; }",
+    );
 }

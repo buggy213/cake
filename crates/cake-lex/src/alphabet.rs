@@ -281,7 +281,7 @@ impl AsciiChar {
 }
 
 pub struct AsciiCharIterator {
-    state: u8
+    state: u8,
 }
 
 impl AsciiCharIterator {
@@ -297,7 +297,7 @@ impl Iterator for AsciiCharIterator {
         if self.state >= 128 {
             return None;
         }
-        
+
         let next = AsciiChar::from_u8(self.state);
         self.state += 1;
         Some(next)

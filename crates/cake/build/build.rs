@@ -5,4 +5,3 @@ fn main() {
     build_lexemes::write_lexeme_defs(&lexeme_defs).expect("failed to write lexeme def code");
     build_lexemes::write_lexeme_tables(&lexeme_defs).expect("failed to write lexeme tables");
 }
-

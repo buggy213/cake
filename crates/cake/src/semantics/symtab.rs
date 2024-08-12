@@ -1,4 +1,8 @@
-use std::{collections::HashMap, ops::{Index, IndexMut}, rc::Rc};
+use std::{
+    collections::HashMap,
+    ops::{Index, IndexMut},
+    rc::Rc,
+};
 
 use thiserror::Error;
 
@@ -6,13 +10,13 @@ use crate::parser::ast::{ASTNode, Constant};
 
 use super::types::{CType, CanonicalType, QualifiedType};
 
-// "function prototype scope" not included, 
+// "function prototype scope" not included,
 // just ignore symbol table when processing a function prototype
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeType {
     BlockScope,
     FunctionScope,
-    FileScope
+    FileScope,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,16 +57,16 @@ pub(crate) enum StorageClass {
 pub(crate) enum Linkage {
     External,
     Internal,
-    None
+    None,
 }
 
 pub(crate) enum Symbol {
     Variable {
         symbol_type: QualifiedType,
         storage_class: StorageClass,
-        linkage: Linkage
+        linkage: Linkage,
     },
-    Constant(Constant)
+    Constant(Constant),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,12 +92,12 @@ pub(crate) struct SymbolTable {
     symbols: Vec<HashMap<String, Symbol>>,
     labels: Vec<HashMap<String, Rc<ASTNode>>>,
     tags: Vec<HashMap<String, TypeIdx>>,
-    types: Vec<CanonicalType>
+    types: Vec<CanonicalType>,
 }
 
 pub(crate) struct ImmutableScopedSymbolTable<'a> {
     table: &'a SymbolTable,
-    scope: Scope
+    scope: Scope,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -104,7 +108,6 @@ pub(crate) enum SymtabError {
     NotATag(String),
     #[error("label `{0}` already declared within function")]
     LabelAlreadyDeclared(String),
-
 }
 
 impl SymbolTable {
@@ -119,10 +122,7 @@ impl SymbolTable {
     }
 
     pub(crate) fn create_scoped_view(&self, scope: Scope) -> ImmutableScopedSymbolTable {
-        ImmutableScopedSymbolTable {
-            table: self,
-            scope,
-        }
+        ImmutableScopedSymbolTable { table: self, scope }
     }
 
     // look in current scope and all parent scopes
@@ -131,7 +131,11 @@ impl SymbolTable {
             .map(|idx| &self.types[idx])
     }
 
-    pub(crate) fn lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Option<&mut CanonicalType> {
+    pub(crate) fn lookup_tag_type_mut(
+        &mut self,
+        scope: Scope,
+        tag: &str,
+    ) -> Option<&mut CanonicalType> {
         self.lookup_tag_type_idx(scope, tag)
             .map(|idx| &mut self.types[idx])
     }
@@ -141,12 +145,10 @@ impl SymbolTable {
         loop {
             match self.direct_lookup_tag_type_idx(current_scope, tag) {
                 Some(tag_type) => return Some(tag_type),
-                None => {
-                    match current_scope.parent_scope {
-                        Some(parent) => current_scope = self.scopes[parent],
-                        None => return None,
-                    }
-                }
+                None => match current_scope.parent_scope {
+                    Some(parent) => current_scope = self.scopes[parent],
+                    None => return None,
+                },
             }
         }
     }
@@ -157,7 +159,11 @@ impl SymbolTable {
             .map(|idx| &self.types[idx])
     }
 
-    pub(crate) fn direct_lookup_tag_type_mut(&mut self, scope: Scope, tag: &str) -> Option<&mut CanonicalType> {
+    pub(crate) fn direct_lookup_tag_type_mut(
+        &mut self,
+        scope: Scope,
+        tag: &str,
+    ) -> Option<&mut CanonicalType> {
         self.direct_lookup_tag_type_idx(scope, tag)
             .map(|idx| &mut self.types[idx])
     }
@@ -166,7 +172,7 @@ impl SymbolTable {
         let direct_lookup = self.tags[scope.index].get(tag);
         match direct_lookup {
             Some(tag_type_idx) => return Some(*tag_type_idx),
-            None => return None
+            None => return None,
         }
     }
 
@@ -176,17 +182,27 @@ impl SymbolTable {
         type_idx
     }
 
-    pub(crate) fn add_tag(&mut self, scope: Scope, name: String, tag: TypeIdx) -> Result<(), SymtabError> {
+    pub(crate) fn add_tag(
+        &mut self,
+        scope: Scope,
+        name: String,
+        tag: TypeIdx,
+    ) -> Result<(), SymtabError> {
         if self.tags[scope.index].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
         }
-        
+
         self.tags[scope.index].insert(name, tag);
 
         Ok(())
     }
 
-    pub(crate) fn add_symbol(&mut self, scope: Scope, name: String, symbol: Symbol) -> Result<(), SymtabError> {
+    pub(crate) fn add_symbol(
+        &mut self,
+        scope: Scope,
+        name: String,
+        symbol: Symbol,
+    ) -> Result<(), SymtabError> {
         if self.symbols[scope.index].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
         }
@@ -194,18 +210,21 @@ impl SymbolTable {
         Ok(())
     }
 
-    pub(crate) fn add_label(&mut self, scope: Scope, name: String, labeled_statement: Rc<ASTNode>) -> Result<(), SymtabError> {
+    pub(crate) fn add_label(
+        &mut self,
+        scope: Scope,
+        name: String,
+        labeled_statement: Rc<ASTNode>,
+    ) -> Result<(), SymtabError> {
         // label names must be unique within a function
         // -> easiest is just to associate labels w/ function scopes.
         let mut scope = scope;
         loop {
             if scope.scope_type == ScopeType::FunctionScope {
                 break;
-            }
-            else if let Some(parent) = scope.parent_scope {
+            } else if let Some(parent) = scope.parent_scope {
                 scope = self.scopes[parent];
-            }
-            else {
+            } else {
                 // maybe not unrecoverable, but grammar should 100% prevent this from happening
                 panic!("label statement declared with no function scope as ancestor (should be impossible)");
             }

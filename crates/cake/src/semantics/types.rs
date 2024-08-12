@@ -17,7 +17,6 @@ pub(crate) enum BasicType {
     Double,
 }
 
-
 // for now, all enums will be 4 bytes
 type EnumVariant = (String, i32);
 
@@ -34,14 +33,14 @@ bitflags! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum FunctionSpecifier {
     Inline,
-    None
+    None,
 }
 
 pub(crate) type AggregateMember = (String, QualifiedType);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QualifiedType {
     pub(crate) base_type: CType,
-    pub(crate) qualifier: TypeQualifier
+    pub(crate) qualifier: TypeQualifier,
 }
 
 pub(crate) type FunctionArgument = (Option<String>, QualifiedType);
@@ -52,14 +51,14 @@ pub(crate) enum CanonicalType {
     // if possible. Incomplete types can be std::mem::replace'd once they are completed
     // in addition, they do not specify type qualifiers (though their members might)
     IncompleteUnionType {
-        tag: String
+        tag: String,
     },
     UnionType {
         tag: Option<String>,
         members: Vec<AggregateMember>,
     },
     IncompleteStructureType {
-        tag: String // having an anonymous incomplete struct/union type seems meaningless...
+        tag: String, // having an anonymous incomplete struct/union type seems meaningless...
     },
     StructureType {
         tag: Option<String>,
@@ -74,7 +73,7 @@ pub(crate) enum CanonicalType {
         return_type: Box<QualifiedType>,
         function_specifier: FunctionSpecifier,
         varargs: bool,
-        prototype_scope: Scope
+        prototype_scope: Scope,
     },
 }
 
@@ -91,7 +90,7 @@ pub(crate) enum CType {
         size: usize,
         element_type: Box<QualifiedType>,
     },
-    
+
     PointerType {
         pointee_type: Box<QualifiedType>,
     },
@@ -100,15 +99,15 @@ pub(crate) enum CType {
     // Pointers into symbol table to avoid having deep copies of highly-nested structs / unions
     // need to be careful to avoid circular / recursive structs (infinite size!)
     StructureTypeRef {
-        symtab_idx: TypeIdx
+        symtab_idx: TypeIdx,
     },
     UnionTypeRef {
-        symtab_idx: TypeIdx
+        symtab_idx: TypeIdx,
     },
     EnumTypeRef {
-        symtab_idx: TypeIdx
+        symtab_idx: TypeIdx,
     },
     FunctionTypeRef {
-        symtab_idx: TypeIdx
-    }
+        symtab_idx: TypeIdx,
+    },
 }

@@ -4,7 +4,7 @@ use std::ops::Mul;
 #[derive(Clone, Copy, Debug)]
 pub enum RangeUInt {
     Finite(u32),
-    Infinite
+    Infinite,
 }
 
 impl Mul for RangeUInt {
@@ -13,7 +13,7 @@ impl Mul for RangeUInt {
     fn mul(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (RangeUInt::Finite(a), RangeUInt::Finite(b)) => RangeUInt::Finite(a * b),
-            _ => RangeUInt::Infinite
+            _ => RangeUInt::Infinite,
         }
     }
 }

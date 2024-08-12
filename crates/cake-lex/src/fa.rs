@@ -1,4 +1,8 @@
-use std::{collections::{VecDeque, HashMap}, fmt::Debug, iter};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt::Debug,
+    iter,
+};
 
 use crate::alphabet::AsciiCharIterator;
 use crate::{alphabet::AsciiChar, regex::Regex};
@@ -8,7 +12,7 @@ use bit_set::BitSet;
 // pointer-based graphs in safe rust are somewhat tricky, so just do indices to keep things simple
 #[derive(Debug, Clone)]
 pub struct FANode<A: Eq> {
-    pub(super) transitions: Vec<(Option<A>, usize)>
+    pub(super) transitions: Vec<(Option<A>, usize)>,
 }
 
 #[derive(Debug)]
@@ -19,20 +23,20 @@ pub struct FA<A: Eq + Copy> {
     pub(super) nodes: Vec<FANode<A>>,
     pub(super) initial_state: usize,
     pub(super) accept_states: Vec<usize>,
-    pub(super) actions: Option<Vec<i32>>
+    pub(super) actions: Option<Vec<i32>>,
 }
 
 impl FA<AsciiChar> {
-
-    // re + mutable nodes -> initial, accept state 
+    // re + mutable nodes -> initial, accept state
     // invariant - push stuff into `nodes` before making pointers, otherwise memory unsafe
-    fn recursive_helper(re: &Regex<AsciiChar>, nodes: &mut Vec<FANode<AsciiChar>>) 
-        -> (usize, usize) 
-    {
+    fn recursive_helper(
+        re: &Regex<AsciiChar>,
+        nodes: &mut Vec<FANode<AsciiChar>>,
+    ) -> (usize, usize) {
         match re {
             Regex::Alternation(alternates) => {
                 let end: FANode<AsciiChar> = FANode {
-                    transitions: Vec::new()
+                    transitions: Vec::new(),
                 };
 
                 nodes.push(end);
@@ -46,58 +50,56 @@ impl FA<AsciiChar> {
                 }
 
                 let start: FANode<AsciiChar> = FANode {
-                    transitions: start_transitions
+                    transitions: start_transitions,
                 };
 
                 nodes.push(start);
                 let start_ptr: usize = nodes.len() - 1;
-                
+
                 (start_ptr, end_ptr)
-            },
+            }
             Regex::Concatenation(factors) => {
-                let heads_tails: Vec<(usize, usize)> = factors.into_iter()
+                let heads_tails: Vec<(usize, usize)> = factors
+                    .into_iter()
                     .map(|x| Self::recursive_helper(x, nodes))
                     .collect();
                 let start_ptr = heads_tails.first().unwrap().0;
                 let end_ptr = heads_tails.last().unwrap().1;
 
                 for i in 0..heads_tails.len() - 1 {
-                    let next_head = heads_tails[i+1].0;
+                    let next_head = heads_tails[i + 1].0;
                     nodes[heads_tails[i].1].transitions.push((None, next_head))
                 }
 
                 (start_ptr, end_ptr)
-            },
+            }
             Regex::Kleene(inner) => {
                 let (inner_start, inner_end) = Self::recursive_helper(inner.as_ref(), nodes);
                 let end: FANode<AsciiChar> = FANode {
-                    transitions: Vec::new()
+                    transitions: Vec::new(),
                 };
                 nodes.push(end);
                 let end_ptr: usize = nodes.len() - 1;
                 nodes[inner_end].transitions.push((None, inner_start));
                 nodes[inner_end].transitions.push((None, end_ptr));
-                
 
                 let start: FANode<AsciiChar> = FANode {
-                    transitions: vec![(None, inner_start), (None, end_ptr)]
+                    transitions: vec![(None, inner_start), (None, end_ptr)],
                 };
                 nodes.push(start);
                 let start_ptr: usize = nodes.len() - 1;
                 (start_ptr, end_ptr)
-            },
+            }
             Regex::Char(c) => {
                 let end: FANode<AsciiChar> = FANode {
-                    transitions: Vec::new()
+                    transitions: Vec::new(),
                 };
 
                 nodes.push(end);
                 let end_ptr: usize = nodes.len() - 1;
 
                 let start: FANode<AsciiChar> = FANode {
-                    transitions: vec![
-                        (Some(*c), end_ptr)
-                    ],
+                    transitions: vec![(Some(*c), end_ptr)],
                 };
 
                 nodes.push(start);
@@ -123,40 +125,39 @@ impl FA<AsciiChar> {
                 }
 
                 let end: FANode<AsciiChar> = FANode {
-                    transitions: Vec::new()
+                    transitions: Vec::new(),
                 };
                 nodes.push(end);
                 let end_ptr = nodes.len() - 1;
 
-                let transitions: Vec<(Option<AsciiChar>, usize)> = included.iter()
+                let transitions: Vec<(Option<AsciiChar>, usize)> = included
+                    .iter()
                     .map(|x| (Some(AsciiChar::from_u8(x as u8)), end_ptr))
                     .collect();
 
-                let start: FANode<AsciiChar> = FANode {
-                    transitions
-                };
+                let start: FANode<AsciiChar> = FANode { transitions };
                 nodes.push(start);
                 let start_ptr = nodes.len() - 1;
-                
+
                 (start_ptr, end_ptr)
-            },
+            }
             Regex::Empty => {
                 let end = FANode {
-                    transitions: Vec::new()
+                    transitions: Vec::new(),
                 };
 
                 nodes.push(end);
                 let end_ptr = nodes.len() - 1;
 
                 let start = FANode {
-                    transitions: vec![(None, end_ptr)]
+                    transitions: vec![(None, end_ptr)],
                 };
 
                 nodes.push(start);
                 let start_ptr = nodes.len() - 1;
 
                 (start_ptr, end_ptr)
-            },
+            }
         }
     }
 
@@ -164,42 +165,35 @@ impl FA<AsciiChar> {
     // guaranteed to only have one accept state
     pub fn nfa_from_re(re: &Regex<AsciiChar>) -> FA<AsciiChar> {
         let mut nodes: Vec<FANode<AsciiChar>> = Vec::new();
-        
+
         let (start, end) = Self::recursive_helper(re, &mut nodes);
-        FA { 
-            nodes, 
-            initial_state: start, 
+        FA {
+            nodes,
+            initial_state: start,
             accept_states: vec![end],
-            actions: None
+            actions: None,
         }
     }
 
     pub fn combine_res(res: &[Regex<AsciiChar>]) -> FA<AsciiChar> {
         let mut nodes: Vec<FANode<AsciiChar>> = Vec::new();
-        let heads_tails: Vec<_> = res.iter()
+        let heads_tails: Vec<_> = res
+            .iter()
             .map(|re| Self::recursive_helper(re, &mut nodes))
             .collect();
 
-        let transitions: Vec<(Option<_>, usize)> = heads_tails.iter()
-            .map(|(head, _)| (None, *head))
-            .collect();
-        
-        let initial_state = FANode {
-            transitions
-        };
+        let transitions: Vec<(Option<_>, usize)> =
+            heads_tails.iter().map(|(head, _)| (None, *head)).collect();
+
+        let initial_state = FANode { transitions };
 
         nodes.push(initial_state);
         let initial_state = nodes.len() - 1;
 
+        let accept_states: Vec<usize> = heads_tails.iter().map(|x| x.1).collect();
 
-        let accept_states: Vec<usize> = heads_tails.iter()
-            .map(|x| x.1)
-            .collect();
+        let mut actions: Vec<i32> = iter::repeat(-1).take(nodes.len()).collect();
 
-        let mut actions: Vec<i32> = iter::repeat(-1)
-            .take(nodes.len())
-            .collect();
-        
         for (priority, x) in accept_states.iter().copied().enumerate() {
             actions[x] = priority as i32;
         }
@@ -209,7 +203,7 @@ impl FA<AsciiChar> {
             nodes,
             initial_state,
             accept_states,
-            actions
+            actions,
         }
     }
 
@@ -224,8 +218,10 @@ impl FA<AsciiChar> {
 
         // compute epsilon closure
         Self::epsilon_closure(&nfa.nodes, &mut initial_configuration);
-        assert!(initial_configuration.is_disjoint(&accepting_states), 
-            "initial state should be epsilon disjoint from accepting states");
+        assert!(
+            initial_configuration.is_disjoint(&accepting_states),
+            "initial state should be epsilon disjoint from accepting states"
+        );
 
         let mut id: usize = 0;
 
@@ -234,7 +230,7 @@ impl FA<AsciiChar> {
         subsets.insert(initial_configuration.clone(), id);
         actions_dfa.push(-1);
         id += 1;
-        
+
         let mut work_queue: VecDeque<BitSet> = VecDeque::new();
         work_queue.push_back(initial_configuration.clone());
 
@@ -245,27 +241,27 @@ impl FA<AsciiChar> {
             for char in AsciiCharIterator::new() {
                 let mut t = Self::delta(&nfa.nodes, &q, char);
                 if t.len() == 0 {
-                    continue;   
+                    continue;
                 }
-                
+
                 Self::epsilon_closure(&nfa.nodes, &mut t);
                 transitions.insert((q.clone(), char), t.clone());
-                
+
                 let present = subsets.contains_key(&t);
                 if !present {
                     if !t.is_disjoint(&accepting_states) {
                         accept_states_dfa.push(id);
                         if nfa.actions.is_some() {
                             let nfa_actions = nfa.actions.as_ref().unwrap();
-                            let dfa_action = t.iter()
+                            let dfa_action = t
+                                .iter()
                                 .map(|x| nfa_actions[x])
                                 .filter(|x| *x != -1)
                                 .min()
                                 .expect("t should be nonempty");
                             actions_dfa.push(dfa_action);
                         }
-                    }
-                    else {
+                    } else {
                         actions_dfa.push(-1);
                     }
                     subsets.insert(t.clone(), id);
@@ -275,21 +271,26 @@ impl FA<AsciiChar> {
                 }
             }
         }
-        
+
         let mut nodes: Vec<FANode<AsciiChar>> = Vec::with_capacity(id);
-        nodes.resize(id, FANode { transitions: vec![] });
+        nodes.resize(
+            id,
+            FANode {
+                transitions: vec![],
+            },
+        );
         // a transitions to b when c is character applied
         for ((a, c), b) in transitions.iter() {
             let a = subsets[a];
             let b = subsets[b];
             nodes[a].transitions.push((Some(*c), b));
         }
-        
-        FA { 
-            nodes, 
-            initial_state: 0, 
+
+        FA {
+            nodes,
+            initial_state: 0,
             accept_states: accept_states_dfa,
-            actions: nfa.actions.as_ref().map(|_| actions_dfa)
+            actions: nfa.actions.as_ref().map(|_| actions_dfa),
         }
     }
 
@@ -330,7 +331,8 @@ impl FA<AsciiChar> {
     }
 
     fn get_partition(partitions: &[BitSet], id: usize) -> usize {
-        partitions.iter()
+        partitions
+            .iter()
             .enumerate()
             .filter(|x| x.1.contains(id))
             .next()
@@ -338,11 +340,16 @@ impl FA<AsciiChar> {
             .0
     }
 
-    fn split(partitions: &[BitSet], dfa: &FA<AsciiChar>, set: &BitSet, c: AsciiChar) -> (BitSet, BitSet) {
+    fn split(
+        partitions: &[BitSet],
+        dfa: &FA<AsciiChar>,
+        set: &BitSet,
+        c: AsciiChar,
+    ) -> (BitSet, BitSet) {
         let mut a = BitSet::new();
         let mut b = BitSet::new();
 
-        // magic values: -1 for no transition with label ch, 
+        // magic values: -1 for no transition with label ch,
         // i=0... means transition leads to partition i
         let mut action: i32 = -1;
         let mut first = true;
@@ -353,20 +360,18 @@ impl FA<AsciiChar> {
             for (label, next) in &node.transitions {
                 let label = label.expect("DFA must not have epsilon transitions");
                 let next = (Self::get_partition(partitions, *next)) as i32;
-                
+
                 if label == c {
                     no_transition = false;
                     if action != next {
                         if first {
                             action = next;
                             a.insert(e);
-                        }
-                        else {
+                        } else {
                             // need to split
                             b.insert(e);
                         }
-                    }
-                    else {
+                    } else {
                         // join partition
                         a.insert(e);
                     }
@@ -377,8 +382,7 @@ impl FA<AsciiChar> {
             if no_transition {
                 if action == -1 {
                     a.insert(e);
-                }
-                else {
+                } else {
                     b.insert(e);
                 }
             }
@@ -393,16 +397,19 @@ impl FA<AsciiChar> {
         let accept: BitSet = dfa.accept_states.iter().copied().collect();
         let mut nonaccept: BitSet = (0..dfa.nodes.len()).collect();
         nonaccept.difference_with(&accept);
-        
+
         let mut b_partition: Vec<BitSet> = if separate_finals {
             let size = nonaccept.capacity();
-            accept.iter().map(|y| {
-                let mut x = BitSet::with_capacity(size);
-                x.insert(y);
-                x
-            }).chain(iter::once(nonaccept)).collect()
-        }
-        else {
+            accept
+                .iter()
+                .map(|y| {
+                    let mut x = BitSet::with_capacity(size);
+                    x.insert(y);
+                    x
+                })
+                .chain(iter::once(nonaccept))
+                .collect()
+        } else {
             vec![accept.clone(), nonaccept]
         };
 
@@ -410,7 +417,6 @@ impl FA<AsciiChar> {
 
         // println!("{:?}", a_partition);
         // println!("{:?}", b_partition);
-
 
         while a_partition != b_partition {
             std::mem::swap(&mut a_partition, &mut b_partition);
@@ -422,7 +428,7 @@ impl FA<AsciiChar> {
                     let (s1, s2) = Self::split(&a_partition, dfa, s, ch);
                     if s2.len() == 0 {
                         continue;
-                    } 
+                    }
 
                     // println!("splitting on {:?}, {:?} / {:?}", ch, s1, s2);
 
@@ -445,35 +451,41 @@ impl FA<AsciiChar> {
         // println!("{:?}", a_partition);
         // println!("{:?}", b_partition);
 
-
         let mut minimal_nodes: Vec<FANode<AsciiChar>> = Vec::with_capacity(a_partition.len());
-        minimal_nodes.resize(a_partition.len(), FANode { transitions: Vec::new() });
+        minimal_nodes.resize(
+            a_partition.len(),
+            FANode {
+                transitions: Vec::new(),
+            },
+        );
 
         for (i, p) in a_partition.iter().enumerate() {
             let first = p.iter().next().expect("partition should be nonempty");
             let node = &dfa.nodes[first];
             for (c, next) in &node.transitions {
-                minimal_nodes[i].transitions.push(
-                    (*c, Self::get_partition(&a_partition, *next))
-                )
+                minimal_nodes[i]
+                    .transitions
+                    .push((*c, Self::get_partition(&a_partition, *next)))
             }
         }
 
-        let initial_state: Vec<usize> = a_partition.iter()
+        let initial_state: Vec<usize> = a_partition
+            .iter()
             .enumerate()
             .filter(|x| x.1.contains(dfa.initial_state))
             .map(|x| x.0)
             .collect();
-        
+
         assert!(initial_state.len() == 1, "partition should be disjoint");
         let initial_state = initial_state[0];
 
-        let accept_states: Vec<usize> = a_partition.iter()
+        let accept_states: Vec<usize> = a_partition
+            .iter()
             .enumerate()
             .filter(|x| x.1.is_subset(&accept))
             .map(|x| x.0)
             .collect();
-        
+
         // println!("{:?}", dfa.actions);
         // println!("{:?}", accept_states);
         let actions: Option<Vec<i32>> = dfa.actions.as_ref().map(|actions| {
@@ -502,18 +514,19 @@ impl FA<AsciiChar> {
             new_actions
         });
 
-        FA { 
-            nodes: minimal_nodes, 
-            initial_state, 
+        FA {
+            nodes: minimal_nodes,
+            initial_state,
             accept_states,
-            actions
+            actions,
         }
     }
 
     pub fn simulate_dfa(dfa: &FA<AsciiChar>, input: &str) -> bool {
         assert!(input.is_ascii());
         let mut state = dfa.initial_state;
-        let chars = input.as_bytes()
+        let chars = input
+            .as_bytes()
             .iter()
             .copied()
             .map(|x| AsciiChar::from_u8(x));

@@ -1,9 +1,13 @@
-use std::{error::Error, fs::{self, Metadata}, path::{Path, PathBuf}};
+use std::{
+    error::Error,
+    fs::{self, Metadata},
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use cake_lex::{fa::FA, regex::Regex, DFATable, LexemeSet};
 use codegen::*;
-use convert_case::{Casing, Case};
+use convert_case::{Case, Casing};
 use glob::*;
 use lazy_static::lazy_static;
 
@@ -13,20 +17,25 @@ const LEXEME_DIR_DEFS: &str = "src/scanner/lexeme_sets/defs";
 const LEXEME_DIR_TABLES: &str = "src/scanner/lexeme_sets/tables";
 
 lazy_static! {
-    static ref PACKAGE_ROOT: String = std::env::var("CARGO_MANIFEST_DIR").expect("must use cargo as build system");
-    
+    static ref PACKAGE_ROOT: String =
+        std::env::var("CARGO_MANIFEST_DIR").expect("must use cargo as build system");
     static ref LEXEME_DIR_ABS: PathBuf = Path::new(PACKAGE_ROOT.as_str()).join(LEXEME_DIR);
-    
     static ref LEXEME_DIR_DEF_ABS: PathBuf = Path::new(PACKAGE_ROOT.as_str()).join(LEXEME_DIR_DEFS);
-    static ref LEXEME_DIR_DEF_STR: String = LEXEME_DIR_DEF_ABS.to_str().expect("path to package contains non-UTF8 characters, which cargo does not like").to_string();
-    
-    static ref LEXEME_DIR_TABLES_ABS: PathBuf = Path::new(PACKAGE_ROOT.as_str()).join(LEXEME_DIR_TABLES);
-    static ref LEXEME_DIR_TABLES_STR: String = LEXEME_DIR_DEF_ABS.to_str().expect("path to package contains non-UTF8 characters, which cargo does not like").to_string();
+    static ref LEXEME_DIR_DEF_STR: String = LEXEME_DIR_DEF_ABS
+        .to_str()
+        .expect("path to package contains non-UTF8 characters, which cargo does not like")
+        .to_string();
+    static ref LEXEME_DIR_TABLES_ABS: PathBuf =
+        Path::new(PACKAGE_ROOT.as_str()).join(LEXEME_DIR_TABLES);
+    static ref LEXEME_DIR_TABLES_STR: String = LEXEME_DIR_DEF_ABS
+        .to_str()
+        .expect("path to package contains non-UTF8 characters, which cargo does not like")
+        .to_string();
 }
 
 pub fn parse_lexeme_defs() -> Result<Vec<LexemeSetDef>, anyhow::Error> {
     println!("cargo:rerun-if-changed={}", *LEXEME_DIR_DEF_STR);
-    
+
     let mut lexeme_set_defs = Vec::new();
     for entry in glob(&format!("{}/*.def", *LEXEME_DIR_DEF_STR))? {
         let entry = entry?;
@@ -51,7 +60,6 @@ pub fn write_lexeme_defs(lexeme_set_defs: &[LexemeSetDef]) -> Result<(), anyhow:
     Ok(())
 }
 
-
 pub(super) struct Lexeme {
     name: String,
     pattern: String,
@@ -61,16 +69,15 @@ pub(super) struct LexemeSetDef {
     name: String,
     pascal_case_name: String,
     lexemes: Vec<Lexeme>,
-    file_metadata: std::fs::Metadata
+    file_metadata: std::fs::Metadata,
 }
 
 fn parse_lexeme_def(def_path: &PathBuf) -> Result<LexemeSetDef, anyhow::Error> {
     let def_metadata = fs::metadata(&def_path)?;
-    let def_string = fs::read_to_string(&def_path)
-        .with_context(|| "unable to read def")?;
-    
-    
-    let name = def_path.file_name()
+    let def_string = fs::read_to_string(&def_path).with_context(|| "unable to read def")?;
+
+    let name = def_path
+        .file_name()
         .expect("strange filename")
         .to_str()
         .expect("strange filename")
@@ -86,8 +93,7 @@ fn parse_lexeme_def(def_path: &PathBuf) -> Result<LexemeSetDef, anyhow::Error> {
         let split_result = line.split_once(":");
         if split_result.is_some() {
             (name, pattern) = split_result.unwrap();
-        }
-        else {
+        } else {
             name_string = line.to_case(Case::Pascal);
             name = &name_string;
             pattern = line;
@@ -99,12 +105,12 @@ fn parse_lexeme_def(def_path: &PathBuf) -> Result<LexemeSetDef, anyhow::Error> {
             pattern: pattern.to_string(),
         });
     }
-    
+
     let lexeme_set_def = LexemeSetDef {
         name,
         pascal_case_name,
         lexemes,
-        file_metadata: def_metadata
+        file_metadata: def_metadata,
     };
 
     Ok(lexeme_set_def)
@@ -115,20 +121,23 @@ fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<
     let rs_path = mod_path.join(format!("{}.rs", &lexeme_set_def.name));
     match fs::metadata(&rs_path) {
         Ok(metadata) => {
-            let target_mtime = metadata.modified()
+            let target_mtime = metadata
+                .modified()
                 .with_context(|| "error while checking rs output target mtime")?;
-            let dependency_mtime = lexeme_set_def.file_metadata.modified()
+            let dependency_mtime = lexeme_set_def
+                .file_metadata
+                .modified()
                 .with_context(|| "error while checking def file target mtime")?;
 
             // target newer than dependency, no need to write rs file
             if target_mtime > dependency_mtime {
                 return Ok(());
             }
-        },
+        }
         // no-op, might not exist (or might not have permissions) - in either case, writing is ok
-        Err(_) => {}, 
+        Err(_) => {}
     }
-    
+
     let mut base = Scope::new();
     base.import("cake_lex", "LexemeSet");
     base.import("cake_lex", "DFATable");
@@ -142,80 +151,88 @@ fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<
     lexeme_enum.derive("Hash");
     lexeme_enum.repr("u32");
     lexeme_enum.vis("pub");
-    
+
     let mut lexeme_set_impl = Impl::new(&lexeme_set_def.pascal_case_name);
 
     // populate enum variants
-    lexeme_set_def.lexemes.iter()
-        .for_each(|x| { lexeme_enum.new_variant(&x.name); });
+    lexeme_set_def.lexemes.iter().for_each(|x| {
+        lexeme_enum.new_variant(&x.name);
+    });
 
     // populate (name: String) -> (Option<LexemeSet>) mapping
     let mut from_name = Function::new("from_name");
-    from_name.arg("name", "&str")
-        .ret("Option<Self>");
+    from_name.arg("name", "&str").ret("Option<Self>");
 
     let mut from_name_match = Block::new("match name");
-    lexeme_set_def.lexemes.iter()
-        .for_each(|x| {
-            from_name_match.line(format!("\"{}\" => Some({}::{}),", &x.name, &lexeme_set_def.pascal_case_name, &x.name));
-        });
-    
+    lexeme_set_def.lexemes.iter().for_each(|x| {
+        from_name_match.line(format!(
+            "\"{}\" => Some({}::{}),",
+            &x.name, &lexeme_set_def.pascal_case_name, &x.name
+        ));
+    });
+
     from_name_match.line("_ => None");
     from_name.push_block(from_name_match);
 
     // populate (id: u32) -> (Option<LexemeSet>) mapping
     let mut from_id = Function::new("from_id");
-    from_id.arg("id", "u32")
-        .ret("Option<Self>");
+    from_id.arg("id", "u32").ret("Option<Self>");
 
     let mut from_id_match = Block::new("match id");
-    lexeme_set_def.lexemes.iter().enumerate()
+    lexeme_set_def
+        .lexemes
+        .iter()
+        .enumerate()
         .for_each(|(id, x)| {
-            from_id_match.line(format!("{} => Some({}::{}),", id, &lexeme_set_def.pascal_case_name, &x.name));
+            from_id_match.line(format!(
+                "{} => Some({}::{}),",
+                id, &lexeme_set_def.pascal_case_name, &x.name
+            ));
         });
     from_id_match.line("_ => None");
     from_id.push_block(from_id_match);
 
     // populate (EnumVariant) -> (name: String) mapping
     let mut to_name = Function::new("to_name");
-    to_name.arg_self()
-        .ret("&'static str");
+    to_name.arg_self().ret("&'static str");
 
     let mut to_name_match = Block::new("match self");
-    lexeme_set_def.lexemes.iter()
-        .for_each(|x| {
-            to_name_match.line(format!("{}::{} => \"{}\",", &lexeme_set_def.pascal_case_name, &x.name, &x.name));
-        });
+    lexeme_set_def.lexemes.iter().for_each(|x| {
+        to_name_match.line(format!(
+            "{}::{} => \"{}\",",
+            &lexeme_set_def.pascal_case_name, &x.name, &x.name
+        ));
+    });
     to_name.push_block(to_name_match);
-    
+
     // (EnumVariant) -> (id: u32) is just a cast since the lexeme set enum is always repr(u32)
     let mut to_id = Function::new("to_id");
-    to_id.arg_self()
-        .ret(Type::new("u32"))
-        .line("self as u32");
+    to_id.arg_self().ret(Type::new("u32")).line("self as u32");
 
     // populate (EnumVariant) -> (pattern: String) mapping
     let mut pattern = Function::new("pattern");
-    pattern.arg_self()
-        .ret("&'static str");
+    pattern.arg_self().ret("&'static str");
 
     let mut pattern_match = Block::new("match self");
-    lexeme_set_def.lexemes.iter()
-        .for_each(|x| {
-            let escaped_pattern = x.pattern.escape_default();
-            pattern_match.line(format!("{}::{} => \"{}\",", &lexeme_set_def.pascal_case_name, &x.name, escaped_pattern));
-        });
+    lexeme_set_def.lexemes.iter().for_each(|x| {
+        let escaped_pattern = x.pattern.escape_default();
+        pattern_match.line(format!(
+            "{}::{} => \"{}\",",
+            &lexeme_set_def.pascal_case_name, &x.name, escaped_pattern
+        ));
+    });
     pattern.push_block(pattern_match);
-    
+
     let mut next = Function::new("next");
-    next.arg_self()
-        .ret("Option<Self>")
-        .line(format!("if self.to_id() >= {} - 1 {{ None }} else {{ Self::from_id(self.to_id() + 1) }}", lexeme_set_def.lexemes.len()));
+    next.arg_self().ret("Option<Self>").line(format!(
+        "if self.to_id() >= {} - 1 {{ None }} else {{ Self::from_id(self.to_id() + 1) }}",
+        lexeme_set_def.lexemes.len()
+    ));
 
     let mut size = Function::new("size");
     size.ret("u32")
         .line(format!("{}", lexeme_set_def.lexemes.len()));
-    
+
     // push trait functions into impl
     lexeme_set_impl.push_fn(from_name);
     lexeme_set_impl.push_fn(from_id);
@@ -233,9 +250,11 @@ fn write_lexeme_rs(lexeme_set_def: &LexemeSetDef, mod_path: &PathBuf) -> Result<
     let load_table_fn = enum_impl.new_fn("load_table");
     load_table_fn.vis("pub(crate)");
     load_table_fn.ret("DFATable");
-    let de_statement = format!("serde_json::from_str(include_str!(\"tables/{}\")).expect(\"bad precompiled table\")", &lexeme_set_def.name);
+    let de_statement = format!(
+        "serde_json::from_str(include_str!(\"tables/{}\")).expect(\"bad precompiled table\")",
+        &lexeme_set_def.name
+    );
     load_table_fn.line(de_statement);
-    
 
     // push enum + implementation of LexemeSet into root
     base.push_enum(lexeme_enum);
@@ -252,41 +271,46 @@ pub fn write_lexeme_tables(lexeme_set_defs: &[LexemeSetDef]) -> Result<(), anyho
     for lexeme_set_def in lexeme_set_defs {
         write_lexeme_table(lexeme_set_def, &LEXEME_DIR_TABLES_ABS)?;
     }
-    
+
     Ok(())
-} 
+}
 
 fn write_lexeme_table(lexeme_set_def: &LexemeSetDef, path: &PathBuf) -> Result<(), anyhow::Error> {
     // check if table is newer than definition
     let table_path = path.join(&lexeme_set_def.name);
     match fs::metadata(&table_path) {
         Ok(metadata) => {
-            let target_mtime = metadata.modified()
+            let target_mtime = metadata
+                .modified()
                 .with_context(|| "error while checking rs output target mtime")?;
-            let dependency_mtime = lexeme_set_def.file_metadata.modified()
+            let dependency_mtime = lexeme_set_def
+                .file_metadata
+                .modified()
                 .with_context(|| "error while checking def file target mtime")?;
 
             // target newer than dependency, no need to write DFA table file
             if target_mtime > dependency_mtime {
                 return Ok(());
             }
-        },
+        }
         // doesn't exist / not accessible - try to write either way
-        Err(_) => {},
+        Err(_) => {}
     }
 
-    let regexes: Result<Vec<_>, _> = lexeme_set_def.lexemes.iter()
+    let regexes: Result<Vec<_>, _> = lexeme_set_def
+        .lexemes
+        .iter()
         .map(|l| Regex::from_str(&l.pattern))
         .collect();
-    let regexes = regexes
-        .with_context(|| format!("error while processing regex patterns for {:?}", path))?;
+    let regexes =
+        regexes.with_context(|| format!("error while processing regex patterns for {:?}", path))?;
     let nfa = FA::combine_res(&regexes);
     let dfa = FA::dfa_from_nfa(&nfa);
     let dfa = FA::minimize_dfa(&dfa, true);
     let dfa_table = DFATable::from_ascii_dfa(&dfa);
     let serialized_table = serde_json::to_string(&dfa_table)
         .with_context(|| format!("failed while serializing {:?}", path))?;
-    
+
     fs::write(&table_path, &serialized_table)
         .with_context(|| format!("failed while writing serialized table for {:?}", path))?;
 
