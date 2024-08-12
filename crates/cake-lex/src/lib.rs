@@ -4,6 +4,7 @@ mod lexemes;
 pub mod regex;
 mod table_scanner;
 
+#[cfg(test)]
 mod fa_tests;
 
 pub use lexemes::LexemeSet;

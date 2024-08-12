@@ -1,11 +1,10 @@
 use std::{
-    error::Error,
-    fs::{self, Metadata},
+    fs::{self},
     path::{Path, PathBuf},
 };
 
 use anyhow::Context;
-use cake_lex::{fa::FA, regex::Regex, DFATable, LexemeSet};
+use cake_lex::{fa::FA, regex::Regex, DFATable};
 use codegen::*;
 use convert_case::{Case, Casing};
 use glob::*;

@@ -90,7 +90,7 @@ impl<T: LexemeSet> Grammar<T> {
         map
     }
 
-    pub fn compute_first_sets(grammar: &Grammar<T>) -> Vec<FirstSet<T>> {
+    pub fn compute_first_sets(_grammar: &Grammar<T>) -> Vec<FirstSet<T>> {
         todo!()
     }
 
@@ -169,21 +169,12 @@ impl<T: LexemeSet> Grammar<T> {
                 }
                 Production::Nonempty(associated_nonterminal, new_rule)
             }
-            EBNF::Identifier(x) => {
+            EBNF::Identifier(_x) => {
                 return Err(BNFError::Malformed("unexpected identifier node"));
             }
             EBNF::Empty => Production::Empty(associated_nonterminal),
-            EBNF::Repeat(clause, low, high) => {
+            EBNF::Repeat(_clause, _low, _high) => {
                 return Err(BNFError::Malformed("unexpected repeat node"));
-
-                // let clause = Self::recursive_helper_symbol(
-                //     name_to_nonterminal,
-                //     nonterminal_to_name,
-                //     clause
-                // )?;
-
-                // Production::Nonempty(associated_nonterminal, vec![clause]);
-                // todo!()
             }
             EBNF::Nonterminal(_, _) => {
                 return Err(BNFError::Malformed("unexpected nonterminal node"));

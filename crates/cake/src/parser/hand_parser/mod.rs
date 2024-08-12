@@ -11,7 +11,7 @@ use crate::{
     parser::ast::Constant,
     scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream},
     semantics::{
-        symtab::{Linkage, Scope, ScopeType, StorageClass, Symbol, SymtabError, TypeIdx},
+        symtab::{Scope, ScopeType, StorageClass, SymtabError, TypeIdx},
         types::{
             AggregateMember, BasicType, CType, CanonicalType, FunctionArgument, FunctionSpecifier,
             QualifiedType, TypeQualifier,
@@ -310,25 +310,25 @@ fn parse_integer_const(text: &str) -> Result<Constant, ParseError> {
     }
 
     enum IntTypes {
-        u32,
-        u64,
-        i32,
-        i64,
+        U32,
+        U64,
+        I32,
+        I64,
     }
 
     let conversion_attempt_list = match (suffix, hex || octal) {
-        (None, false) => [IntTypes::i32, IntTypes::i64].as_slice(),
-        (None, true) => [IntTypes::i32, IntTypes::u32, IntTypes::i64, IntTypes::u64].as_slice(),
+        (None, false) => [IntTypes::I32, IntTypes::I64].as_slice(),
+        (None, true) => [IntTypes::I32, IntTypes::U32, IntTypes::I64, IntTypes::U64].as_slice(),
         (Some("u"), false) | (Some("U"), false) | (Some("u"), true) | (Some("U"), true) => {
-            [IntTypes::u32, IntTypes::u64].as_slice()
+            [IntTypes::U32, IntTypes::U64].as_slice()
         }
 
         (Some("l"), false) | (Some("L"), false) | (Some("ll"), false) | (Some("LL"), false) => {
-            [IntTypes::i64].as_slice()
+            [IntTypes::I64].as_slice()
         }
 
         (Some("l"), true) | (Some("L"), true) | (Some("ll"), true) | (Some("LL"), true) => {
-            [IntTypes::i64, IntTypes::u64].as_slice()
+            [IntTypes::I64, IntTypes::U64].as_slice()
         }
 
         (Some("ull"), _)
@@ -338,19 +338,19 @@ fn parse_integer_const(text: &str) -> Result<Constant, ParseError> {
         | (Some("llu"), _)
         | (Some("LLu"), _)
         | (Some("llU"), _)
-        | (Some("LLU"), _) => [IntTypes::u64].as_slice(),
+        | (Some("LLU"), _) => [IntTypes::U64].as_slice(),
 
         // compiler bug! shouldn't be possible due to what the lexer is matching against
         _ => {
             #[cfg(debug_assertions)]
             panic!("unexpected integer constant type");
-            [IntTypes::u64].as_slice()
+            [IntTypes::U64].as_slice()
         }
     };
 
     for conversion in conversion_attempt_list {
         match conversion {
-            IntTypes::u32 => {
+            IntTypes::U32 => {
                 let result = if text.len() == 0 {
                     Ok(0u32)
                 } else if hex {
@@ -365,7 +365,7 @@ fn parse_integer_const(text: &str) -> Result<Constant, ParseError> {
                     return Ok(Constant::UInt(v));
                 }
             }
-            IntTypes::u64 => {
+            IntTypes::U64 => {
                 let result = if text.len() == 0 {
                     Ok(0u64)
                 } else if hex {
@@ -380,7 +380,7 @@ fn parse_integer_const(text: &str) -> Result<Constant, ParseError> {
                     return Ok(Constant::ULongInt(v));
                 }
             }
-            IntTypes::i32 => {
+            IntTypes::I32 => {
                 let result = if text.len() == 0 {
                     Ok(0i32)
                 } else if hex {
@@ -395,7 +395,7 @@ fn parse_integer_const(text: &str) -> Result<Constant, ParseError> {
                     return Ok(Constant::Int(v));
                 }
             }
-            IntTypes::i64 => {
+            IntTypes::I64 => {
                 let result = if text.len() == 0 {
                     Ok(0i64)
                 } else if hex {
@@ -2125,7 +2125,7 @@ fn parse_abstract_declarator(
 struct PointerDeclarator(TypeQualifier);
 fn parse_pointer_declarator(
     toks: &mut CTokenStream,
-    state: &mut ParserState,
+    _state: &mut ParserState,
 ) -> Result<PointerDeclarator, ParseError> {
     let mut qualifier = TypeQualifier::empty();
     eat_or_error!(toks, CLexemes::Star)?;
@@ -2143,7 +2143,7 @@ fn parse_pointer_declarator(
                 qualifier |= TypeQualifier::Restrict;
                 toks.eat(CLexemes::Restrict);
             }
-            Some((other, _, _)) => {
+            Some((_, _, _)) => {
                 return Ok(PointerDeclarator(qualifier));
             }
             None => {
@@ -2156,7 +2156,7 @@ fn parse_pointer_declarator(
 struct ArrayDeclarator(TypeQualifier, Option<usize>);
 fn parse_array_declarator(
     toks: &mut CTokenStream,
-    state: &mut ParserState,
+    _state: &mut ParserState,
 ) -> Result<ArrayDeclarator, ParseError> {
     let mut qualifier = TypeQualifier::empty();
     eat_or_error!(toks, CLexemes::LBracket)?;
@@ -2183,10 +2183,10 @@ fn parse_array_declarator(
                 eat_or_error!(toks, CLexemes::RBracket)?;
                 return Ok(ArrayDeclarator(qualifier, Some(size)));
             }
-            Some((other, _, _)) => {
+            Some((_, _, _)) => {
                 // TODO: support integer constant expressions here
                 todo!();
-                return Err(ParseError::UnexpectedToken(other));
+                // return Err(ParseError::UnexpectedToken(other));
             }
             None => {
                 return Err(ParseError::UnexpectedEOF);
@@ -2373,7 +2373,7 @@ fn parse_statement(
     }
 }
 
-fn is_lookahead_label(toks: &mut CTokenStream, state: &mut ParserState) -> bool {
+fn is_lookahead_label(toks: &mut CTokenStream, _state: &mut ParserState) -> bool {
     match toks.peek() {
         Some((lexeme, _, _)) => {
             match lexeme {

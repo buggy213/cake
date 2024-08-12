@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::parser::ast::{ASTNode, Constant};
 
-use super::types::{CType, CanonicalType, QualifiedType};
+use super::types::{CanonicalType, QualifiedType};
 
 // "function prototype scope" not included,
 // just ignore symbol table when processing a function prototype

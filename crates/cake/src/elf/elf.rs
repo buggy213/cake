@@ -1,7 +1,7 @@
-use std::{io::Read, mem::size_of};
+use std::mem::size_of;
 
 use bitflags::bitflags;
-use byteorder::{ByteOrder, ReadBytesExt, LE};
+use byteorder::{ReadBytesExt, LE};
 use thiserror::Error;
 
 type Elf64Addr = u64;
