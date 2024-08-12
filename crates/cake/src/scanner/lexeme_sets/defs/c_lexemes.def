@@ -87,8 +87,3 @@ AndAssign: &=
 XorAssign: ^=
 OrAssign: \|=
 Comma: ,
-Comment: //[^\n]*\n
-MultilineComment: /\*([^\*]|\*[^/])*\*/
-Whitespace: [ \t\n\v\f]
-Hash: #
-HeaderName: <[^\n>]+>|"[^\n"]"

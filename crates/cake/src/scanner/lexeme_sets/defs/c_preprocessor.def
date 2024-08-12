@@ -1,0 +1,24 @@
+if
+ifdef
+ifndef
+elif
+else
+endif
+include
+define
+undef
+line
+error
+pragma
+defined
+Comment: //[^\n]*
+MultilineComment: /\*([^\*]|\*[^/])*\*/
+Whitespace: [ \t]
+WeirdWhitespace: [\v\f]
+Newline: \n
+Hash: #
+SystemHeaderName: <[^\n>]+>
+NormalHeaderName: "[^\n"]"
+Identifier: [_a-zA-Z][_a-zA-Z0-9]*
+LParen: \(
+Other: [^ \n\v\f]+

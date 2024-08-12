@@ -20,7 +20,6 @@ pub struct DFATable {
 
 pub struct DFAScanner {
     table: DFATable,
-    state: usize
 }
 
 impl DFATable {
@@ -62,7 +61,6 @@ impl DFAScanner {
     pub fn from_ascii_dfa(dfa: &FA<AsciiChar>) -> DFAScanner {
         DFAScanner {
             table: DFATable::from_ascii_dfa(dfa),
-            state: dfa.initial_state,
         }
     }
 
@@ -81,15 +79,13 @@ impl DFAScanner {
     }
 
     pub fn new(table: DFATable) -> Self {
-        let state = table.initial_state;
         Self {
             table,
-            state
         }
     }
 
     // output: lexeme + action + next token cursor
-    pub fn next_word<'a>(&mut self, input: &'a [u8], start_cursor: usize) -> (&'a str, i32, usize) {
+    pub fn next_word<'a>(&self, input: &'a [u8], start_cursor: usize) -> (&'a str, i32, usize) {
         if start_cursor >= input.len() {
             return ("", -1, start_cursor);
         }
@@ -98,13 +94,13 @@ impl DFAScanner {
         let mut failed: Vec<bool> = Vec::new();
         failed.resize(input.len() * self.table.states, false);
 
-        self.state = self.table.initial_state;
+        let mut state = self.table.initial_state;
         let mut stack: VecDeque<usize> = VecDeque::new();
         stack.push_back(usize::MAX); // MAX as sentinel
         
         let mut lexeme = String::new();
         
-        while self.state != self.table.states - 1 {
+        while state != self.table.states - 1 {
             if cursor >= input.len() {
                 break; // hit EOF
             }
@@ -113,23 +109,23 @@ impl DFAScanner {
 
             // println!("c = '{:?}'", c);
             lexeme.push(char::from_u32(c as u32).expect("character is somehow invalid"));
-            if failed[self.state * input.len() + cursor] {
+            if failed[state * input.len() + cursor] {
                 break;
             }
 
-            stack.push_back(self.state);
-            let next_state = self.table.get_next_state(self.state, c);
-            self.state = next_state;
+            stack.push_back(state);
+            let next_state = self.table.get_next_state(state, c);
+            state = next_state;
 
-            if self.table.actions[self.state] != -1 {
+            if self.table.actions[state] != -1 {
                 // accept state
                 // println!("accepted '{}'", lexeme);
                 stack.clear();
             }
         }
 
-        while self.state != usize::MAX && self.table.actions[self.state] == -1 {
-            self.state = stack.pop_back().expect("should not be empty");
+        while state != usize::MAX && self.table.actions[state] == -1 {
+            state = stack.pop_back().expect("should not be empty");
             lexeme.pop();
 
             cursor -= 1;
@@ -137,11 +133,11 @@ impl DFAScanner {
 
         // earlier passes ensured its valid utf8 (ascii)
         let slice = unsafe { std::str::from_utf8_unchecked(&input[start_cursor..cursor]) };
-        if self.state == usize::MAX {
+        if state == usize::MAX {
             (slice, -1, cursor)
         }
         else {
-            (slice, self.table.actions[self.state], cursor)
+            (slice, self.table.actions[state], cursor)
         }
     }
 
