@@ -116,17 +116,20 @@ where
 
 // specialized implementation for C lexemes
 // implements preprocessing logic
-pub(crate) struct CTokenStream {
+pub struct Preprocessor {
     preprocess_scanner: DFAScanner,
     main_scanner: DFAScanner,
 
     sources_map: HashMap<PathBuf, SourceFile>,
-    sources: Vec<Box<str>>, // Box<str> is preferable to avoid indirection, since no need to mutate source files (?)
+    sources: Vec<Box<str>>, // Box<str> is preferable, since no need to mutate source files (?)
     cursor_stack: Vec<SourceCursor>,
 
-    buffer: VecDeque<(CLexemes, usize, usize, usize)>,
-    macros: HashMap<String, PreprocessorMacro>, // TODO: add stack of cursors
-                                                // to get "in file included from..." type error warnings
+    macros: HashMap<String, PreprocessorMacro>,
+}
+
+pub struct PreprocessedTokenStream<'pp> {
+    preprocessor: &'pp mut Preprocessor,
+    line_buffer: Cow<'pp, str>,
 }
 
 struct SourceFile {
@@ -144,13 +147,13 @@ struct SourceCursor {
 }
 
 enum PreprocessorMacro {
-    ObjectMacro { replacement: Vec<CPreprocessor> },
-    FunctionMacro {},
+    ObjectMacro { replacement: Vec<Preprocessor> },
+    FunctionMacro { varargs: bool },
 }
 
-impl CTokenStream {
+impl Preprocessor {
     pub fn new(file: PathBuf, contents: String) -> Self {
-        let preprocess_scanner = DFAScanner::new(CPreprocessor::load_table());
+        let preprocess_scanner = DFAScanner::new(Preprocessor::load_table());
         let main_scanner = DFAScanner::new(CLexemes::load_table());
         let sources = vec![contents.into_boxed_str()];
         let mut sources_map = HashMap::new();
@@ -175,7 +178,6 @@ impl CTokenStream {
                 line: 1,
             }],
 
-            buffer: VecDeque::with_capacity(BUFFER_SIZE),
             macros: HashMap::new(),
         }
     }
@@ -192,17 +194,35 @@ impl CTokenStream {
     // line-by-line processing could lead to super pathological cases (e.g. gigantic single line macros)
     // or if someone decides to put their entire source file in one big line
     // but this is much simpler
-    fn process_line(&mut self) {
-        let src_str = self.get_current_src_str();
+    fn process_line(&mut self) -> Option<Cow<str>> {
+        let mut src_str = self.get_current_src_str();
         let mut remaining_src_str = &src_str[self.current_cursor().cursor..];
+        // pop off of cursor stack, finished processing file
+        while remaining_src_str.is_empty() {
+            if let None = self.cursor_stack.pop() {
+                return None;
+            }
+
+            src_str = self.get_current_src_str();
+            remaining_src_str = &src_str[self.current_cursor().cursor..];
+        }
+
         let mut logical_line = if let Some(newline_pos) = remaining_src_str.find('\n') {
-            let up_to_newline;
-            (up_to_newline, remaining_src_str) = remaining_src_str.split_at(newline_pos);
+            // remove '\n' from input stream entirely
+            let up_to_newline = &remaining_src_str[..newline_pos];
+            let newln_idx = newline_pos + '\n'.len_utf8();
+            remaining_src_str = &remaining_src_str[newln_idx..];
+
+            self.current_cursor().cursor += newln_idx;
+            self.current_cursor().line += 1;
+
             Cow::Borrowed(up_to_newline)
         } else {
             // final line should be empty
             // TODO: issue warning if not
-            Cow::Borrowed(remaining_src_str)
+            self.current_cursor().cursor = src_str.len();
+            let remaining = Cow::Borrowed(remaining_src_str);
+            remaining_src_str = &"";
         };
 
         while let Some('\\') = logical_line.chars().next_back() {
@@ -213,16 +233,29 @@ impl CTokenStream {
             logical_line_string.pop();
             logical_line = Cow::Owned(logical_line_string);
         }
+
+        // detect preprocessing directives
+        if logical_line.trim_start().starts_with('#') {
+            None
+        } else {
+            Some(logical_line)
+        }
     }
 }
 
-impl TokenStream<CLexemes> for CTokenStream {
+impl<'pp> TokenStream<CLexemes> for PreprocessedTokenStream<'_> {
     fn eat(&mut self, lexeme: CLexemes) -> bool {
         todo!()
     }
 
     fn peek(&mut self) -> Option<(CLexemes, &str, usize)> {
-        todo!()
+        if self.line_buffer.is_empty() {
+            loop {
+                if let Some(l) = self.preprocessor.process_line() {
+                    self.line_buffer = l;
+                }
+            }
+        }
     }
 
     fn peekn(&mut self, n: usize) -> Option<(CLexemes, &str, usize)> {
