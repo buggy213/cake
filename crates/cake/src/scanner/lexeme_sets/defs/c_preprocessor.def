@@ -3,7 +3,7 @@ MultilineComment: /\*([^\*]|\*[^/])*\*/
 Whitespace: [ \t]
 WeirdWhitespace: [\v\f]
 Identifier: [_a-zA-Z][_a-zA-Z0-9]*
-PreprocessingNumber: \.?[0-9]([_a-zA-Z0-9]|[eEpP][+-]|\.)*
+PreprocessingNumber: \.?[0-9]([_a-zA-Z0-9]|[eEpP][\+\-]|\.)*
 CharConst: '[^'\n]'
 StringLiteral: "[^\n"]"
 LParen: \(
