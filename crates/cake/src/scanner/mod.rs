@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -116,25 +117,44 @@ where
 
 // specialized implementation for C lexemes
 // implements preprocessing logic
-pub struct Preprocessor {
+pub struct Preprocessor<'state> {
     preprocess_scanner: DFAScanner,
     main_scanner: DFAScanner,
 
-    sources_map: HashMap<PathBuf, SourceFile>,
-    sources: Vec<Box<str>>, // Box<str> is preferable, since no need to mutate source files (?)
-    cursor_stack: Vec<SourceCursor>,
+    state: PreprocessorState,
+    current_line: PreprocessorLine<'state>,
+}
 
+fn make_pp<'s>() -> Preprocessor<'s> {
+    let mut k = Preprocessor {
+        preprocess_scanner: todo!(),
+        main_scanner: todo!(),
+        state: todo!(),
+        current_line: todo!(),
+    };
+
+    k.current_line = k.state.get_line().unwrap();
+    k
+}
+
+struct PreprocessorState {
+    sources_map: HashMap<PathBuf, SourceFileDescriptor>,
+    sources: Vec<Box<str>>, // Box<str> is preferable, since no need to mutate source files (?)
+
+    cursor_stack: Vec<SourceCursor>,
     macros: HashMap<String, PreprocessorMacro>,
 }
 
-pub struct PreprocessedTokenStream<'pp> {
-    preprocessor: &'pp mut Preprocessor,
-    line_buffer: Cow<'pp, str>,
+struct PreprocessorLine<'state> {
+    line: &'state str,
+    line_num: usize,
 }
 
-struct SourceFile {
+struct FunctionMacroInvocation {}
+
+struct SourceFileDescriptor {
     // header guard optimization - #pragma once
-    header_guard: Option<String>,
+    header_guard: bool,
     source_idx: usize,
 }
 
@@ -147,28 +167,23 @@ struct SourceCursor {
 }
 
 enum PreprocessorMacro {
-    ObjectMacro { replacement: Vec<Preprocessor> },
+    ObjectMacro { replacement: Vec<PreprocessorState> },
     FunctionMacro { varargs: bool },
 }
 
-impl Preprocessor {
+impl PreprocessorState {
     pub fn new(file: PathBuf, contents: String) -> Self {
-        let preprocess_scanner = DFAScanner::new(Preprocessor::load_table());
-        let main_scanner = DFAScanner::new(CLexemes::load_table());
         let sources = vec![contents.into_boxed_str()];
         let mut sources_map = HashMap::new();
         sources_map.insert(
             file.clone(),
-            SourceFile {
-                header_guard: None,
+            SourceFileDescriptor {
+                header_guard: false,
                 source_idx: 0,
             },
         );
 
         Self {
-            preprocess_scanner,
-            main_scanner,
-
             sources_map,
             sources,
             cursor_stack: vec![SourceCursor {
@@ -182,95 +197,98 @@ impl Preprocessor {
         }
     }
 
+    fn include_file(&mut self, path: PathBuf) {
+        // 1. check for include guard
+        if let Some(src_file) = self.sources_map.get(&path) {
+            if src_file.header_guard {
+                return;
+            }
+        }
+
+        // 2. read file
+        let contents = fs::read_to_string(&path).expect("err while opening file");
+
+        // 3. update cursor stack and opened src file map
+        let idx = self.sources.len();
+        self.sources.push(contents.into_boxed_str());
+        let src_descriptor = SourceFileDescriptor {
+            header_guard: false,
+            source_idx: idx,
+        };
+        self.sources_map.insert(path.clone(), src_descriptor);
+        self.cursor_stack.push(SourceCursor {
+            filepath: path,
+            file_idx: idx,
+            cursor: 0,
+            line: 1,
+        });
+    }
+
     fn get_current_src_str(&self) -> &str {
         self.sources[self.current_cursor().file_idx].as_ref()
     }
 
+    fn get_remaining_src_str(&self) -> &str {
+        let current_src_str = self.get_current_src_str();
+        &current_src_str[self.current_cursor().cursor..]
+    }
+
+    // invariant: cursor stack must never be fully empty until compiler is finished
     fn current_cursor(&self) -> &SourceCursor {
-        // invariant: cursor stack must never be fully empty until compiler is finished
         self.cursor_stack.last().unwrap()
+    }
+
+    fn current_cursor_mut(&mut self) -> &mut SourceCursor {
+        self.cursor_stack.last_mut().unwrap()
     }
 
     // line-by-line processing could lead to super pathological cases (e.g. gigantic single line macros)
     // or if someone decides to put their entire source file in one big line
     // but this is much simpler
-    fn process_line(&mut self) -> Option<Cow<str>> {
-        let mut src_str = self.get_current_src_str();
-        let mut remaining_src_str = &src_str[self.current_cursor().cursor..];
-        // pop off of cursor stack, finished processing file
+    fn get_line(&mut self) -> Option<PreprocessorLine<'_>> {
+        // if current file is empty, pop cursor stack
+        let mut remaining_src_str = self.get_remaining_src_str();
         while remaining_src_str.is_empty() {
             if let None = self.cursor_stack.pop() {
                 return None;
+            } else {
+                remaining_src_str = self.get_remaining_src_str();
             }
-
-            src_str = self.get_current_src_str();
-            remaining_src_str = &src_str[self.current_cursor().cursor..];
         }
 
-        let mut logical_line = if let Some(newline_pos) = remaining_src_str.find('\n') {
-            // remove '\n' from input stream entirely
-            let up_to_newline = &remaining_src_str[..newline_pos];
-            let newln_idx = newline_pos + '\n'.len_utf8();
-            remaining_src_str = &remaining_src_str[newln_idx..];
+        let mut prev_char: char = '\n';
+        let mut physical_lines = 0;
+        let logical_line_break = remaining_src_str
+            .find(|c| {
+                if prev_char != '\\' && c == '\n' {
+                    physical_lines += 1;
+                    true
+                } else {
+                    physical_lines += if c == '\n' { 1 } else { 0 };
+                    prev_char = c;
+                    false
+                }
+            })
+            // include newline within line
+            .map(|p| p + '\n'.len_utf8());
 
-            self.current_cursor().cursor += newln_idx;
-            self.current_cursor().line += 1;
-
-            Cow::Borrowed(up_to_newline)
+        let old_cursor = self.current_cursor().cursor;
+        let old_line_num = self.current_cursor().line;
+        if let Some(line_break) = logical_line_break {
+            self.current_cursor_mut().line += physical_lines;
+            self.current_cursor_mut().cursor = line_break;
         } else {
-            // final line should be empty
-            // TODO: issue warning if not
-            self.current_cursor().cursor = src_str.len();
-            let remaining = Cow::Borrowed(remaining_src_str);
-            remaining_src_str = &"";
+            self.current_cursor_mut().line += physical_lines;
+            self.current_cursor_mut().cursor = self.get_current_src_str().len();
+        }
+
+        let src_str = self.get_current_src_str();
+        let new_cursor = self.current_cursor().cursor;
+        let pp_line = PreprocessorLine {
+            line: &src_str[old_cursor..new_cursor],
+            line_num: old_line_num,
         };
 
-        while let Some('\\') = logical_line.chars().next_back() {
-            if remaining_src_str.is_empty() {
-                break;
-            }
-            let mut logical_line_string = logical_line.into_owned();
-            logical_line_string.pop();
-            logical_line = Cow::Owned(logical_line_string);
-        }
-
-        // detect preprocessing directives
-        if logical_line.trim_start().starts_with('#') {
-            None
-        } else {
-            Some(logical_line)
-        }
-    }
-}
-
-impl<'pp> TokenStream<CLexemes> for PreprocessedTokenStream<'_> {
-    fn eat(&mut self, lexeme: CLexemes) -> bool {
-        todo!()
-    }
-
-    fn peek(&mut self) -> Option<(CLexemes, &str, usize)> {
-        if self.line_buffer.is_empty() {
-            loop {
-                if let Some(l) = self.preprocessor.process_line() {
-                    self.line_buffer = l;
-                }
-            }
-        }
-    }
-
-    fn peekn(&mut self, n: usize) -> Option<(CLexemes, &str, usize)> {
-        todo!()
-    }
-
-    fn advance(&mut self) -> Option<(CLexemes, &str, usize)> {
-        todo!()
-    }
-
-    fn rollback(&mut self, target: usize) {
-        todo!()
-    }
-
-    fn get_location(&self) -> usize {
-        todo!()
+        Some(pp_line)
     }
 }
