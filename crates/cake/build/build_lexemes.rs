@@ -299,10 +299,17 @@ fn write_lexeme_table(lexeme_set_def: &LexemeSetDef, path: &PathBuf) -> Result<(
     let regexes: Result<Vec<_>, _> = lexeme_set_def
         .lexemes
         .iter()
-        .map(|l| Regex::from_str(&l.pattern))
+        .map(|l| {
+            Regex::from_str(&l.pattern)
+                .with_context(|| format!("failed regex parse ({:?}): {:?}", &l.name, &l.pattern))
+        })
         .collect();
-    let regexes =
-        regexes.with_context(|| format!("error while processing regex patterns for {:?}", path))?;
+    let regexes = regexes.with_context(|| {
+        format!(
+            "error while processing regex patterns for {:?}",
+            lexeme_set_def.name
+        )
+    })?;
     let nfa = FA::combine_res(&regexes);
     let dfa = FA::dfa_from_nfa(&nfa);
     let dfa = FA::minimize_dfa(&dfa, true);

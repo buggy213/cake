@@ -106,3 +106,9 @@ fn floating_point_regex() {
 
     run_vectors(&test_vectors, &dfa, re_str)
 }
+
+#[test]
+fn is_preprocessing_number() {
+    let re_str = r"\.?[0-9]([_a-zA-Z0-9]|[eEpP][+-]|\.)*";
+    let dfa = compile_regex(re_str, true);
+}
