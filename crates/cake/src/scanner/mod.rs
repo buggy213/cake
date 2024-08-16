@@ -134,7 +134,7 @@ struct Preprocessor {
 
 // invariant: span always refers to current source
 // should be upheld as long as we only get_line once pp_token_buffer is empty
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct PreprocessorToken {
     token: CPreprocessor,
     span: (usize, usize),
@@ -145,7 +145,7 @@ struct CToken {
     span: (usize, usize),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConditionalState {
     NoneTaken,
     Active,
@@ -342,14 +342,184 @@ impl Preprocessor {
         return true;
     }
 
-    fn preprocessor_directive(&mut self) {}
+    // precondition: directive token is already processed, pp_token_line_buffer
+    // only contains contents after # <directive> (w/ no leading whitespace)
+    fn preprocessor_directive(&mut self, directive_token: PreprocessorToken) {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum DirectiveType {
+            If,
+            Ifdef,
+            Ifndef,
+            Elif,
+            Else,
+            Endif,
+            Include,
+            Define,
+            Undef,
+            Line,
+            Error,
+            Pragma,
+        }
+
+        let directive_type = match self.get_text(directive_token.span) {
+            "if" => DirectiveType::If,
+            "ifdef" => DirectiveType::Ifdef,
+            "ifndef" => DirectiveType::Ifndef,
+            "elif" => DirectiveType::Elif,
+            "else" => DirectiveType::Else,
+            "endif" => DirectiveType::Endif,
+            "include" => DirectiveType::Include,
+            "define" => DirectiveType::Define,
+            "undef" => DirectiveType::Undef,
+            "line" => DirectiveType::Line,
+            "error" => DirectiveType::Error,
+            "pragma" => DirectiveType::Pragma,
+            other => {
+                eprintln!("warning: unrecognized directive {}", other);
+                self.pp_token_line_buffer.clear();
+                return;
+            }
+        };
+
+        if directive_type == DirectiveType::Define {
+            // special case - need to distinguish
+            // #define fn(a, b)
+            // #define fn (a, b)
+            // so whitespace matters
+            todo!()
+        }
+
+        let mut no_whitespace = self.pp_token_line_buffer.iter();
+        match directive_type {
+            DirectiveType::If => todo!(),
+            x @ (DirectiveType::Ifdef | DirectiveType::Ifndef) => {
+                match no_whitespace.next() {
+                    Some(PreprocessorToken {
+                        token: CPreprocessor::Identifier,
+                        span,
+                    }) => {
+                        let macro_name = self.get_text(*span);
+                        let state = match (x, self.macros.contains_key(macro_name)) {
+                            (DirectiveType::Ifdef, true) | (DirectiveType::Ifndef, false) => {
+                                self.conditional_stack.push(ConditionalState::Active);
+                            }
+                            (DirectiveType::Ifdef, false) | (DirectiveType::Ifndef, true) => {
+                                self.conditional_stack.push(ConditionalState::NoneTaken);
+                            }
+                            _ => unreachable!(),
+                        };
+                    }
+                    None | _ => {
+                        eprintln!("#if(n)def must be followed by an identifier");
+                        todo!()
+                    }
+                }
+
+                if no_whitespace.len() != 0 {
+                    eprintln!("unexpected token after #if(n)def");
+                    todo!()
+                }
+            }
+
+            DirectiveType::Elif => todo!(),
+            DirectiveType::Else => {
+                if no_whitespace.len() != 0 {
+                    eprintln!("warning: unexpected token after #else");
+                    todo!()
+                }
+
+                match self.conditional_stack.last_mut() {
+                    Some(inner) => {
+                        *inner = match *inner {
+                            ConditionalState::NoneTaken => ConditionalState::Active,
+                            ConditionalState::Active | ConditionalState::SomeTaken => {
+                                ConditionalState::SomeTaken
+                            }
+                        }
+                    }
+                    None => {
+                        eprintln!("warning: unexpected #else");
+                        todo!()
+                    }
+                }
+            }
+            DirectiveType::Endif => {
+                if no_whitespace.len() != 0 {
+                    eprintln!("warning: unexpected token after #endif");
+                    todo!()
+                }
+
+                if self.conditional_stack.len() == 0 {
+                    eprintln!("warning: unexpected #endif");
+                    todo!()
+                }
+
+                self.conditional_stack.pop();
+            }
+            DirectiveType::Include => {
+                let mut no_whitespace_copy = no_whitespace.clone();
+                let file = no_whitespace_copy.next();
+                match file {
+                    Some(PreprocessorToken {
+                        token: CPreprocessor::StringLiteral,
+                        span,
+                    }) => {
+                        // "normal" include
+                        todo!()
+                    }
+                    Some(PreprocessorToken {
+                        token: CPreprocessor::OtherPunctuator,
+                        span,
+                    }) if self.get_text(*span) == "<" => {
+                        todo!()
+                    }
+                    Some(_) => {
+                        todo!()
+                    }
+                    None => {
+                        eprintln!("bad include directive");
+                        todo!()
+                    }
+                }
+            }
+            DirectiveType::Define => unreachable!(),
+            DirectiveType::Undef => {
+                let macro_name = no_whitespace.next();
+                if let Some(name) = macro_name {
+                    let macro_name = self.get_text(name.span);
+                    self.macros.remove(&macro_name.to_string()); // borrowck does not like
+                } else {
+                    todo!()
+                }
+
+                if no_whitespace.next().is_some() {
+                    eprintln!("Unexpected token");
+                    todo!()
+                }
+            }
+            DirectiveType::Line => todo!(),
+            DirectiveType::Error => {
+                let error_pp_tokens: Vec<_> = no_whitespace
+                    .filter(|x| x.token != CPreprocessor::Whitespace)
+                    .map(|x| self.get_text(x.span))
+                    .collect();
+
+                eprintln!("error: {}", error_pp_tokens.join(" "));
+            }
+            DirectiveType::Pragma => {
+                todo!()
+            }
+        }
+
+        self.pp_token_line_buffer.clear();
+    }
 
     // precondition: pp_token_line_buffer contains all preprocessing tokens (excluding splices and final newline) from a single logical line
     fn convert_line_to_clexemes(&mut self) {
         // 1. check for preprocessing directive
         let non_whitespace = self.pp_token_line_buffer.iter().filter_map(|t| {
             if t.token != CPreprocessor::Whitespace {
-                Some(t.token)
+                Some(t)
             } else {
                 None
             }
@@ -357,9 +527,25 @@ impl Preprocessor {
 
         if non_whitespace
             .take(2)
+            .map(|x| x.token)
             .eq([CPreprocessor::Hash, CPreprocessor::Identifier])
         {
-            self.preprocessor_directive();
+            let mut non_whitespace = std::mem::take(&mut self.pp_token_line_buffer)
+                .into_iter()
+                .filter(|t| t.token != CPreprocessor::Whitespace);
+            non_whitespace.find(|t| t.token == CPreprocessor::Hash);
+            let directive = non_whitespace
+                .find(|t| t.token == CPreprocessor::Identifier)
+                .unwrap(); // should never fail
+
+            let first_non_wsp = non_whitespace.next();
+            self.pp_token_line_buffer = non_whitespace.collect();
+            if let Some(token) = first_non_wsp {
+                self.pp_token_line_buffer.push_front(token);
+            }
+
+            self.preprocessor_directive(directive);
+        } else {
         }
     }
 }
