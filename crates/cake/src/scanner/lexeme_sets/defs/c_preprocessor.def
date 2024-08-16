@@ -1,6 +1,8 @@
 Comment: //[^\n]*
 MultilineComment: /\*([^\*]|\*[^/])*\*/
 Whitespace: [ \t]
+Splice: \\\n
+Newline: \n
 WeirdWhitespace: [\v\f]
 Identifier: [_a-zA-Z][_a-zA-Z0-9]*
 PreprocessingNumber: \.?[0-9]([_a-zA-Z0-9]|[eEpP][\+\-]|\.)*
