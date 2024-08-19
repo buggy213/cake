@@ -162,6 +162,8 @@ enum ParseError {
     ArrayOfIncompleteType,
     #[error("function cannot return function / array")]
     BadFunctionReturnType,
+    #[error("internal compiler error: bad string constant")]
+    BadStringConst,
 }
 
 struct ParserState {
@@ -504,9 +506,20 @@ fn to_expr_part(
 
         CLexemes::StringConst => {
             let mut text = text.to_string();
-            // remove quotes
-            text.pop();
-            text.remove(0);
+            // remove quotes if needed
+            match (
+                text.starts_with('"'),
+                text.ends_with('"') && !text.ends_with("\\\""),
+            ) {
+                (true, true) => {
+                    text.pop();
+                    text.remove(0);
+                }
+                (true, false) | (false, true) => return Err(ParseError::BadStringConst),
+                (false, false) => {
+                    // nop
+                }
+            }
             ExprPart::Atom(Atom::StringLiteral(text))
         }
 
