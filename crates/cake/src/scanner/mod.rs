@@ -250,6 +250,68 @@ struct FunctionMacroInvocation {
     name: MacroPreprocessorToken,
     macro_ref: Rc<FunctionMacro>,
     arguments: Vec<VecDeque<MacroPreprocessorToken>>,
+    paren_count: usize,
+}
+
+impl FunctionMacroInvocation {
+    fn new(name: MacroPreprocessorToken, macro_ref: Rc<FunctionMacro>) -> Self {
+        let arguments = if macro_ref.arguments.len() > 0 {
+            let a = vec![Default::default()];
+            a
+        } else {
+            Vec::new()
+        };
+
+        Self {
+            name,
+            macro_ref,
+            arguments,
+            paren_count: 0,
+        }
+    }
+
+    fn add_token(&mut self, pp_token: MacroPreprocessorToken) -> bool {
+        if pp_token.token() == CPreprocessor::LParen {
+            self.paren_count += 1;
+        }
+        if pp_token.token() == CPreprocessor::RParen {
+            self.paren_count -= 1;
+            if self.paren_count == 0 {
+                return true;
+            }
+        }
+
+        match (self.paren_count, &pp_token) {
+            (1, token) if token.token() == CPreprocessor::Comma => {
+                if self.macro_ref.arguments.len() > self.arguments.len() {
+                    self.arguments.push(Default::default());
+                } else if self.macro_ref.arguments.len() == self.arguments.len() {
+                    if self.macro_ref.varargs {
+                        self.arguments.push(Default::default());
+                    } else {
+                        eprintln!("unexpected macro argument");
+                        todo!()
+                    }
+                } else {
+                    self.arguments.last_mut().unwrap().push_back(pp_token)
+                }
+            }
+            (_, _) => {
+                if self.arguments.len() == 0 {
+                    if self.macro_ref.arguments.len() > 0 || self.macro_ref.varargs {
+                        let mut first_arg = VecDeque::new();
+                        first_arg.push_back(pp_token);
+                        self.arguments.push(first_arg);
+                    } else {
+                        eprintln!("unexpected macro argument");
+                        todo!()
+                    }
+                }
+            }
+        }
+
+        false
+    }
 }
 
 enum MacroInvocation {
@@ -263,12 +325,6 @@ enum MacroInvocation {
 enum StringLiteral {
     Single(TokenSpan),
     Concatenated(String, TokenSpan),
-}
-
-impl FunctionMacroInvocation {
-    fn add_pp_token(&mut self, pp_token: PreprocessorToken) -> bool {
-        todo!()
-    }
 }
 
 struct SourceFileDescriptor {
@@ -465,42 +521,95 @@ impl Preprocessor {
             self.current_cursor_mut().cursor = self.get_current_src_str().len();
         }
 
-        let mut cursor = old_cursor;
-        let mut prev_whitespace = false;
-        loop {
+        fn get_next_token(
+            scanner: &DFAScanner,
+            src_str: &str,
+            start_cursor: usize,
+        ) -> Option<(CPreprocessor, usize, bool)> {
+            let mut cursor = start_cursor;
+            let mut prev_whitespace = false;
+            loop {
+                let (_, action, next_cursor) = scanner.next_word(src_str.as_bytes(), cursor);
+                cursor = next_cursor;
+
+                if action == -1 {
+                    return None;
+                }
+
+                let token = CPreprocessor::from_id(action as u32)
+                    .expect("C preprocessor DFA should be infallible");
+
+                if let CPreprocessor::Newline = token {
+                    return None;
+                }
+                if let CPreprocessor::Splice = token {
+                    continue;
+                }
+                if let CPreprocessor::Whitespace = token {
+                    prev_whitespace = true;
+                    continue;
+                }
+
+                // comments generally = whitespace, but //-style comments always continue until end of (logical) line
+                // and will continue through line splices
+                if let CPreprocessor::Comment = token {
+                    return None;
+                }
+                if let CPreprocessor::MultilineComment = token {
+                    prev_whitespace = true;
+                    continue;
+                }
+
+                return Some((token, cursor, prev_whitespace));
+            }
+        }
+
+        // check for conditional compilation
+        if let Some(ConditionalState::NoneTaken) | Some(ConditionalState::SomeTaken) =
+            self.current_conditional_state()
+        {
+            // only process enough of line to determine if this is a conditional directive (at the same "level", i.e. else / elif / endif only)
+            // only endif if there is already some branch taken
+            let cursor = old_cursor;
             let src_str = self.get_current_src_str();
-            let (_, action, next_cursor) = self
-                .preprocess_scanner
-                .next_word(src_str.as_bytes(), cursor);
+            let first = get_next_token(&self.preprocess_scanner, src_str, cursor);
+            let (first_token, cursor, _) = match first {
+                Some(x) => x,
+                None => return true,
+            };
 
-            if action == -1 {
-                break;
-            }
-
-            let token = CPreprocessor::from_id(action as u32)
-                .expect("C preprocessor DFA should be infallible");
-
-            if let CPreprocessor::Newline = token {
-                break;
-            }
-            if let CPreprocessor::Splice = token {
-                continue;
-            }
-            if let CPreprocessor::Whitespace = token {
-                prev_whitespace = true;
-                continue;
+            if first_token != CPreprocessor::Hash {
+                return true;
             }
 
-            // comments generally = whitespace, but //-style comments always continue until end of line
-            // and do not admit a line splice
-            if let CPreprocessor::Comment = token {
-                break;
-            }
-            if let CPreprocessor::MultilineComment = token {
-                prev_whitespace = true;
-                continue;
+            let second = get_next_token(&self.preprocess_scanner, src_str, cursor);
+            let (second_token, new_cursor, _) = match second {
+                Some(x) => x,
+                None => return true,
+            };
+
+            let token_span = TokenSpan::new(self.current_cursor().file_idx, cursor, new_cursor);
+            let keywords =
+                if let Some(ConditionalState::NoneTaken) = self.current_conditional_state() {
+                    ["else", "elif", "endif"].as_slice()
+                } else {
+                    ["endif"].as_slice()
+                };
+
+            if second_token != CPreprocessor::Identifier
+                || keywords.iter().any(|s| *s == self.get_text(token_span))
+            {
+                return true;
             }
 
+            // fall through to normal processing
+        }
+
+        let mut cursor = old_cursor;
+        let mut src_str = self.get_current_src_str();
+        while let Some((token, next_cursor, prev_whitespace)) =
+            get_next_token(&self.preprocess_scanner, src_str, cursor)
+        {
             let file_idx = self.current_cursor().file_idx;
             let preprocessor_token = PreprocessorToken {
                 token,
@@ -508,10 +617,11 @@ impl Preprocessor {
                 whitespace_left: prev_whitespace,
             };
 
-            prev_whitespace = false;
             cursor = next_cursor;
             self.pp_token_line_buffer.push_back(preprocessor_token);
+            src_str = self.get_current_src_str();
         }
+
         return true;
     }
 
@@ -556,7 +666,7 @@ impl Preprocessor {
 
         let mut pp_iter = self.pp_token_line_buffer.iter();
         match directive_type {
-            DirectiveType::If => todo!(),
+            DirectiveType::If => {}
             x @ (DirectiveType::Ifdef | DirectiveType::Ifndef) => {
                 match pp_iter.next() {
                     Some(PreprocessorToken {
@@ -783,36 +893,51 @@ impl Preprocessor {
 
     // mutually recursive functions to perform macro substitution - need to substitute macros
     // within macro replacement lists
+    // overall, the macro substitution code is pretty bad - tons of allocations
+    // ideally most code should not be too macro heavy
     fn resolve_macro_invocation(
         &self,
         mut macro_invocation_stack: Vec<MacroInvocation>,
     ) -> (VecDeque<MacroPreprocessorToken>, Vec<MacroInvocation>) {
+        enum TokenOrPlacemarker {
+            Token(MacroPreprocessorToken),
+            Concat,
+            Placemarker,
+        }
+
         let substituted = match macro_invocation_stack
             .last_mut()
             .expect("must call with non-empty macro stack")
         {
-            MacroInvocation::ObjectMacroInvocation { name, macro_ref } => macro_ref
+            MacroInvocation::ObjectMacroInvocation { name: _, macro_ref } => macro_ref
                 .replacement_list
                 .clone()
                 .into_iter()
-                .map(|t| MacroPreprocessorToken::FromSource(t))
+                .map(|t| {
+                    if t.token == CPreprocessor::DoubleHash {
+                        TokenOrPlacemarker::Concat
+                    } else {
+                        let token = MacroPreprocessorToken::FromSource(t);
+                        TokenOrPlacemarker::Token(token)
+                    }
+                })
                 .collect(),
             MacroInvocation::FunctionMacroInvocation(FunctionMacroInvocation {
-                name,
                 macro_ref,
                 arguments,
+                ..
             }) => {
-                let mut substituted: VecDeque<MacroPreprocessorToken> = VecDeque::new();
-                let mut arguments = std::mem::take(arguments);
                 let macro_ref = Rc::clone(macro_ref);
-                for parameter in &mut arguments {
+
+                let mut stringified: VecDeque<MacroPreprocessorToken> = VecDeque::new();
+                let unexpanded_arguments = std::mem::take(arguments);
+
+                let mut expanded_arguments = Vec::new();
+                for parameter in &unexpanded_arguments {
                     let substituted_parameter;
-                    (substituted_parameter, macro_invocation_stack) = self
-                        .perform_macro_substitution(
-                            std::mem::take(parameter),
-                            macro_invocation_stack,
-                        );
-                    *parameter = substituted_parameter;
+                    (substituted_parameter, macro_invocation_stack) =
+                        self.perform_macro_substitution(parameter.clone(), macro_invocation_stack);
+                    expanded_arguments.push(substituted_parameter);
                 }
 
                 let mut stringify = false;
@@ -824,8 +949,9 @@ impl Preprocessor {
                             .iter()
                             .position(|x| x == parameter_name)
                             .expect("# operator must be followed by parameter name");
-                        let param = &arguments[index];
+                        let param = &unexpanded_arguments[index]; // no macro substitution for operands of #, ##
                         let mut combined = String::new();
+                        combined.push('"');
                         for pp_tok in param {
                             if pp_tok.token() == CPreprocessor::StringLiteral
                                 || pp_tok.token() == CPreprocessor::CharConst
@@ -840,20 +966,16 @@ impl Preprocessor {
                             combined.push(' ');
                         }
                         combined.pop();
+                        combined.push('"');
 
-                        substituted.push_back(MacroPreprocessorToken::Concatenated(
+                        let combined_token = MacroPreprocessorToken::Concatenated(
                             CPreprocessor::StringLiteral,
                             combined,
                             replacement_tok.span,
-                        ));
-                        continue;
-                    }
+                        );
+                        stringified.push_back(combined_token);
 
-                    let text = self.get_text(replacement_tok.span);
-                    let index = macro_ref.arguments.iter().position(|x| x == text);
-                    if let Some(index) = index {
-                        let param = &arguments[index];
-                        substituted.extend(param.iter().cloned());
+                        stringify = false;
                         continue;
                     }
 
@@ -862,19 +984,139 @@ impl Preprocessor {
                         continue;
                     }
 
-                    substituted.push_back(MacroPreprocessorToken::FromSource(*replacement_tok));
+                    let token = MacroPreprocessorToken::FromSource(*replacement_tok);
+                    stringified.push_back(token);
                 }
 
-                substituted
+                let mut concat_substituted: VecDeque<TokenOrPlacemarker> = VecDeque::new();
+                while !stringified.is_empty() {
+                    if stringified.len() >= 2 && stringified[1].token() == CPreprocessor::DoubleHash
+                    {
+                        let lhs = stringified.pop_front().unwrap();
+                        let _ = stringified.pop_front().unwrap();
+                        let rhs = stringified.pop_front().unwrap();
+
+                        let tok_text = lhs.get_text(self);
+                        let index = macro_ref.arguments.iter().position(|x| x == tok_text);
+                        if let Some(index) = index {
+                            let param = &unexpanded_arguments[index];
+                            concat_substituted
+                                .extend(param.iter().cloned().map(TokenOrPlacemarker::Token));
+                            if param.len() == 0 {
+                                concat_substituted.push_back(TokenOrPlacemarker::Placemarker);
+                            }
+                        } else {
+                            concat_substituted.push_back(TokenOrPlacemarker::Token(lhs));
+                        }
+
+                        concat_substituted.push_back(TokenOrPlacemarker::Concat);
+
+                        let tok_text = rhs.get_text(self);
+                        let index = macro_ref.arguments.iter().position(|x| x == tok_text);
+                        if let Some(index) = index {
+                            let param = &unexpanded_arguments[index];
+                            concat_substituted
+                                .extend(param.iter().cloned().map(TokenOrPlacemarker::Token));
+                            if param.len() == 0 {
+                                concat_substituted.push_back(TokenOrPlacemarker::Placemarker)
+                            }
+                        } else {
+                            concat_substituted.push_back(TokenOrPlacemarker::Token(rhs));
+                        }
+                    } else {
+                        let tok = stringified.pop_front().unwrap();
+                        let tok_text = tok.get_text(self);
+                        let index = macro_ref.arguments.iter().position(|x| x == tok_text);
+                        if let Some(index) = index {
+                            let param = &expanded_arguments[index];
+                            concat_substituted
+                                .extend(param.iter().cloned().map(TokenOrPlacemarker::Token));
+                        } else {
+                            concat_substituted.push_back(TokenOrPlacemarker::Token(tok));
+                        }
+                    }
+                }
+
+                concat_substituted
             }
         };
 
         // handle ##, then rescan
+        let mut concatenated: VecDeque<TokenOrPlacemarker> = VecDeque::new();
+        let mut concat = false;
+        for token in substituted {
+            if let TokenOrPlacemarker::Concat = token {
+                concat = true;
+                continue;
+            }
+
+            // note: gcc and clang differ on ## behavior
+            // i.e. #define concat(a, b) a ## ## b works on gcc, but not clang
+            // i find clang's behavior more reasonable
+            if concat {
+                if let TokenOrPlacemarker::Placemarker = concatenated.back().unwrap() {
+                    concatenated.pop_back();
+                    concatenated.push_back(token);
+                    continue;
+                } else {
+                    match token {
+                        TokenOrPlacemarker::Token(tok) => {
+                            if let TokenOrPlacemarker::Token(lhs) = concatenated.back_mut().unwrap()
+                            {
+                                let rhs = tok.get_text(self);
+                                let lhs_text = lhs.get_text(self);
+                                let mut pasted = String::with_capacity(lhs_text.len() + rhs.len());
+                                pasted.push_str(lhs_text);
+                                pasted.push_str(rhs);
+                                // relex the pasted token
+                                let (_, action, _) =
+                                    self.preprocess_scanner.next_word(pasted.as_bytes(), 0);
+
+                                if action == -1 {
+                                    eprintln!("bad token pasting");
+                                    todo!()
+                                }
+
+                                *lhs = MacroPreprocessorToken::Concatenated(
+                                    CPreprocessor::from_id(action as u32).unwrap(),
+                                    pasted,
+                                    lhs.span(), // conservatively only use lhs for span info
+                                );
+                                continue;
+                            } else {
+                                todo!("unexpected token pasting")
+                            }
+                        }
+                        TokenOrPlacemarker::Concat => {
+                            eprintln!("bad token pasting");
+                            todo!()
+                        }
+                        TokenOrPlacemarker::Placemarker => {
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                concatenated.push_back(token);
+            }
+        }
+
+        let rescan: VecDeque<MacroPreprocessorToken> = concatenated
+            .into_iter()
+            .filter_map(|t| match t {
+                TokenOrPlacemarker::Token(t) => Some(t),
+                TokenOrPlacemarker::Concat => None,
+                TokenOrPlacemarker::Placemarker => None,
+            })
+            .collect();
+
+        let fully_processed;
+        (fully_processed, macro_invocation_stack) =
+            self.perform_macro_substitution(rescan, macro_invocation_stack);
 
         // pop macro off
         macro_invocation_stack.pop();
-
-        todo!()
+        (fully_processed, macro_invocation_stack)
     }
 
     fn perform_macro_substitution(
@@ -888,7 +1130,7 @@ impl Preprocessor {
         for macro_pp_token in buffer {
             // handle function macro arguments
             if let Some(MacroInvocation::FunctionMacroInvocation(fn_macro_invocation)) =
-                macro_stack.last()
+                macro_stack.last_mut()
             {
                 if fn_macro_invocation.arguments.len() == 0 {
                     // check for lparen, and also check if the macro still exists (could've been #undef'd)
@@ -896,7 +1138,7 @@ impl Preprocessor {
                     if macro_pp_token.token() == CPreprocessor::LParen
                         && self.macros.contains_key(macro_name)
                     {
-                        // add_token_to_macro_invocation(pp_token);
+                        fn_macro_invocation.add_token(macro_pp_token);
                         continue;
                     } else {
                         // not a function macro invocation (either #undef or not a Lparen)
@@ -906,7 +1148,12 @@ impl Preprocessor {
                         continue;
                     }
                 } else {
-                    // add_token_to_macro_invocation(pp_token);
+                    if fn_macro_invocation.add_token(macro_pp_token) {
+                        let mut resolved_macro_tokens;
+                        (resolved_macro_tokens, macro_stack) =
+                            self.resolve_macro_invocation(macro_stack);
+                        pp_token_buffer_substituted.append(&mut resolved_macro_tokens);
+                    }
                     continue;
                 }
             }
@@ -928,12 +1175,9 @@ impl Preprocessor {
                         continue;
                     }
                     PreprocessorMacro::FunctionMacro(inner) => {
-                        let fn_macro_invocation =
-                            MacroInvocation::FunctionMacroInvocation(FunctionMacroInvocation {
-                                name: macro_pp_token,
-                                arguments: Default::default(),
-                                macro_ref: inner.clone(),
-                            });
+                        let fn_macro_invocation = MacroInvocation::FunctionMacroInvocation(
+                            FunctionMacroInvocation::new(macro_pp_token, Rc::clone(inner)),
+                        );
 
                         macro_stack.push(fn_macro_invocation);
                         continue;
@@ -1029,7 +1273,7 @@ impl TokenStream<CLexemes> for Preprocessor {
     }
 
     fn rollback(&mut self, target: usize) {
-        todo!()
+        unimplemented!("no rollback for preprocessor (?)")
     }
 
     fn get_location(&self) -> usize {
