@@ -625,7 +625,7 @@ fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
 // precedence climbing ("Pratt parsing") algorithm with some special case handling
 // for C specific syntax. in the first pass, no type checking is done
 fn parse_expr(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ExpressionNode, ParseError> {
     let first = parse_assignment_expr(toks, state)?;
@@ -659,14 +659,14 @@ fn parse_expr(
 }
 
 fn parse_assignment_expr(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ExpressionNode, ParseError> {
     parse_expr_rec(toks, state, 0)
 }
 
 fn parse_expr_rec(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
     min_bp: u32,
 ) -> Result<ExpressionNode, ParseError> {
@@ -947,7 +947,7 @@ fn parse_expr_rec(
 // <translation-unit> ::= <external-declaration>
 // | <translation-unit> <external-declaration>
 pub fn parse_translation_unit(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     let mut external_declarations = Vec::new();
@@ -965,7 +965,7 @@ pub fn parse_translation_unit(
 // way to distinguish is that declarations end with a semicolon while function definitions
 // have a compound statement
 fn parse_external_declaration(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     // both will include declaration specifiers
@@ -1071,7 +1071,7 @@ fn parse_external_declaration(
 }
 
 fn parse_declaration(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     let declaration_specifiers = parse_declaration_specifiers(toks, state)?;
@@ -1084,7 +1084,7 @@ fn parse_declaration(
 // may need to change this interface later
 // type names are used during cast expressions, as argument of sizeof, and in compound initializers
 fn parse_type_name(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<QualifiedType, ParseError> {
     let base_type = parse_specifier_qualifier_list(toks, state)?;
@@ -1094,7 +1094,10 @@ fn parse_type_name(
 
 // distinguish between a declaration vs. expression
 // will need to be careful with typedefs here
-fn is_lookahead_declaration(toks: &mut CTokenStream, _state: &mut ParserState) -> bool {
+fn is_lookahead_declaration(
+    toks: &mut impl TokenStream<CLexemes>,
+    _state: &mut ParserState,
+) -> bool {
     match toks.peek() {
         Some((lexeme, _, _)) => match lexeme {
             CLexemes::Typedef
@@ -1231,7 +1234,7 @@ fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CTy
 
 // no typedefs for now
 fn parse_declaration_specifiers_base(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
     parse_function_specifiers: bool,
     parse_storage_class: bool,
@@ -1416,14 +1419,14 @@ fn parse_declaration_specifiers_base(
 }
 
 fn parse_declaration_specifiers(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<DeclarationSpecifiers, ParseError> {
     parse_declaration_specifiers_base(toks, state, true, true)
 }
 
 fn parse_specifier_qualifier_list(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<QualifiedType, ParseError> {
     let DeclarationSpecifiers { qualified_type, .. } =
@@ -1432,7 +1435,7 @@ fn parse_specifier_qualifier_list(
 }
 
 fn parse_struct_declaration_list(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<Vec<AggregateMember>, ParseError> {
     let mut members: Vec<AggregateMember> = Vec::new();
@@ -1455,7 +1458,7 @@ fn parse_struct_declaration_list(
 }
 
 fn parse_struct_declarator_list(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
     base_type: QualifiedType,
     members: &mut Vec<AggregateMember>,
@@ -1480,7 +1483,7 @@ fn parse_struct_declarator_list(
 }
 
 fn parse_struct_or_union_specifier(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<TypeIdx, ParseError> {
     #[derive(PartialEq, Eq)]
@@ -1624,7 +1627,7 @@ fn parse_struct_or_union_specifier(
 }
 
 fn parse_enum_specifier(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<TypeIdx, ParseError> {
     let start = toks.get_location();
@@ -1834,7 +1837,7 @@ fn parse_enum_specifier(
 }
 
 fn parse_init_declarators(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
     declaration_specifiers: DeclarationSpecifiers,
 ) -> Result<ASTNode, ParseError> {
@@ -1864,7 +1867,7 @@ fn parse_init_declarators(
 }
 
 fn parse_init_declarator(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
     declaration_specifiers: DeclarationSpecifiers,
 ) -> Result<Declaration, ParseError> {
@@ -1897,7 +1900,7 @@ fn parse_init_declarator(
 }
 
 fn parse_initializer(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ExpressionNode, ParseError> {
     match toks.peek() {
@@ -1913,7 +1916,7 @@ fn parse_initializer(
 // "abstract" declarator has no identifier
 struct Declarator(QualifiedType, Option<String>);
 fn parse_declarator_base(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
     base_type: QualifiedType,
 ) -> Result<Declarator, ParseError> {
@@ -2110,7 +2113,7 @@ fn parse_declarator_base(
 }
 
 fn parse_declarator(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
     base_type: QualifiedType,
 ) -> Result<(QualifiedType, String), ParseError> {
@@ -2123,7 +2126,7 @@ fn parse_declarator(
 }
 
 fn parse_abstract_declarator(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
     base_type: QualifiedType,
 ) -> Result<QualifiedType, ParseError> {
@@ -2138,7 +2141,7 @@ fn parse_abstract_declarator(
 #[derive(Debug)]
 struct PointerDeclarator(TypeQualifier);
 fn parse_pointer_declarator(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     _state: &mut ParserState,
 ) -> Result<PointerDeclarator, ParseError> {
     let mut qualifier = TypeQualifier::empty();
@@ -2169,7 +2172,7 @@ fn parse_pointer_declarator(
 #[derive(Debug, Clone, Copy)]
 struct ArrayDeclarator(TypeQualifier, Option<usize>);
 fn parse_array_declarator(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     _state: &mut ParserState,
 ) -> Result<ArrayDeclarator, ParseError> {
     let mut qualifier = TypeQualifier::empty();
@@ -2221,7 +2224,7 @@ struct FunctionDeclarator {
 // will not support old-style function declarations because they are cringe
 // this code is used for both function prototypes and function definitions
 fn parse_function_declarator(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<FunctionDeclarator, ParseError> {
     eat_or_error!(toks, CLexemes::LParen)?;
@@ -2362,7 +2365,7 @@ fn parse_function_declarator(
 }
 
 fn parse_statement(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     // only 1-2 token lookahead required to check for what type of statement it is
@@ -2387,7 +2390,7 @@ fn parse_statement(
     }
 }
 
-fn is_lookahead_label(toks: &mut CTokenStream, _state: &mut ParserState) -> bool {
+fn is_lookahead_label(toks: &mut impl TokenStream<CLexemes>, _state: &mut ParserState) -> bool {
     match toks.peek() {
         Some((lexeme, _, _)) => {
             match lexeme {
@@ -2409,7 +2412,7 @@ fn is_lookahead_label(toks: &mut CTokenStream, _state: &mut ParserState) -> bool
 }
 
 fn parse_labeled_statement(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     match toks.peek() {
@@ -2468,7 +2471,7 @@ fn parse_labeled_statement(
 }
 
 fn parse_compound_statement(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     eat_or_error!(toks, CLexemes::LBrace)?;
@@ -2505,7 +2508,7 @@ fn parse_compound_statement(
 }
 
 fn parse_expression_statement(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     match toks.peek() {
@@ -2526,7 +2529,7 @@ fn parse_expression_statement(
 }
 
 fn parse_selection_statement(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     match toks.peek() {
@@ -2585,7 +2588,7 @@ fn parse_selection_statement(
 }
 
 fn parse_iteration_statement(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     match toks.peek() {
@@ -2666,7 +2669,7 @@ fn parse_iteration_statement(
 }
 
 fn parse_jump_statement(
-    toks: &mut CTokenStream,
+    toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     match toks.peek() {
