@@ -91,7 +91,7 @@ macro_rules! eat_or_error {
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
-enum ParseError {
+pub(crate) enum ParseError {
     #[error("Unexpected end of file while parsing")]
     UnexpectedEOF,
     #[error("Unexpected token {0:?} while parsing")]
@@ -166,7 +166,7 @@ enum ParseError {
     BadStringConst,
 }
 
-struct ParserState {
+pub(crate) struct ParserState {
     scopes: Vec<Scope>,
     current_scope: Scope,
     types: Vec<CanonicalType>,
@@ -176,7 +176,7 @@ struct ParserState {
 }
 
 impl ParserState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let file_scope = Scope::new_file_scope();
         Self {
             scopes: vec![file_scope],
@@ -624,7 +624,7 @@ fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
 
 // precedence climbing ("Pratt parsing") algorithm with some special case handling
 // for C specific syntax. in the first pass, no type checking is done
-fn parse_expr(
+pub(crate) fn parse_expr(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ExpressionNode, ParseError> {
@@ -946,7 +946,7 @@ fn parse_expr_rec(
 
 // <translation-unit> ::= <external-declaration>
 // | <translation-unit> <external-declaration>
-pub fn parse_translation_unit(
+pub(crate) fn parse_translation_unit(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
