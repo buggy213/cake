@@ -87,3 +87,4 @@ AndAssign: &=
 XorAssign: ^=
 OrAssign: \|=
 Comma: ,
+Whitespace: [ \t\n\v\f]

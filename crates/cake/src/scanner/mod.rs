@@ -1,10 +1,14 @@
+use core::str;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs;
+use std::ops::Deref;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 
+use bumpalo::Bump;
 use cake_lex::DFAScanner;
 use cake_lex::LexemeSet;
 use lexeme_sets::c_lexemes::CLexemes;
@@ -66,10 +70,12 @@ impl<'a, T: LexemeSet> RawTokenStream<'a, T> {
             if action == -1 {
                 break;
             }
-            // if action as u32 == CLexemes::Whitespace.to_id() {
-            //     self.cursor = next_cursor;
-            //     continue;
-            // }
+
+            if action as u32 == CLexemes::Whitespace.to_id() {
+                self.cursor = next_cursor;
+                continue;
+            }
+
             let l = T::from_id(action as u32).expect("invalid action (is the scanner compatible?)");
             self.buffer.push_back((l, lexeme, self.cursor));
             self.cursor = next_cursor;
@@ -133,9 +139,28 @@ struct Preprocessor {
 
     conditional_stack: Vec<ConditionalState>,
     pp_token_line_buffer: VecDeque<PreprocessorToken>,
-    macro_invocation: Option<FunctionMacroInvocation>,
+    macro_invocation_stack: Vec<MacroInvocation>,
     str_literal_concat_buffer: Option<StringLiteral>,
     clexeme_buffer: VecDeque<CToken>,
+
+    strings_buffer: Bump,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TokenSpan {
+    file_idx: usize,
+    left: usize,
+    right: usize,
+}
+
+impl TokenSpan {
+    fn new(file_idx: usize, left: usize, right: usize) -> Self {
+        Self {
+            file_idx,
+            left,
+            right,
+        }
+    }
 }
 
 // invariant: span always refers to current source
@@ -143,22 +168,75 @@ struct Preprocessor {
 #[derive(Clone, Copy, Debug)]
 struct PreprocessorToken {
     token: CPreprocessor,
-    span: (usize, usize),
+    span: TokenSpan,
     whitespace_left: bool,
+}
+
+#[derive(Clone)]
+enum MacroPreprocessorToken {
+    FromSource(PreprocessorToken),
+    Concatenated(CPreprocessor, String, TokenSpan),
+}
+
+impl MacroPreprocessorToken {
+    fn get_text<'a, 'b>(&'a self, preprocessor_state: &'b Preprocessor) -> &'a str
+    where
+        'b: 'a, // 'b is a subtype of 'a, i.e. it lives longer (as it should, since all of the string data ultimately lives inside of it)
+    {
+        match self {
+            MacroPreprocessorToken::FromSource(pp_token) => {
+                preprocessor_state.get_text(pp_token.span)
+            }
+            MacroPreprocessorToken::Concatenated(_, string, _) => &string,
+        }
+    }
+
+    fn token(&self) -> CPreprocessor {
+        match self {
+            MacroPreprocessorToken::FromSource(pp_token) => pp_token.token,
+            MacroPreprocessorToken::Concatenated(tok, _, _) => *tok,
+        }
+    }
+
+    fn span(&self) -> TokenSpan {
+        match self {
+            MacroPreprocessorToken::FromSource(pp_token) => pp_token.span,
+            MacroPreprocessorToken::Concatenated(_, _, span) => *span,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 enum CToken {
     FromSource {
         token: CLexemes,
-        span: (usize, usize),
+        span: TokenSpan,
     },
     // this is for concatenated tokens (## operator) and for string literal concatenation (translation phase 6)
     Owned {
         token: CLexemes,
         string: String,
-        span: (usize, usize),
+        span: TokenSpan,
     },
+}
+
+impl CToken {
+    fn token(&self) -> CLexemes {
+        match self {
+            CToken::FromSource { token, .. } => *token,
+            CToken::Owned { token, .. } => *token,
+        }
+    }
+
+    fn text<'a, 'b>(&'a self, preprocessor_state: &'b Preprocessor) -> &'a str
+    where
+        'b: 'a,
+    {
+        match self {
+            CToken::FromSource { span, .. } => preprocessor_state.get_text(*span),
+            CToken::Owned { string, .. } => &string,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,13 +247,22 @@ enum ConditionalState {
 }
 
 struct FunctionMacroInvocation {
-    name: PreprocessorToken,
-    arguments: Vec<Vec<PreprocessorToken>>,
+    name: MacroPreprocessorToken,
+    macro_ref: Rc<FunctionMacro>,
+    arguments: Vec<VecDeque<MacroPreprocessorToken>>,
+}
+
+enum MacroInvocation {
+    FunctionMacroInvocation(FunctionMacroInvocation),
+    ObjectMacroInvocation {
+        name: MacroPreprocessorToken,
+        macro_ref: Rc<ObjectMacro>,
+    },
 }
 
 enum StringLiteral {
-    Single(usize, usize),
-    Concatenated(String, usize, usize),
+    Single(TokenSpan),
+    Concatenated(String, TokenSpan),
 }
 
 impl FunctionMacroInvocation {
@@ -198,9 +285,19 @@ struct SourceCursor {
     line: usize,
 }
 
+struct ObjectMacro {
+    replacement_list: VecDeque<PreprocessorToken>,
+}
+
+struct FunctionMacro {
+    arguments: Vec<String>,
+    replacement_list: VecDeque<PreprocessorToken>,
+    varargs: bool,
+}
+
 enum PreprocessorMacro {
-    ObjectMacro,
-    FunctionMacro,
+    ObjectMacro(Rc<ObjectMacro>),
+    FunctionMacro(Rc<FunctionMacro>),
 }
 
 #[derive(Debug, Error)]
@@ -237,10 +334,12 @@ impl Preprocessor {
 
             macros: HashMap::new(),
             pp_token_line_buffer: VecDeque::new(),
-            macro_invocation: None,
+            macro_invocation_stack: Vec::new(),
             clexeme_buffer: VecDeque::new(),
             str_literal_concat_buffer: None,
             conditional_stack: Vec::new(),
+
+            strings_buffer: Bump::new(),
         }
     }
 
@@ -258,12 +357,13 @@ impl Preprocessor {
             if src_file.header_guard {
                 return;
             } else {
-                self.cursor_stack.push(SourceCursor {
+                let new_cursor = SourceCursor {
                     filepath: file_path,
                     file_idx: src_file.source_idx,
                     cursor: 0,
                     line: 1,
-                });
+                };
+                self.push_cursor(new_cursor);
 
                 return;
             }
@@ -280,12 +380,13 @@ impl Preprocessor {
             source_idx: idx,
         };
         self.sources_map.insert(file_path.clone(), src_descriptor);
-        self.cursor_stack.push(SourceCursor {
+        let new_cursor = SourceCursor {
             filepath: file_path,
             file_idx: idx,
             cursor: 0,
             line: 1,
-        });
+        };
+        self.push_cursor(new_cursor);
     }
 
     fn get_current_src_str(&self) -> &str {
@@ -306,8 +407,22 @@ impl Preprocessor {
         self.cursor_stack.last_mut().unwrap()
     }
 
-    fn get_text(&self, span: (usize, usize)) -> &str {
-        &self.get_current_src_str()[span.0..span.1]
+    fn get_text(&self, span: TokenSpan) -> &str {
+        &self.sources[span.file_idx][span.left..span.right]
+    }
+
+    fn current_conditional_state(&self) -> Option<ConditionalState> {
+        self.conditional_stack.last().copied()
+    }
+
+    fn push_cursor(&mut self, cursor: SourceCursor) {
+        self.cursor_stack.push(cursor);
+        self.platform.working_dir = self.current_cursor().filepath.clone();
+    }
+
+    fn pop_cursor(&mut self) {
+        self.cursor_stack.pop();
+        self.platform.working_dir = self.current_cursor().filepath.clone();
     }
 
     // line-by-line processing could lead to super pathological cases (e.g. gigantic single line macros)
@@ -317,16 +432,11 @@ impl Preprocessor {
         // if current file is empty, pop cursor stack
         let mut remaining_src_str = self.get_remaining_src_str();
         while remaining_src_str.is_empty() {
-            match self.cursor_stack.pop() {
-                Some(src_cursor) => {
-                    if self.cursor_stack.is_empty() {
-                        self.cursor_stack.push(src_cursor);
-                        return false;
-                    } else {
-                        remaining_src_str = self.get_remaining_src_str();
-                    }
-                }
-                None => unreachable!("cursor stack should always be nonempty"),
+            if self.cursor_stack.len() >= 2 {
+                self.pop_cursor();
+                remaining_src_str = self.get_remaining_src_str();
+            } else {
+                return false;
             }
         }
 
@@ -381,9 +491,20 @@ impl Preprocessor {
                 continue;
             }
 
+            // comments generally = whitespace, but //-style comments always continue until end of line
+            // and do not admit a line splice
+            if let CPreprocessor::Comment = token {
+                break;
+            }
+            if let CPreprocessor::MultilineComment = token {
+                prev_whitespace = true;
+                continue;
+            }
+
+            let file_idx = self.current_cursor().file_idx;
             let preprocessor_token = PreprocessorToken {
                 token,
-                span: (cursor, next_cursor),
+                span: TokenSpan::new(file_idx, cursor, next_cursor),
                 whitespace_left: prev_whitespace,
             };
 
@@ -519,13 +640,13 @@ impl Preprocessor {
                         span,
                         ..
                     }) if self.get_text(*span) == "<" => {
-                        let langle = span.0;
+                        let langle = span.left;
                         let rangle = loop {
                             if let Some(pp_token) = pp_iter.next() {
                                 if pp_token.token == CPreprocessor::OtherPunctuator
                                     && self.get_text(pp_token.span) == ">"
                                 {
-                                    break Some(pp_token.span.1);
+                                    break Some(pp_token.span.right);
                                 }
                             } else {
                                 break None;
@@ -535,9 +656,15 @@ impl Preprocessor {
                         // fall through to macro-replacement case if no matching '>' or still have more tokens
                         if let Some(rangle) = rangle {
                             if pp_iter.len() == 0 {
-                                let file = self
-                                    .get_text((langle, rangle))
-                                    .trim_matches(['<', '>'])
+                                let current_file_idx = self.current_cursor().file_idx;
+                                let file =
+                                    self.get_text(TokenSpan::new(current_file_idx, langle, rangle));
+                                // strip 1 pair of angle brackets only
+                                let file = file
+                                    .strip_prefix('<')
+                                    .expect("must be surrounded by angle brackets")
+                                    .strip_suffix('>')
+                                    .expect("must be surrounded by angle brackets")
                                     .to_string();
                                 self.include_file(&file, false);
                                 return;
@@ -586,78 +713,239 @@ impl Preprocessor {
         self.pp_token_line_buffer.clear();
     }
 
-    fn convert_pp_token_to_clexeme(&mut self, pp_token: PreprocessorToken) {
-        let text = self.get_text(pp_token.span);
+    fn convert_pp_token_to_clexeme(&mut self, pp_token: MacroPreprocessorToken) {
+        let text = pp_token.get_text(self);
+
         let (_, action, end_cursor) = self.main_scanner.next_word(text.as_bytes(), 0);
-        if action == -1 || end_cursor != (pp_token.span.1 - pp_token.span.0) {
+        if action == -1 || end_cursor != text.len() {
             todo!("failed to convert preprocessing token to clexeme");
         }
 
         let clexeme = CLexemes::from_id(action as u32)
             .expect("failed to convert preprocessing token to clexeme");
 
+        // handle adjacent string literal concatenation
         match (clexeme, &mut self.str_literal_concat_buffer) {
-            (CLexemes::StringConst, Some(StringLiteral::Single(left, right))) => {
-                let span = (*left, *right);
+            // need to be very careful in not merge together completely unrelated token spans (e.g. string literal coming from macro at top of file)
+            // for now, just be conservative and only ever use left span
+            (CLexemes::StringConst, Some(StringLiteral::Single(span))) => {
+                let span = *span;
                 let mut text = self.get_text(span).to_string();
-                let second_span = (pp_token.span.0 + 1, pp_token.span.1 - 1);
-                let second_text = self.get_text(second_span);
+                text.pop(); // remove rquote
+                let second_text = pp_token.get_text(self);
+                let second_text = &second_text['"'.len_utf8()..]; // remove lquote
                 text.push_str(second_text);
-                self.str_literal_concat_buffer =
-                    Some(StringLiteral::Concatenated(text, span.0, second_span.1));
+                self.str_literal_concat_buffer = Some(StringLiteral::Concatenated(text, span));
             }
-            (CLexemes::StringConst, Some(StringLiteral::Concatenated(s, left, _right))) => {
+            (CLexemes::StringConst, Some(StringLiteral::Concatenated(s, span))) => {
+                let span = *span;
                 let mut owned = std::mem::take(s);
-                let left = *left;
-                let new_span = (pp_token.span.0 + 1, pp_token.span.1 - 1);
-                let new_text = self.get_text(new_span);
-                owned.push_str(new_text);
-                self.str_literal_concat_buffer =
-                    Some(StringLiteral::Concatenated(owned, left, new_span.1));
+                owned.pop(); // remove rquote
+                let second_text = pp_token.get_text(self);
+                let second_text = &second_text['"'.len_utf8()..]; // remove lquote
+                owned.push_str(second_text);
+                self.str_literal_concat_buffer = Some(StringLiteral::Concatenated(owned, span));
             }
             (CLexemes::StringConst, None) => {
-                self.str_literal_concat_buffer = Some(StringLiteral::Single(
-                    pp_token.span.0 + 1,
-                    pp_token.span.1 - 1,
-                )) // exclude quotes
+                self.str_literal_concat_buffer = Some(StringLiteral::Single(pp_token.span()))
             }
-            (other, Some(StringLiteral::Single(left, right))) => {
+            (other, Some(StringLiteral::Single(span))) => {
                 self.clexeme_buffer.push_back(CToken::FromSource {
                     token: CLexemes::StringConst,
-                    span: (*left, *right),
+                    span: *span,
                 });
                 std::mem::take(&mut self.str_literal_concat_buffer);
                 self.clexeme_buffer.push_back(CToken::FromSource {
                     token: other,
-                    span: pp_token.span,
+                    span: pp_token.span(),
                 });
             }
-            (other, Some(StringLiteral::Concatenated(concat, left, right))) => {
+            (other, Some(StringLiteral::Concatenated(concat, span))) => {
                 self.clexeme_buffer.push_back(CToken::Owned {
                     token: CLexemes::StringConst,
                     string: std::mem::take(concat),
-                    span: (*left, *right),
+                    span: *span,
                 });
                 std::mem::take(&mut self.str_literal_concat_buffer);
                 self.clexeme_buffer.push_back(CToken::FromSource {
                     token: other,
-                    span: pp_token.span,
+                    span: pp_token.span(),
                 });
             }
             (other, None) => {
                 self.clexeme_buffer.push_back(CToken::FromSource {
                     token: other,
-                    span: pp_token.span,
+                    span: pp_token.span(),
                 });
             }
         }
     }
 
-    fn add_token_to_macro_invocation(&mut self, pp_token: PreprocessorToken) {
-        self.macro_invocation
-            .as_mut()
-            .expect("macro invocation must be non-null before calling this")
-            .add_pp_token(pp_token);
+    // mutually recursive functions to perform macro substitution - need to substitute macros
+    // within macro replacement lists
+    fn resolve_macro_invocation(
+        &self,
+        mut macro_invocation_stack: Vec<MacroInvocation>,
+    ) -> (VecDeque<MacroPreprocessorToken>, Vec<MacroInvocation>) {
+        let substituted = match macro_invocation_stack
+            .last_mut()
+            .expect("must call with non-empty macro stack")
+        {
+            MacroInvocation::ObjectMacroInvocation { name, macro_ref } => macro_ref
+                .replacement_list
+                .clone()
+                .into_iter()
+                .map(|t| MacroPreprocessorToken::FromSource(t))
+                .collect(),
+            MacroInvocation::FunctionMacroInvocation(FunctionMacroInvocation {
+                name,
+                macro_ref,
+                arguments,
+            }) => {
+                let mut substituted: VecDeque<MacroPreprocessorToken> = VecDeque::new();
+                let mut arguments = std::mem::take(arguments);
+                let macro_ref = Rc::clone(macro_ref);
+                for parameter in &mut arguments {
+                    let substituted_parameter;
+                    (substituted_parameter, macro_invocation_stack) = self
+                        .perform_macro_substitution(
+                            std::mem::take(parameter),
+                            macro_invocation_stack,
+                        );
+                    *parameter = substituted_parameter;
+                }
+
+                let mut stringify = false;
+                for replacement_tok in macro_ref.replacement_list.iter() {
+                    if stringify {
+                        let parameter_name = self.get_text(replacement_tok.span);
+                        let index = macro_ref
+                            .arguments
+                            .iter()
+                            .position(|x| x == parameter_name)
+                            .expect("# operator must be followed by parameter name");
+                        let param = &arguments[index];
+                        let mut combined = String::new();
+                        for pp_tok in param {
+                            if pp_tok.token() == CPreprocessor::StringLiteral
+                                || pp_tok.token() == CPreprocessor::CharConst
+                            {
+                                let tok_text = pp_tok.get_text(self);
+                                let tok_text = tok_text.replace('\\', "\\\\");
+                                let tok_text = tok_text.replace('"', "\\\"");
+                                combined.push_str(&tok_text);
+                            } else {
+                                combined.push_str(pp_tok.get_text(self));
+                            }
+                            combined.push(' ');
+                        }
+                        combined.pop();
+
+                        substituted.push_back(MacroPreprocessorToken::Concatenated(
+                            CPreprocessor::StringLiteral,
+                            combined,
+                            replacement_tok.span,
+                        ));
+                        continue;
+                    }
+
+                    let text = self.get_text(replacement_tok.span);
+                    let index = macro_ref.arguments.iter().position(|x| x == text);
+                    if let Some(index) = index {
+                        let param = &arguments[index];
+                        substituted.extend(param.iter().cloned());
+                        continue;
+                    }
+
+                    if replacement_tok.token == CPreprocessor::Hash {
+                        stringify = true;
+                        continue;
+                    }
+
+                    substituted.push_back(MacroPreprocessorToken::FromSource(*replacement_tok));
+                }
+
+                substituted
+            }
+        };
+
+        // handle ##, then rescan
+
+        // pop macro off
+        macro_invocation_stack.pop();
+
+        todo!()
+    }
+
+    fn perform_macro_substitution(
+        &self,
+        buffer: VecDeque<MacroPreprocessorToken>,
+        mut macro_stack: Vec<MacroInvocation>,
+    ) -> (VecDeque<MacroPreprocessorToken>, Vec<MacroInvocation>) {
+        // not a preprocessing directive; attempt macro substitution / conversion to CLexemes
+        let mut pp_token_buffer_substituted = VecDeque::with_capacity(buffer.len());
+
+        for macro_pp_token in buffer {
+            // handle function macro arguments
+            if let Some(MacroInvocation::FunctionMacroInvocation(fn_macro_invocation)) =
+                macro_stack.last()
+            {
+                if fn_macro_invocation.arguments.len() == 0 {
+                    // check for lparen, and also check if the macro still exists (could've been #undef'd)
+                    let macro_name = fn_macro_invocation.name.get_text(self);
+                    if macro_pp_token.token() == CPreprocessor::LParen
+                        && self.macros.contains_key(macro_name)
+                    {
+                        // add_token_to_macro_invocation(pp_token);
+                        continue;
+                    } else {
+                        // not a function macro invocation (either #undef or not a Lparen)
+                        pp_token_buffer_substituted.push_back(fn_macro_invocation.name.clone());
+                        pp_token_buffer_substituted.push_back(macro_pp_token);
+                        macro_stack.pop().unwrap();
+                        continue;
+                    }
+                } else {
+                    // add_token_to_macro_invocation(pp_token);
+                    continue;
+                }
+            }
+
+            // handle macro substitution
+            let text = macro_pp_token.get_text(self);
+            if let Some(pp_macro) = self.macros.get(text) {
+                // don't expand macros recursively
+                match pp_macro {
+                    PreprocessorMacro::ObjectMacro(inner) => {
+                        macro_stack.push(MacroInvocation::ObjectMacroInvocation {
+                            name: macro_pp_token,
+                            macro_ref: inner.clone(),
+                        });
+                        // resolve immediately
+                        let mut resolved;
+                        (resolved, macro_stack) = self.resolve_macro_invocation(macro_stack);
+                        pp_token_buffer_substituted.append(&mut resolved);
+                        continue;
+                    }
+                    PreprocessorMacro::FunctionMacro(inner) => {
+                        let fn_macro_invocation =
+                            MacroInvocation::FunctionMacroInvocation(FunctionMacroInvocation {
+                                name: macro_pp_token,
+                                arguments: Default::default(),
+                                macro_ref: inner.clone(),
+                            });
+
+                        macro_stack.push(fn_macro_invocation);
+                        continue;
+                    }
+                }
+            }
+
+            // handle "normal" text
+            pp_token_buffer_substituted.push_back(macro_pp_token);
+        }
+
+        (pp_token_buffer_substituted, macro_stack)
     }
 
     // precondition: pp_token_line_buffer contains all preprocessing tokens (excluding splices and final newline) from a single logical line
@@ -671,69 +959,73 @@ impl Preprocessor {
             let directive_token = self.pp_token_line_buffer.pop_front().unwrap();
             self.preprocessor_directive(directive_token);
         } else {
-            // not a preprocessing directive; attempt macro substitution / conversion to CLexemes
-            for pp_token in std::mem::take(&mut self.pp_token_line_buffer) {
-                // handle function macro arguments
-                if let Some(macro_invocation) = &self.macro_invocation {
-                    if macro_invocation.arguments.len() == 0 {
-                        // check for lparen, and also check if the macro still exists (could've been #undef'd)
-                        let macro_name = self.get_text(macro_invocation.name.span);
-                        if pp_token.token == CPreprocessor::LParen
-                            && self.macros.contains_key(macro_name)
-                        {
-                            self.add_token_to_macro_invocation(pp_token);
-                            continue;
-                        } else {
-                            let empty_macro_invocation =
-                                std::mem::take(&mut self.macro_invocation).unwrap();
+            let owned_buffer = std::mem::take(&mut self.pp_token_line_buffer);
+            let owned_buffer = owned_buffer
+                .into_iter()
+                .map(|t| MacroPreprocessorToken::FromSource(t))
+                .collect();
+            let macro_stack = std::mem::take(&mut self.macro_invocation_stack);
+            let fully_substituted;
+            (fully_substituted, self.macro_invocation_stack) =
+                self.perform_macro_substitution(owned_buffer, macro_stack);
 
-                            self.convert_pp_token_to_clexeme(empty_macro_invocation.name);
-                            self.convert_pp_token_to_clexeme(pp_token);
-                            continue;
-                        }
-                    } else {
-                        self.add_token_to_macro_invocation(pp_token);
-                        continue;
-                    }
-                }
-
-                // handle macro substitution
-                let text = self.get_text(pp_token.span);
-                if let Some(pp_macro) = self.macros.get(text) {
-                    match pp_macro {
-                        PreprocessorMacro::ObjectMacro => todo!("object macro case"),
-                        PreprocessorMacro::FunctionMacro => {
-                            self.macro_invocation = Some(FunctionMacroInvocation {
-                                name: pp_token,
-                                arguments: Default::default(),
-                            });
-                            continue;
-                        }
-                    }
-                }
-
-                // handle "normal" text
-                self.convert_pp_token_to_clexeme(pp_token);
+            for item in fully_substituted {
+                self.convert_pp_token_to_clexeme(item);
             }
         }
+    }
+
+    fn fill_buffer(&mut self, size: usize) -> bool {
+        while self.clexeme_buffer.len() < size {
+            let stop = self.process_line();
+            if stop {
+                break;
+            }
+        }
+
+        self.clexeme_buffer.len() < size
     }
 }
 
 impl TokenStream<CLexemes> for Preprocessor {
     fn eat(&mut self, lexeme: CLexemes) -> bool {
-        todo!()
+        if !self.fill_buffer(1) {
+            return false;
+        }
+
+        let front = self.clexeme_buffer.pop_front().unwrap();
+        front.token() == lexeme
     }
 
     fn peek(&mut self) -> Option<(CLexemes, &str, usize)> {
-        todo!()
+        if !self.fill_buffer(1) {
+            return None;
+        }
+
+        let front = self.clexeme_buffer.front().unwrap();
+        Some((front.token(), front.text(self), 0))
     }
 
     fn peekn(&mut self, n: usize) -> Option<(CLexemes, &str, usize)> {
-        todo!()
+        if !self.fill_buffer(n) {
+            return None;
+        }
+
+        let front = self.clexeme_buffer.front().unwrap();
+        Some((front.token(), front.text(self), 0))
     }
 
     fn advance(&mut self) -> Option<(CLexemes, &str, usize)> {
-        todo!()
+        if !self.fill_buffer(1) {
+            return None;
+        }
+
+        let front = self.clexeme_buffer.pop_front().unwrap();
+        let arena_bytes = self
+            .strings_buffer
+            .alloc_slice_copy(&front.text(self).as_bytes());
+        let str = str::from_utf8(arena_bytes).unwrap();
+        Some((front.token(), str, 0))
     }
 
     fn rollback(&mut self, target: usize) {

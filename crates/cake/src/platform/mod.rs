@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 pub struct Platform {
-    working_dir: PathBuf,
+    pub(crate) working_dir: PathBuf,
     system_header_paths: Vec<PathBuf>,
     normal_header_paths: Vec<PathBuf>,
 }

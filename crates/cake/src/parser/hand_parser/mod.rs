@@ -505,21 +505,22 @@ fn to_expr_part(
         }
 
         CLexemes::StringConst => {
-            let mut text = text.to_string();
-            // remove quotes if needed
-            match (
+            let text = match (
                 text.starts_with('"'),
                 text.ends_with('"') && !text.ends_with("\\\""),
             ) {
-                (true, true) => {
-                    text.pop();
-                    text.remove(0);
-                }
+                (true, true) => text
+                    .strip_prefix('"')
+                    .and_then(|t| t.strip_suffix('"'))
+                    .expect("should be infallible"),
                 (true, false) | (false, true) => return Err(ParseError::BadStringConst),
                 (false, false) => {
-                    // nop
+                    text // nop
                 }
-            }
+            };
+            let text = text.to_string();
+            // remove quotes if needed
+
             ExprPart::Atom(Atom::StringLiteral(text))
         }
 
