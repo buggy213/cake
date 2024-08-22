@@ -6,8 +6,8 @@ Newline: \n
 WeirdWhitespace: [\v\f]
 Identifier: [_a-zA-Z][_a-zA-Z0-9]*
 PreprocessingNumber: \.?[0-9]([_a-zA-Z0-9]|[eEpP][\+\-]|\.)*
-CharConst: '[^'\n]'
-StringLiteral: "[^\n"]"
+CharConst: '[^'\n]*'
+StringLiteral: "[^\n"]*"
 LParen: \(
 RParen: \)
 Hash: #

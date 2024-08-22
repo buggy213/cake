@@ -32,3 +32,10 @@ fn test_basic_macro() {
     let tokenized = tokenize_all(pp, " ");
     fs::write(working_dir.join("basic_macro_out.c"), tokenized).expect("failed to write");
 }
+
+#[test]
+fn test_basic_include() {
+    let (pp, working_dir) = text_test_harness("basic_include.c");
+    let tokenized = tokenize_all(pp, " ");
+    fs::write(working_dir.join("basic_include_out.c"), tokenized).expect("failed to write");
+}

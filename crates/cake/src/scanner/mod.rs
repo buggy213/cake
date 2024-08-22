@@ -506,12 +506,12 @@ impl Preprocessor {
 
     fn push_cursor(&mut self, cursor: SourceCursor) {
         self.cursor_stack.push(cursor);
-        self.platform.working_dir = self.current_cursor().filepath.clone();
+        self.platform.working_dir = self.current_cursor().filepath.parent().unwrap().to_owned();
     }
 
     fn pop_cursor(&mut self) {
         self.cursor_stack.pop();
-        self.platform.working_dir = self.current_cursor().filepath.clone();
+        self.platform.working_dir = self.current_cursor().filepath.parent().unwrap().to_owned();
     }
 
     // line-by-line processing could lead to super pathological cases (e.g. gigantic single line macros)
@@ -1650,3 +1650,6 @@ impl TokenStream<CLexemes> for Preprocessor {
 
 #[cfg(test)]
 mod preprocessor_tests;
+
+#[cfg(test)]
+mod scanner_tests;

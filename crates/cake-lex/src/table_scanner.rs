@@ -127,11 +127,14 @@ impl DFAScanner {
         while state != usize::MAX && self.table.actions[state] == -1 {
             state = stack.pop_back().expect("should not be empty");
             lexeme.pop();
-
-            cursor -= 1;
+            if cursor != start_cursor {
+                cursor -= 1;
+            } else {
+                debug_assert!(state == usize::MAX && lexeme.is_empty());
+            }
         }
 
-        // earlier passes ensured its valid utf8 (ascii)
+        // SAFETY: earlier passes ensured its valid utf8 (ascii)
         let slice = unsafe { std::str::from_utf8_unchecked(&input[start_cursor..cursor]) };
         if state == usize::MAX {
             (slice, -1, cursor)
