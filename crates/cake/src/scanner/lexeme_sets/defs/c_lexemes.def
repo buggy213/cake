@@ -37,7 +37,7 @@ _Complex
 _Imaginary
 Identifier: [_a-zA-Z][_a-zA-Z0-9]*
 IntegerConst: (0x|0X)?[0-9a-fA-F]+(u|U|ul|Ul|uL|UL|ull|Ull|uLL|ULL)?
-FloatConst: [\-+]?([0-9]*\.)?[0-9]+([eE][\-+]?[0-9]+)?
+FloatConst: [\-+]?([0-9]*\.)?[0-9]+([eE][\-+]?[0-9]+)?(f|F|l|L)?
 OctalCharConst: \\[0-7]{1,3}
 CharConst: '[^']'
 StringConst: "[^"]*"

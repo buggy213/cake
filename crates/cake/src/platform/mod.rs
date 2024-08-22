@@ -7,6 +7,14 @@ pub struct Platform {
 }
 
 impl Platform {
+    pub(crate) fn new(working_dir: PathBuf) -> Self {
+        Self {
+            working_dir,
+            system_header_paths: Vec::new(),
+            normal_header_paths: Vec::new(),
+        }
+    }
+
     pub(crate) fn resolve_normal_include_path(&self, normal: &str) -> Option<PathBuf> {
         let working_dir_path = self.working_dir.join(normal);
         if Path::exists(&working_dir_path) {
