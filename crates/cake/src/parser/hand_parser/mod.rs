@@ -1,6 +1,6 @@
 use core::panic;
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     num::{ParseFloatError, ParseIntError},
     rc::Rc,
 };
@@ -164,12 +164,16 @@ pub(crate) enum ParseError {
     BadFunctionReturnType,
     #[error("internal compiler error: bad string constant")]
     BadStringConst,
+
+    #[error("redeclared typedef")]
+    RedeclaredTypedef,
 }
 
 pub(crate) struct ParserState {
     scopes: Vec<Scope>,
     current_scope: Scope,
     types: Vec<CanonicalType>,
+    typedefs: Vec<HashMap<String, QualifiedType>>,
 
     #[cfg(debug_assertions)]
     parse_tree_stack: VecDeque<DebugParseNode>,
@@ -182,6 +186,7 @@ impl ParserState {
             scopes: vec![file_scope],
             current_scope: file_scope,
             types: Vec::new(),
+            typedefs: vec![Default::default()],
 
             #[cfg(debug_assertions)]
             parse_tree_stack: VecDeque::new(),
@@ -191,6 +196,7 @@ impl ParserState {
     fn open_scope(&mut self, scope_type: ScopeType) {
         let new_scope = Scope::new(scope_type, self.current_scope.index, self.scopes.len());
         self.scopes.push(new_scope);
+        self.typedefs.push(Default::default());
         self.current_scope = new_scope;
     }
 
@@ -208,6 +214,30 @@ impl ParserState {
         let idx = self.types.len();
         self.types.push(canonical_type);
         TypeIdx(idx)
+    }
+
+    fn add_typedef(&mut self, name: String, typedef: QualifiedType) -> Result<(), ParseError> {
+        if self.is_typedef(&name).is_some() {
+            return Err(ParseError::RedeclaredTypedef);
+        }
+
+        self.typedefs[self.current_scope.index].insert(name, typedef);
+        Ok(())
+    }
+
+    fn is_typedef(&mut self, name: &str) -> Option<&QualifiedType> {
+        let mut scope = self.current_scope;
+        loop {
+            if let Some(typedef) = self.typedefs[scope.index].get(name) {
+                return Some(typedef);
+            }
+
+            if let Some(parent) = scope.parent_scope {
+                scope = self.scopes[parent];
+            } else {
+                return None;
+            }
+        }
     }
 }
 
@@ -974,9 +1004,14 @@ fn parse_external_declaration(
         qualified_type,
         storage_class,
         function_specifier,
+        is_typedef,
     } = declaration_specifiers.clone();
     // both will include a (concrete) declarator
     let (declaration_type, name) = parse_declarator(toks, state, qualified_type)?;
+    if is_typedef {
+        state.add_typedef(name.clone(), declaration_type.clone())?;
+    }
+
     let mut declarations: Vec<Declaration> = Vec::new();
 
     match toks.peek() {
@@ -1005,6 +1040,7 @@ fn parse_external_declaration(
                 Identifier::new(state.current_scope, name),
                 declaration_type,
                 storage_class,
+                is_typedef,
                 function_specifier,
                 None,
             );
@@ -1028,9 +1064,11 @@ fn parse_external_declaration(
                 Identifier::new(state.current_scope, name),
                 declaration_type,
                 storage_class,
+                is_typedef,
                 function_specifier,
                 Some(Box::new(initializer)),
             );
+
             declarations.push(declaration)
         }
         Some((_, _, _)) => {
@@ -1038,6 +1076,7 @@ fn parse_external_declaration(
                 Identifier::new(state.current_scope, name),
                 declaration_type,
                 storage_class,
+                is_typedef,
                 function_specifier,
                 None,
             );
@@ -1096,10 +1135,10 @@ fn parse_type_name(
 // will need to be careful with typedefs here
 fn is_lookahead_declaration(
     toks: &mut impl TokenStream<CLexemes>,
-    _state: &mut ParserState,
+    state: &mut ParserState,
 ) -> bool {
     match toks.peek() {
-        Some((lexeme, _, _)) => match lexeme {
+        Some((lexeme, text, _)) => match lexeme {
             CLexemes::Typedef
             | CLexemes::Extern
             | CLexemes::Static
@@ -1117,6 +1156,7 @@ fn is_lookahead_declaration(
             | CLexemes::Struct
             | CLexemes::Union
             | CLexemes::Enum => true,
+            CLexemes::Identifier => state.is_typedef(text).is_some(),
             _ => false,
         },
         None => false,
@@ -1128,6 +1168,7 @@ struct DeclarationSpecifiers {
     qualified_type: QualifiedType,
     storage_class: StorageClass,
     function_specifier: FunctionSpecifier,
+    is_typedef: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -1232,7 +1273,6 @@ fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CTy
     }
 }
 
-// no typedefs for now
 fn parse_declaration_specifiers_base(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
@@ -1242,11 +1282,15 @@ fn parse_declaration_specifiers_base(
     let mut storage_class: StorageClass = StorageClass::None;
     let mut function_specifier: FunctionSpecifier = FunctionSpecifier::None;
     let mut type_qualifier: TypeQualifier = TypeQualifier::empty();
+
     let mut primitive_type_specifiers: Vec<BasicTypeLexeme> = Vec::new();
     let mut struct_or_union_or_enum: Option<CType> = None;
+    let mut typedef: Option<QualifiedType> = None;
+
+    let mut is_typedef = false;
     loop {
         match toks.peek() {
-            Some((lexeme, _, _)) => match lexeme {
+            Some((lexeme, text, _)) => match lexeme {
                 CLexemes::Extern
                 | CLexemes::Auto
                 | CLexemes::Register
@@ -1258,7 +1302,8 @@ fn parse_declaration_specifiers_base(
                 }
 
                 CLexemes::Typedef => {
-                    todo!("add typedef support")
+                    is_typedef = true;
+                    toks.eat(CLexemes::Typedef);
                 }
 
                 // storage class specifiers, only 1 allowed
@@ -1328,7 +1373,7 @@ fn parse_declaration_specifiers_base(
                 | CLexemes::Double
                 | CLexemes::Signed
                 | CLexemes::Unsigned
-                    if struct_or_union_or_enum.is_none() =>
+                    if struct_or_union_or_enum.is_none() && typedef.is_none() =>
                 {
                     toks.eat(lexeme);
                     primitive_type_specifiers.push(lexeme.try_into()?);
@@ -1349,7 +1394,8 @@ fn parse_declaration_specifiers_base(
                 // struct / union specifier (syntactically very similar!)
                 CLexemes::Struct
                     if struct_or_union_or_enum.is_none()
-                        && primitive_type_specifiers.is_empty() =>
+                        && primitive_type_specifiers.is_empty()
+                        && typedef.is_none() =>
                 {
                     let struct_type = parse_struct_or_union_specifier(toks, state)?;
                     struct_or_union_or_enum = Some(CType::StructureTypeRef {
@@ -1358,7 +1404,8 @@ fn parse_declaration_specifiers_base(
                 }
                 CLexemes::Union
                     if struct_or_union_or_enum.is_none()
-                        && primitive_type_specifiers.is_empty() =>
+                        && primitive_type_specifiers.is_empty()
+                        && typedef.is_none() =>
                 {
                     let union_type = parse_struct_or_union_specifier(toks, state)?;
                     struct_or_union_or_enum = Some(CType::UnionTypeRef {
@@ -1373,7 +1420,8 @@ fn parse_declaration_specifiers_base(
                 // enum specifier
                 CLexemes::Enum
                     if struct_or_union_or_enum.is_none()
-                        && primitive_type_specifiers.is_empty() =>
+                        && primitive_type_specifiers.is_empty()
+                        && typedef.is_none() =>
                 {
                     let enum_type = parse_enum_specifier(toks, state)?;
                     struct_or_union_or_enum = Some(CType::EnumTypeRef {
@@ -1383,6 +1431,22 @@ fn parse_declaration_specifiers_base(
 
                 CLexemes::Enum => {
                     return Err(ParseError::MultipleTypeSpecifiersInDeclaration);
+                }
+
+                // typedef
+                CLexemes::Identifier => {
+                    if let Some(ty) = state.is_typedef(text) {
+                        if struct_or_union_or_enum.is_some()
+                            || !primitive_type_specifiers.is_empty()
+                            || typedef.is_some()
+                        {
+                            break;
+                        }
+                        toks.eat(CLexemes::Identifier);
+                        typedef = Some(ty.clone());
+                    } else {
+                        break;
+                    }
                 }
 
                 _ => {
@@ -1406,13 +1470,22 @@ fn parse_declaration_specifiers_base(
             base_type: ty,
             qualifier: type_qualifier,
         }
+    } else if let Some(mut ty) = typedef {
+        ty.qualifier |= type_qualifier;
+        ty
     } else {
         return Err(ParseError::MissingTypeSpecifier);
     };
+
+    if is_typedef && storage_class != StorageClass::None {
+        return Err(ParseError::UnexpectedStorageClass);
+    }
+
     let declaration_specifiers = DeclarationSpecifiers {
         qualified_type,
         storage_class,
         function_specifier,
+        is_typedef,
     };
 
     Ok(declaration_specifiers)
@@ -1875,6 +1948,7 @@ fn parse_init_declarator(
         qualified_type,
         storage_class,
         function_specifier,
+        is_typedef,
     } = declaration_specifiers;
     let base_type = qualified_type;
     let (qualified_type, name) = parse_declarator(toks, state, base_type)?;
@@ -1888,10 +1962,15 @@ fn parse_init_declarator(
         None => return Err(ParseError::UnexpectedEOF),
     };
 
+    if is_typedef {
+        state.add_typedef(name.clone(), qualified_type.clone())?;
+    }
+
     let declaration = Declaration::new(
         Identifier::new(state.current_scope, name),
         qualified_type,
         storage_class,
+        is_typedef,
         function_specifier,
         initializer,
     );

@@ -51,6 +51,7 @@ pub(crate) struct Declaration {
     name: Identifier,
     qualified_type: QualifiedType,
     storage_class: StorageClass,
+    is_typedef: bool,
     function_specifier: FunctionSpecifier,
     initializer: Option<Box<ExpressionNode>>,
 }
@@ -60,6 +61,7 @@ impl Declaration {
         name: Identifier,
         qualified_type: QualifiedType,
         storage_class: StorageClass,
+        is_typedef: bool,
         function_specifier: FunctionSpecifier,
         initializer: Option<Box<ExpressionNode>>,
     ) -> Self {
@@ -67,6 +69,7 @@ impl Declaration {
             name,
             qualified_type,
             storage_class,
+            is_typedef,
             function_specifier,
             initializer,
         }

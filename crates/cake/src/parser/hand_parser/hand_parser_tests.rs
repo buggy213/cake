@@ -169,6 +169,7 @@ fn test_parse_hello_world() {
                 Identifier::new(dummy_state.current_scope, String::from("main")),
                 fn_type,
                 StorageClass::None,
+                false,
                 FunctionSpecifier::None,
                 None,
             );
@@ -393,6 +394,7 @@ fn parse_struct_declaration_incomplete() {
         Identifier::new(dummy_state.current_scope, String::from("s")),
         struct_type,
         StorageClass::None,
+        false,
         FunctionSpecifier::None,
         None,
     )]);
@@ -437,6 +439,7 @@ fn parse_struct_declaration_anonymous() {
         Identifier::new(dummy_state.current_scope, String::from("s")),
         struct_type,
         StorageClass::None,
+        false,
         FunctionSpecifier::None,
         None,
     )]);
@@ -481,6 +484,7 @@ fn parse_struct_declaration() {
         Identifier::new(dummy_state.current_scope, String::from("t")),
         struct_type,
         StorageClass::None,
+        false,
         FunctionSpecifier::None,
         None,
     )]);
@@ -562,10 +566,65 @@ fn parse_struct_declaration_recursive() {
         Identifier::new(dummy_state.current_scope, String::from("recursive_struct")),
         outer_struct_type,
         StorageClass::None,
+        false,
         FunctionSpecifier::None,
         None,
     )]);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
     assert_eq!(state.types, dummy_state.types);
+}
+
+#[test]
+fn parse_typedef_basic() {
+    let typedef_basic = r#"
+    typedef int *int_ptr;
+    int_ptr iptr;
+    "#;
+
+    let dummy_state = ParserState::new();
+    let int_ptr_type = {
+        let int = QualifiedType {
+            base_type: CType::BasicType {
+                basic_type: BasicType::Int,
+            },
+            qualifier: TypeQualifier::empty(),
+        };
+
+        QualifiedType {
+            base_type: CType::PointerType {
+                pointee_type: Box::new(int),
+            },
+            qualifier: TypeQualifier::empty(),
+        }
+    };
+
+    let int_ptr = {
+        Declaration::new(
+            Identifier::new(dummy_state.current_scope, String::from("int_ptr")),
+            int_ptr_type.clone(),
+            StorageClass::None,
+            true,
+            FunctionSpecifier::None,
+            None,
+        )
+    };
+
+    let iptr = {
+        Declaration::new(
+            Identifier::new(dummy_state.current_scope, String::from("iptr")),
+            int_ptr_type,
+            StorageClass::None,
+            false,
+            FunctionSpecifier::None,
+            None,
+        )
+    };
+
+    let (mut toks, mut state) = text_test_harness(&typedef_basic);
+    let typedef_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
+    let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
+
+    assert_eq!(typedef_parsed, ASTNode::Declaration(vec![int_ptr]));
+    assert_eq!(declaration_parsed, ASTNode::Declaration(vec![iptr]));
 }
