@@ -110,70 +110,76 @@ pub(crate) enum ConstantExprError {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub(crate) enum ExpressionNode {
-    CommaExpr(Vec<ExpressionNode>, Option<CType>),
+pub(crate) struct TypedExpressionNode {
+    expr_type: CType,
+    expr_node: ExpressionNode
+}
 
-    SimpleAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    MultiplyAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    DivideAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    ModuloAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    AddAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    SubAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    LShiftAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    RShiftAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    AndAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    XorAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    OrAssign(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum ExpressionNode {
+    CommaExpr(Vec<ExpressionNode>, ),
+
+    SimpleAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    MultiplyAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    DivideAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    ModuloAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    AddAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    SubAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    LShiftAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    RShiftAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    AndAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    XorAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    OrAssign(Box<ExpressionNode>, Box<ExpressionNode>, ),
 
     Ternary(
         Box<ExpressionNode>,
         Box<ExpressionNode>,
         Box<ExpressionNode>,
-        Option<CType>,
+        
     ),
 
-    LogicalAnd(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    LogicalOr(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    BitwiseAnd(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    BitwiseOr(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    BitwiseXor(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    LogicalAnd(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    LogicalOr(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    BitwiseAnd(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    BitwiseOr(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    BitwiseXor(Box<ExpressionNode>, Box<ExpressionNode>, ),
 
-    Equal(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    NotEqual(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    Equal(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    NotEqual(Box<ExpressionNode>, Box<ExpressionNode>, ),
 
-    LessThan(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    GreaterThan(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    LessThanOrEqual(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    GreaterThanOrEqual(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    LessThan(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    GreaterThan(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    LessThanOrEqual(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    GreaterThanOrEqual(Box<ExpressionNode>, Box<ExpressionNode>, ),
 
-    LShift(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    RShift(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    Multiply(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    Divide(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    Modulo(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    Add(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    Subtract(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    Cast(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
+    LShift(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    RShift(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    Multiply(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    Divide(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    Modulo(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    Add(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    Subtract(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    Cast(Box<ExpressionNode>, Box<ExpressionNode>, ),
 
-    PreIncrement(Box<ExpressionNode>, Option<CType>),
-    PreDecrement(Box<ExpressionNode>, Option<CType>),
-    Sizeof(Box<ExpressionNode>, Option<CType>),
-    AddressOf(Box<ExpressionNode>, Option<CType>),
-    Dereference(Box<ExpressionNode>, Option<CType>),
-    UnaryPlus(Box<ExpressionNode>, Option<CType>),
-    UnaryMinus(Box<ExpressionNode>, Option<CType>),
-    BitwiseNot(Box<ExpressionNode>, Option<CType>),
-    Not(Box<ExpressionNode>, Option<CType>),
+    PreIncrement(Box<ExpressionNode>, ),
+    PreDecrement(Box<ExpressionNode>, ),
+    Sizeof(Box<ExpressionNode>, ),
+    AddressOf(Box<ExpressionNode>, ),
+    Dereference(Box<ExpressionNode>, ),
+    UnaryPlus(Box<ExpressionNode>, ),
+    UnaryMinus(Box<ExpressionNode>, ),
+    BitwiseNot(Box<ExpressionNode>, ),
+    Not(Box<ExpressionNode>, ),
 
-    PostIncrement(Box<ExpressionNode>, Option<CType>),
-    PostDecrement(Box<ExpressionNode>, Option<CType>),
-    ArraySubscript(Box<ExpressionNode>, Box<ExpressionNode>, Option<CType>),
-    FunctionCall(Box<ExpressionNode>, Vec<ExpressionNode>, Option<CType>),
-    DotAccess(Box<ExpressionNode>, Identifier, Option<CType>),
-    ArrowAccess(Box<ExpressionNode>, Identifier, Option<CType>),
+    PostIncrement(Box<ExpressionNode>, ),
+    PostDecrement(Box<ExpressionNode>, ),
+    ArraySubscript(Box<ExpressionNode>, Box<ExpressionNode>, ),
+    FunctionCall(Box<ExpressionNode>, Vec<ExpressionNode>, ),
+    DotAccess(Box<ExpressionNode>, Identifier, ),
+    ArrowAccess(Box<ExpressionNode>, Identifier, ),
     // TODO: add support for compound initializers
     // CompoundInitializer
-    Identifier(Identifier, Option<CType>),
+    Identifier(Identifier, ),
     Constant(Constant),
     StringLiteral(String),
 }
@@ -182,35 +188,35 @@ impl ExpressionNode {
     // TODO: research integer promotion / evaluation rules
     pub(crate) fn preprocessor_constant_eval(root: &ExpressionNode) -> Result<i64, ConstantExprError> {
         match root {
-            ExpressionNode::CommaExpr(_, _)
-            | ExpressionNode::SimpleAssign(_, _, _)
-            | ExpressionNode::MultiplyAssign(_, _, _)
-            | ExpressionNode::DivideAssign(_, _, _)
-            | ExpressionNode::ModuloAssign(_, _, _)
-            | ExpressionNode::AddAssign(_, _, _)
-            | ExpressionNode::SubAssign(_, _, _)
-            | ExpressionNode::LShiftAssign(_, _, _)
-            | ExpressionNode::RShiftAssign(_, _, _)
-            | ExpressionNode::AndAssign(_, _, _)
-            | ExpressionNode::XorAssign(_, _, _)
-            | ExpressionNode::OrAssign(_, _, _)
-            | ExpressionNode::Identifier(_, _)
-            | ExpressionNode::PostIncrement(_, _)
-            | ExpressionNode::PostDecrement(_, _)
-            | ExpressionNode::ArraySubscript(_, _, _)
-            | ExpressionNode::FunctionCall(_, _, _)
-            | ExpressionNode::DotAccess(_, _, _)
-            | ExpressionNode::ArrowAccess(_, _, _)
-            | ExpressionNode::Cast(_, _, _) // explicitly forbidden in standard (unclear why?)
-            | ExpressionNode::PreIncrement(_, _)
-            | ExpressionNode::PreDecrement(_, _)
-            | ExpressionNode::AddressOf(_, _)
-            | ExpressionNode::Dereference(_, _)
+            ExpressionNode::CommaExpr(_)
+            | ExpressionNode::SimpleAssign(_, _)
+            | ExpressionNode::MultiplyAssign(_, _)
+            | ExpressionNode::DivideAssign(_, _)
+            | ExpressionNode::ModuloAssign(_, _)
+            | ExpressionNode::AddAssign(_, _)
+            | ExpressionNode::SubAssign(_, _)
+            | ExpressionNode::LShiftAssign(_, _)
+            | ExpressionNode::RShiftAssign(_, _)
+            | ExpressionNode::AndAssign(_, _)
+            | ExpressionNode::XorAssign(_, _)
+            | ExpressionNode::OrAssign(_, _)
+            | ExpressionNode::Identifier(_)
+            | ExpressionNode::PostIncrement(_)
+            | ExpressionNode::PostDecrement(_)
+            | ExpressionNode::ArraySubscript(_, _)
+            | ExpressionNode::FunctionCall(_, _)
+            | ExpressionNode::DotAccess(_, _)
+            | ExpressionNode::ArrowAccess(_, _)
+            | ExpressionNode::Cast(_, _) // explicitly forbidden in standard (unclear why?)
+            | ExpressionNode::PreIncrement(_)
+            | ExpressionNode::PreDecrement(_)
+            | ExpressionNode::AddressOf(_)
+            | ExpressionNode::Dereference(_)
             | ExpressionNode::StringLiteral(_) => {
                 return Err(ConstantExprError::PreprocessorConstantExprError);
             }
 
-            ExpressionNode::Ternary(a, b, c, _) => {
+            ExpressionNode::Ternary(a, b, c) => {
                 let a = Self::preprocessor_constant_eval(a)?;
                 if a != 0 {
                     Self::preprocessor_constant_eval(b)
@@ -218,7 +224,7 @@ impl ExpressionNode {
                     Self::preprocessor_constant_eval(c)
                 } 
             },
-            ExpressionNode::LogicalAnd(lhs, rhs, _) => {
+            ExpressionNode::LogicalAnd(lhs, rhs) => {
                 if Self::preprocessor_constant_eval(lhs)? != 0 && 
                 Self::preprocessor_constant_eval(rhs)? != 0 {
                     Ok(1)
@@ -227,7 +233,7 @@ impl ExpressionNode {
                     Ok(0)
                 }
             },
-            ExpressionNode::LogicalOr(lhs, rhs, _) => {
+            ExpressionNode::LogicalOr(lhs, rhs) => {
                 if Self::preprocessor_constant_eval(lhs)? != 0 || 
                 Self::preprocessor_constant_eval(rhs)? != 0 {
                     Ok(1)
@@ -236,82 +242,82 @@ impl ExpressionNode {
                     Ok(0)
                 }
             },
-            ExpressionNode::BitwiseAnd(lhs, rhs, _) => {
+            ExpressionNode::BitwiseAnd(lhs, rhs) => {
                 Ok(Self::preprocessor_constant_eval(lhs)? & Self::preprocessor_constant_eval(rhs)?)
             },
-            ExpressionNode::BitwiseOr(lhs, rhs, _) => {
+            ExpressionNode::BitwiseOr(lhs, rhs) => {
                 Ok(Self::preprocessor_constant_eval(lhs)? | Self::preprocessor_constant_eval(rhs)?)
             },
-            ExpressionNode::BitwiseXor(lhs, rhs, _) => {
+            ExpressionNode::BitwiseXor(lhs, rhs) => {
                 Ok(Self::preprocessor_constant_eval(lhs)? ^ Self::preprocessor_constant_eval(rhs)?)
             },
-            ExpressionNode::Equal(lhs, rhs, _) => {
+            ExpressionNode::Equal(lhs, rhs) => {
                 let val = if Self::preprocessor_constant_eval(lhs)? == Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
                 Ok(val)
             },
-            ExpressionNode::NotEqual(lhs, rhs, _) => {
+            ExpressionNode::NotEqual(lhs, rhs) => {
                 let val = if Self::preprocessor_constant_eval(lhs)? != Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
                 Ok(val)
             },
-            ExpressionNode::LessThan(lhs, rhs, _) => {
+            ExpressionNode::LessThan(lhs, rhs) => {
                 let val = if Self::preprocessor_constant_eval(lhs)? < Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
                 Ok(val)
             },
-            ExpressionNode::GreaterThan(lhs, rhs, _) => {
+            ExpressionNode::GreaterThan(lhs, rhs) => {
                 let val = if Self::preprocessor_constant_eval(lhs)? > Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
                 Ok(val)
             }
-            ExpressionNode::LessThanOrEqual(lhs, rhs, _) => {
+            ExpressionNode::LessThanOrEqual(lhs, rhs) => {
                 let val = if Self::preprocessor_constant_eval(lhs)? <= Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
                 Ok(val)
             },
-            ExpressionNode::GreaterThanOrEqual(lhs, rhs, _) => {
+            ExpressionNode::GreaterThanOrEqual(lhs, rhs) => {
                 let val = if Self::preprocessor_constant_eval(lhs)? >= Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
                 Ok(val)
             },
-            ExpressionNode::LShift(lhs, rhs, _) => {
+            ExpressionNode::LShift(lhs, rhs) => {
                 let val = Self::preprocessor_constant_eval(lhs)? << Self::preprocessor_constant_eval(rhs)?;
                 Ok(val)
             },
-            ExpressionNode::RShift(lhs, rhs, _) => {
+            ExpressionNode::RShift(lhs, rhs) => {
                 let val = Self::preprocessor_constant_eval(lhs)? >> Self::preprocessor_constant_eval(rhs)?;
                 Ok(val)
             },
-            ExpressionNode::Multiply(lhs, rhs, _) => {
+            ExpressionNode::Multiply(lhs, rhs) => {
                 let val = Self::preprocessor_constant_eval(lhs)? * Self::preprocessor_constant_eval(rhs)?;
                 Ok(val)
             },
-            ExpressionNode::Divide(lhs, rhs, _) => {
+            ExpressionNode::Divide(lhs, rhs) => {
                 let val = Self::preprocessor_constant_eval(lhs)? / Self::preprocessor_constant_eval(rhs)?;
                 Ok(val)
             },
-            ExpressionNode::Modulo(lhs, rhs, _) => {
+            ExpressionNode::Modulo(lhs, rhs) => {
                 let val = Self::preprocessor_constant_eval(lhs)? % Self::preprocessor_constant_eval(rhs)?;
                 Ok(val)
             },
-            ExpressionNode::Add(lhs, rhs, _) => {
+            ExpressionNode::Add(lhs, rhs) => {
                 let val = Self::preprocessor_constant_eval(lhs)? + Self::preprocessor_constant_eval(rhs)?;
                 Ok(val)
             },
-            ExpressionNode::Subtract(lhs, rhs, _) => {
+            ExpressionNode::Subtract(lhs, rhs) => {
                 let val = Self::preprocessor_constant_eval(lhs)? - Self::preprocessor_constant_eval(rhs)?;
                 Ok(val)
             },
             
-            ExpressionNode::Sizeof(_, _) => todo!("implement sizeof"),
-            ExpressionNode::UnaryPlus(target, _) => {
+            ExpressionNode::Sizeof(_) => todo!("implement sizeof"),
+            ExpressionNode::UnaryPlus(target) => {
                 let val = Self::preprocessor_constant_eval(target)?;
                 Ok(val)
             },
-            ExpressionNode::UnaryMinus(target, _) => {
+            ExpressionNode::UnaryMinus(target) => {
                 let val = Self::preprocessor_constant_eval(target)?;
                 Ok(-val)
             },
-            ExpressionNode::BitwiseNot(target, _) => {
+            ExpressionNode::BitwiseNot(target) => {
                 let val = Self::preprocessor_constant_eval(target)?;
                 Ok(!val)
             },
-            ExpressionNode::Not(target, _) => {
+            ExpressionNode::Not(target) => {
                 let val = if Self::preprocessor_constant_eval(target)? != 0 { 0 } else { 1 };
                 Ok(val)
             },

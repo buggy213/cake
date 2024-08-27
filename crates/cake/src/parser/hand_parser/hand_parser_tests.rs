@@ -12,14 +12,14 @@ fn text_test_harness<'text>(text: &'text str) -> (CTokenStream<'text>, ParserSta
 
 fn make_identifier(state: &mut ParserState, name: &str) -> ExpressionNode {
     let ident = Identifier::new(state.current_scope, name.to_string());
-    ExpressionNode::Identifier(ident, None)
+    ExpressionNode::Identifier(ident)
 }
 
 macro_rules! make_expr {
     ($expr_type:path, $($subexpr:expr),+) => {
         $expr_type(
             $(Box::new($subexpr)),+,
-            None
+
         )
     };
 }
@@ -36,12 +36,12 @@ fn test_parse_expr_basic() {
     let rhs = {
         let lhs = lhs.clone();
         let rhs = ExpressionNode::Constant(Constant::Int(1));
-        Box::new(ExpressionNode::Add(lhs, Box::new(rhs), None))
+        Box::new(ExpressionNode::Add(lhs, Box::new(rhs)))
     };
 
     assert_eq!(
         parse_expr(&mut toks, &mut state),
-        Ok(ExpressionNode::SimpleAssign(lhs, rhs, None))
+        Ok(ExpressionNode::SimpleAssign(lhs, rhs))
     );
 }
 
@@ -141,11 +141,8 @@ fn test_parse_hello_world() {
                 let printf = {
                     let printf_ident = make_identifier(&mut dummy_state, "printf");
                     let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
-                    let printf_expr = ExpressionNode::FunctionCall(
-                        Box::new(printf_ident),
-                        vec![printf_arg],
-                        None,
-                    );
+                    let printf_expr =
+                        ExpressionNode::FunctionCall(Box::new(printf_ident), vec![printf_arg]);
                     ASTNode::ExpressionStatement(Box::new(printf_expr), dummy_state.current_scope)
                 };
                 let return_stmt = {

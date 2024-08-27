@@ -252,7 +252,7 @@ enum Atom {
 impl From<Atom> for ExpressionNode {
     fn from(value: Atom) -> Self {
         match value {
-            Atom::Identifier(ident) => ExpressionNode::Identifier(ident, None),
+            Atom::Identifier(ident) => ExpressionNode::Identifier(ident),
             Atom::Constant(constant) => ExpressionNode::Constant(constant),
             Atom::StringLiteral(string) => ExpressionNode::StringLiteral(string),
         }
@@ -680,7 +680,7 @@ pub(crate) fn parse_expr(
                 assignment_exprs.push(next);
             }
             Some((_, _, _)) => {
-                let comma_expr = ExpressionNode::CommaExpr(assignment_exprs, None);
+                let comma_expr = ExpressionNode::CommaExpr(assignment_exprs);
                 return Ok(comma_expr);
             }
             None => return Err(ParseError::UnexpectedEOF),
@@ -717,33 +717,33 @@ fn parse_expr_rec(
                         let rhs = parse_expr_rec(toks, state, power)?;
                         match op {
                             Operator::Increment => {
-                                lhs = ExpressionNode::PreIncrement(Box::new(rhs), None);
+                                lhs = ExpressionNode::PreIncrement(Box::new(rhs));
                             }
                             Operator::Decrement => {
-                                lhs = ExpressionNode::PreDecrement(Box::new(rhs), None);
+                                lhs = ExpressionNode::PreDecrement(Box::new(rhs));
                             }
                             Operator::Plus => {
-                                lhs = ExpressionNode::UnaryPlus(Box::new(rhs), None);
+                                lhs = ExpressionNode::UnaryPlus(Box::new(rhs));
                             }
                             Operator::Minus => {
-                                lhs = ExpressionNode::UnaryMinus(Box::new(rhs), None);
+                                lhs = ExpressionNode::UnaryMinus(Box::new(rhs));
                             }
                             Operator::Bang => {
-                                lhs = ExpressionNode::Not(Box::new(rhs), None);
+                                lhs = ExpressionNode::Not(Box::new(rhs));
                             }
                             Operator::Tilde => {
-                                lhs = ExpressionNode::BitwiseNot(Box::new(rhs), None);
+                                lhs = ExpressionNode::BitwiseNot(Box::new(rhs));
                             }
                             Operator::Star => {
-                                lhs = ExpressionNode::Dereference(Box::new(rhs), None);
+                                lhs = ExpressionNode::Dereference(Box::new(rhs));
                             }
                             Operator::BitAnd => {
-                                lhs = ExpressionNode::AddressOf(Box::new(rhs), None);
+                                lhs = ExpressionNode::AddressOf(Box::new(rhs));
                             }
                             Operator::Sizeof => {
                                 // TODO: special lookahead for sizeof type name
                                 // (as opposed to sizeof an expression)
-                                lhs = ExpressionNode::Sizeof(Box::new(rhs), None);
+                                lhs = ExpressionNode::Sizeof(Box::new(rhs));
                             }
                             // to avoid cluttering with additional types,
                             // no separate "PrefixOperator" enum. however,
@@ -780,32 +780,27 @@ fn parse_expr_rec(
 
                             match op {
                                 Operator::Increment => {
-                                    lhs = ExpressionNode::PostIncrement(Box::new(lhs), None)
+                                    lhs = ExpressionNode::PostIncrement(Box::new(lhs))
                                 }
                                 Operator::Decrement => {
-                                    lhs = ExpressionNode::PostDecrement(Box::new(lhs), None)
+                                    lhs = ExpressionNode::PostDecrement(Box::new(lhs))
                                 }
 
                                 // function call / array subscript
                                 Operator::LParen => {
-                                    let arguments = if let Some((CLexemes::RParen, _, _)) =
-                                        toks.peek()
-                                    {
-                                        Vec::new()
-                                    } else {
-                                        match parse_expr(toks, state)? {
-                                            ExpressionNode::CommaExpr(arg_exprs, _) => arg_exprs,
-                                            single => vec![single],
-                                        }
-                                    };
+                                    let arguments =
+                                        if let Some((CLexemes::RParen, _, _)) = toks.peek() {
+                                            Vec::new()
+                                        } else {
+                                            match parse_expr(toks, state)? {
+                                                ExpressionNode::CommaExpr(arg_exprs) => arg_exprs,
+                                                single => vec![single],
+                                            }
+                                        };
 
                                     eat_or_error!(toks, CLexemes::RParen)?;
 
-                                    lhs = ExpressionNode::FunctionCall(
-                                        Box::new(lhs),
-                                        arguments,
-                                        None,
-                                    );
+                                    lhs = ExpressionNode::FunctionCall(Box::new(lhs), arguments);
                                 }
                                 Operator::LBracket => {
                                     let index = parse_expr_rec(toks, state, 0)?;
@@ -813,7 +808,6 @@ fn parse_expr_rec(
                                     lhs = ExpressionNode::ArraySubscript(
                                         Box::new(lhs),
                                         Box::new(index),
-                                        None,
                                     );
                                 }
 
@@ -839,116 +833,105 @@ fn parse_expr_rec(
                                     Box::new(lhs),
                                     Box::new(middle),
                                     Box::new(rhs),
-                                    None,
                                 );
                                 continue;
                             }
 
                             let rhs = parse_expr_rec(toks, state, right_bp)?;
                             lhs = match op {
-                                Operator::Plus => {
-                                    ExpressionNode::Add(Box::new(lhs), Box::new(rhs), None)
-                                }
+                                Operator::Plus => ExpressionNode::Add(Box::new(lhs), Box::new(rhs)),
                                 Operator::Minus => {
-                                    ExpressionNode::Subtract(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::Subtract(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::Star => {
-                                    ExpressionNode::Multiply(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::Multiply(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::BitAnd => {
-                                    ExpressionNode::BitwiseAnd(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::BitwiseAnd(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::Slash => {
-                                    ExpressionNode::Divide(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::Divide(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::Percent => {
-                                    ExpressionNode::Modulo(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::Modulo(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::RShift => {
-                                    ExpressionNode::RShift(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::RShift(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::LShift => {
-                                    ExpressionNode::LShift(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::LShift(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::Lt => {
-                                    ExpressionNode::LessThan(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::LessThan(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::Gt => {
-                                    ExpressionNode::GreaterThan(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::GreaterThan(Box::new(lhs), Box::new(rhs))
                                 }
-                                Operator::Leq => ExpressionNode::LessThanOrEqual(
-                                    Box::new(lhs),
-                                    Box::new(rhs),
-                                    None,
-                                ),
-                                Operator::Geq => ExpressionNode::GreaterThanOrEqual(
-                                    Box::new(lhs),
-                                    Box::new(rhs),
-                                    None,
-                                ),
-                                Operator::Eq => {
-                                    ExpressionNode::Equal(Box::new(lhs), Box::new(rhs), None)
+                                Operator::Leq => {
+                                    ExpressionNode::LessThanOrEqual(Box::new(lhs), Box::new(rhs))
                                 }
+                                Operator::Geq => {
+                                    ExpressionNode::GreaterThanOrEqual(Box::new(lhs), Box::new(rhs))
+                                }
+                                Operator::Eq => ExpressionNode::Equal(Box::new(lhs), Box::new(rhs)),
                                 Operator::Neq => {
-                                    ExpressionNode::NotEqual(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::NotEqual(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::Xor => {
-                                    ExpressionNode::BitwiseXor(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::BitwiseXor(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::BitOr => {
-                                    ExpressionNode::BitwiseOr(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::BitwiseOr(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::And => {
-                                    ExpressionNode::LogicalAnd(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::LogicalAnd(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::Or => {
-                                    ExpressionNode::LogicalOr(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::LogicalOr(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::Assign => {
-                                    ExpressionNode::SimpleAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::SimpleAssign(Box::new(lhs), Box::new(rhs))
                                 }
-                                Operator::MultiplyAssign => ExpressionNode::MultiplyAssign(
-                                    Box::new(lhs),
-                                    Box::new(rhs),
-                                    None,
-                                ),
+                                Operator::MultiplyAssign => {
+                                    ExpressionNode::MultiplyAssign(Box::new(lhs), Box::new(rhs))
+                                }
                                 Operator::DivideAssign => {
-                                    ExpressionNode::DivideAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::DivideAssign(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::ModuloAssign => {
-                                    ExpressionNode::ModuloAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::ModuloAssign(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::AddAssign => {
-                                    ExpressionNode::AddAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::AddAssign(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::SubAssign => {
-                                    ExpressionNode::SubAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::SubAssign(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::LShiftAssign => {
-                                    ExpressionNode::LShiftAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::LShiftAssign(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::RShiftAssign => {
-                                    ExpressionNode::RShiftAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::RShiftAssign(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::AndAssign => {
-                                    ExpressionNode::AndAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::AndAssign(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::XorAssign => {
-                                    ExpressionNode::XorAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::XorAssign(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::OrAssign => {
-                                    ExpressionNode::OrAssign(Box::new(lhs), Box::new(rhs), None)
+                                    ExpressionNode::OrAssign(Box::new(lhs), Box::new(rhs))
                                 }
                                 Operator::Dot => {
-                                    if let ExpressionNode::Identifier(member, _) = rhs {
-                                        ExpressionNode::DotAccess(Box::new(lhs), member, None)
+                                    if let ExpressionNode::Identifier(member) = rhs {
+                                        ExpressionNode::DotAccess(Box::new(lhs), member)
                                     } else {
                                         return Err(ParseError::BadMemberAccess);
                                     }
                                 }
                                 Operator::Arrow => {
-                                    if let ExpressionNode::Identifier(member, _) = rhs {
-                                        ExpressionNode::ArrowAccess(Box::new(lhs), member, None)
+                                    if let ExpressionNode::Identifier(member) = rhs {
+                                        ExpressionNode::ArrowAccess(Box::new(lhs), member)
                                     } else {
                                         return Err(ParseError::BadMemberAccess);
                                     }
