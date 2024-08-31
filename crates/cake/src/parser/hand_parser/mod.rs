@@ -1028,11 +1028,8 @@ fn parse_external_declaration(
                 None,
             );
 
-            let function_node = ASTNode::FunctionDefinition(
-                Box::new(fn_declaration),
-                Box::new(function_body),
-                state.current_scope,
-            );
+            let function_node =
+                ASTNode::FunctionDefinition(Box::new(fn_declaration), Box::new(function_body));
 
             return Ok(function_node);
         }
@@ -2779,3 +2776,6 @@ fn parse_jump_statement(
 
 #[cfg(test)]
 mod hand_parser_tests;
+
+/// uses petgraph + DOT export functionality to visualize an AST
+mod viz;

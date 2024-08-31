@@ -171,11 +171,7 @@ fn test_parse_hello_world() {
                 None,
             );
 
-            ASTNode::FunctionDefinition(
-                Box::new(fn_declaration),
-                Box::new(body),
-                dummy_state.current_scope,
-            )
+            ASTNode::FunctionDefinition(Box::new(fn_declaration), Box::new(body))
         };
 
         ASTNode::TranslationUnit(vec![main], dummy_state.current_scope)
