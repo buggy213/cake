@@ -61,12 +61,23 @@ pub(crate) enum Linkage {
 }
 
 pub(crate) enum Symbol {
-    Variable {
+    Object {
         symbol_type: QualifiedType,
         storage_class: StorageClass,
         linkage: Linkage,
     },
+    // used only for enumeration constants
     Constant(Constant),
+    Function {
+        // 2 types of linkage: internal and external
+        // by default, functions have external linkage, i.e. the linker can see the function and use it to resolve function calls in other translation units
+        // internal linkage means that the linker is not allowed to use a function definition to resolve calls in other translation units (i.e. it is local to the current translation unit)
+        // TODO: maybe implement inline function linkage rules (actual inlining optimization can be done using any function we have definition of)
+        internal_linkage: bool,
+        defined: bool,
+    },
+    // only used for bookkeeping purposes
+    Typedef,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,16 +99,14 @@ impl IndexMut<TypeIdx> for Vec<CanonicalType> {
 // in particular, every symbol has an associated identifier and type
 // will likely need to add storage / linkage / layout information as well
 pub(crate) struct SymbolTable {
+    // these are built during parse; types may need to be merged during resolve
     scopes: Vec<Scope>,
+    types: Vec<CanonicalType>,
+
+    // these are built during resolve phase
     symbols: Vec<HashMap<String, Symbol>>,
     labels: Vec<HashMap<String, Rc<ASTNode>>>,
     tags: Vec<HashMap<String, TypeIdx>>,
-    types: Vec<CanonicalType>,
-}
-
-pub(crate) struct ImmutableScopedSymbolTable<'a> {
-    table: &'a SymbolTable,
-    scope: Scope,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -119,10 +128,6 @@ impl SymbolTable {
             tags: Vec::new(),
             types: Vec::new(),
         }
-    }
-
-    pub(crate) fn create_scoped_view(&self, scope: Scope) -> ImmutableScopedSymbolTable {
-        ImmutableScopedSymbolTable { table: self, scope }
     }
 
     // look in current scope and all parent scopes
@@ -170,10 +175,32 @@ impl SymbolTable {
 
     pub(crate) fn direct_lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<TypeIdx> {
         let direct_lookup = self.tags[scope.index].get(tag);
-        match direct_lookup {
-            Some(tag_type_idx) => return Some(*tag_type_idx),
-            None => return None,
+        direct_lookup.copied()
+    }
+
+    pub(crate) fn lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
+        let mut current_scope = scope;
+        loop {
+            match self.direct_lookup_symbol(scope, name) {
+                Some(sym) => return Some(sym),
+                None => match current_scope.parent_scope {
+                    Some(parent) => current_scope = self.scopes[parent],
+                    None => return None,
+                },
+            }
         }
+    }
+
+    pub(crate) fn direct_lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
+        self.symbols[scope.index].get(name)
+    }
+
+    pub(crate) fn direct_lookup_symbol_mut(
+        &mut self,
+        scope: Scope,
+        name: &str,
+    ) -> Option<&mut Symbol> {
+        self.symbols[scope.index].get_mut(name)
     }
 
     pub(crate) fn add_type(&mut self, ctype: CanonicalType) -> TypeIdx {

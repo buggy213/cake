@@ -98,8 +98,6 @@ pub(crate) enum ParseError {
     UnexpectedToken(CLexemes),
     #[error("Only one storage class allowed in declaration")]
     UnexpectedStorageClass,
-    #[error("restrict qualifier only applies to pointers")]
-    BadRestrictQualifier,
     #[error("failed to lookup item in symbol table")]
     LookupError(String),
     #[error("cannot declare enum `{0}` in same scope due to conflicting tag")]
@@ -1696,22 +1694,19 @@ fn parse_enum_specifier(
         }
     }
 
-    let enum_tag: Option<String>;
-    match toks.peek() {
+    let enum_tag = match toks.peek() {
         Some((CLexemes::LBrace, _, _)) => {
             // untagged enum, always declares a new type
             toks.eat(CLexemes::LBrace);
-            enum_tag = None;
+            None
         }
         Some((CLexemes::Identifier, ident, _)) => {
-            enum_tag = Some(ident.to_string());
+            let tag = String::from(ident);
             toks.eat(CLexemes::Identifier);
 
             let next_tok = toks.peek();
             match next_tok {
-                Some((CLexemes::LBrace, _, _)) => {
-                    toks.eat(CLexemes::LBrace);
-                }
+                Some((CLexemes::LBrace, _, _)) => Some(tag),
                 Some(_) => {
                     /* RESOLVE LOGIC
                     // incomplete enum, need to do lookup (6.7.2.3 3)
@@ -1735,13 +1730,19 @@ fn parse_enum_specifier(
                         None => return Err(ParseError::LookupError(enum_tag.unwrap()))
                     }
                     */
+
+                    let incomplete_type = CanonicalType::IncompleteEnumType { tag };
+                    let incomplete_type_idx = state.add_type(incomplete_type);
+                    return Ok(incomplete_type_idx);
                 }
                 None => return Err(ParseError::UnexpectedEOF),
-            };
+            }
         }
         Some((other, _, _)) => return Err(ParseError::UnexpectedToken(other)),
         None => return Err(ParseError::UnexpectedEOF),
-    }
+    };
+
+    toks.eat(CLexemes::LBrace);
 
     /* RESOLVE LOGIC
     // 6.7.2.3 1, not allowed to redeclare enum (or struct or union) contents
@@ -1753,7 +1754,7 @@ fn parse_enum_specifier(
         }
     }
     */
-
+    // RESOLVE LOGIC
     // footnote 109 - enum constants share namespace with eachother and with "ordinary" identifiers
     // so, just put them into symbol table with everything else
     let mut counter: i32 = 0;
@@ -1895,6 +1896,13 @@ fn parse_init_declarators(
     declaration_specifiers: DeclarationSpecifiers,
 ) -> Result<ASTNode, ParseError> {
     let mut declarations = Vec::new();
+
+    // empty declarations are acceptable (e.g. just defining a struct)
+    if let Some((CLexemes::Semicolon, _, _)) = toks.peek() {
+        let decl_node = ASTNode::Declaration(declarations);
+        return Ok(decl_node);
+    }
+
     let declaration = parse_init_declarator(toks, state, declaration_specifiers.clone())?;
     declarations.push(declaration);
     loop {

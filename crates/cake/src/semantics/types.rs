@@ -18,7 +18,7 @@ pub(crate) enum BasicType {
 }
 
 // for now, all enums will be 4 bytes
-type EnumVariant = (String, i32);
+pub(crate) type EnumVariant = (String, i32);
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,7 +45,7 @@ pub(crate) struct QualifiedType {
 
 pub(crate) type FunctionArgument = (Option<String>, QualifiedType);
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CanonicalType {
     // "Canonical" types go into symbol table, should try to only keep 1 around
     // if possible. Incomplete types can be std::mem::replace'd once they are completed
@@ -63,6 +63,9 @@ pub(crate) enum CanonicalType {
     StructureType {
         tag: Option<String>,
         members: Vec<AggregateMember>,
+    },
+    IncompleteEnumType {
+        tag: String,
     },
     EnumerationType {
         tag: Option<String>,
