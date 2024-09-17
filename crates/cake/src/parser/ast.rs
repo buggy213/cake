@@ -2,8 +2,6 @@
 
 use std::rc::Rc;
 
-use thiserror::Error;
-
 use crate::semantics::{
     symtab::{Scope, StorageClass},
     types::{CType, FunctionSpecifier, QualifiedType},
@@ -103,16 +101,10 @@ pub(crate) enum Constant {
     // enums have type int (6.4.4.3)
 }
 
-#[derive(Debug, Error)]
-pub(crate) enum ConstantExprError {
-    #[error("error while parsing constant expression in preprocessor conditional directive")]
-    PreprocessorConstantExprError,
-}
-
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct TypedExpressionNode {
     expr_type: CType,
-    expr_node: ExpressionNode
+    expr_node: ExpressionNode,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -181,157 +173,4 @@ pub(crate) enum ExpressionNode {
     Identifier(Identifier),
     Constant(Constant),
     StringLiteral(String),
-}
-
-impl ExpressionNode {
-    // TODO: research integer promotion / evaluation rules
-    pub(crate) fn preprocessor_constant_eval(root: &ExpressionNode) -> Result<i64, ConstantExprError> {
-        match root {
-            ExpressionNode::CommaExpr(_)
-            | ExpressionNode::SimpleAssign(_, _)
-            | ExpressionNode::MultiplyAssign(_, _)
-            | ExpressionNode::DivideAssign(_, _)
-            | ExpressionNode::ModuloAssign(_, _)
-            | ExpressionNode::AddAssign(_, _)
-            | ExpressionNode::SubAssign(_, _)
-            | ExpressionNode::LShiftAssign(_, _)
-            | ExpressionNode::RShiftAssign(_, _)
-            | ExpressionNode::AndAssign(_, _)
-            | ExpressionNode::XorAssign(_, _)
-            | ExpressionNode::OrAssign(_, _)
-            | ExpressionNode::Identifier(_)
-            | ExpressionNode::PostIncrement(_)
-            | ExpressionNode::PostDecrement(_)
-            | ExpressionNode::ArraySubscript(_, _)
-            | ExpressionNode::FunctionCall(_, _)
-            | ExpressionNode::DotAccess(_, _)
-            | ExpressionNode::ArrowAccess(_, _)
-            | ExpressionNode::Cast(_, _) // explicitly forbidden in standard (unclear why?)
-            | ExpressionNode::PreIncrement(_)
-            | ExpressionNode::PreDecrement(_)
-            | ExpressionNode::AddressOf(_)
-            | ExpressionNode::Dereference(_)
-            | ExpressionNode::StringLiteral(_) => {
-                return Err(ConstantExprError::PreprocessorConstantExprError);
-            }
-
-            ExpressionNode::Ternary(a, b, c) => {
-                let a = Self::preprocessor_constant_eval(a)?;
-                if a != 0 {
-                    Self::preprocessor_constant_eval(b)
-                } else {
-                    Self::preprocessor_constant_eval(c)
-                } 
-            },
-            ExpressionNode::LogicalAnd(lhs, rhs) => {
-                if Self::preprocessor_constant_eval(lhs)? != 0 && 
-                Self::preprocessor_constant_eval(rhs)? != 0 {
-                    Ok(1)
-                }
-                else {
-                    Ok(0)
-                }
-            },
-            ExpressionNode::LogicalOr(lhs, rhs) => {
-                if Self::preprocessor_constant_eval(lhs)? != 0 || 
-                Self::preprocessor_constant_eval(rhs)? != 0 {
-                    Ok(1)
-                }
-                else {
-                    Ok(0)
-                }
-            },
-            ExpressionNode::BitwiseAnd(lhs, rhs) => {
-                Ok(Self::preprocessor_constant_eval(lhs)? & Self::preprocessor_constant_eval(rhs)?)
-            },
-            ExpressionNode::BitwiseOr(lhs, rhs) => {
-                Ok(Self::preprocessor_constant_eval(lhs)? | Self::preprocessor_constant_eval(rhs)?)
-            },
-            ExpressionNode::BitwiseXor(lhs, rhs) => {
-                Ok(Self::preprocessor_constant_eval(lhs)? ^ Self::preprocessor_constant_eval(rhs)?)
-            },
-            ExpressionNode::Equal(lhs, rhs) => {
-                let val = if Self::preprocessor_constant_eval(lhs)? == Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-                Ok(val)
-            },
-            ExpressionNode::NotEqual(lhs, rhs) => {
-                let val = if Self::preprocessor_constant_eval(lhs)? != Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-                Ok(val)
-            },
-            ExpressionNode::LessThan(lhs, rhs) => {
-                let val = if Self::preprocessor_constant_eval(lhs)? < Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-                Ok(val)
-            },
-            ExpressionNode::GreaterThan(lhs, rhs) => {
-                let val = if Self::preprocessor_constant_eval(lhs)? > Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-                Ok(val)
-            }
-            ExpressionNode::LessThanOrEqual(lhs, rhs) => {
-                let val = if Self::preprocessor_constant_eval(lhs)? <= Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-                Ok(val)
-            },
-            ExpressionNode::GreaterThanOrEqual(lhs, rhs) => {
-                let val = if Self::preprocessor_constant_eval(lhs)? >= Self::preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-                Ok(val)
-            },
-            ExpressionNode::LShift(lhs, rhs) => {
-                let val = Self::preprocessor_constant_eval(lhs)? << Self::preprocessor_constant_eval(rhs)?;
-                Ok(val)
-            },
-            ExpressionNode::RShift(lhs, rhs) => {
-                let val = Self::preprocessor_constant_eval(lhs)? >> Self::preprocessor_constant_eval(rhs)?;
-                Ok(val)
-            },
-            ExpressionNode::Multiply(lhs, rhs) => {
-                let val = Self::preprocessor_constant_eval(lhs)? * Self::preprocessor_constant_eval(rhs)?;
-                Ok(val)
-            },
-            ExpressionNode::Divide(lhs, rhs) => {
-                let val = Self::preprocessor_constant_eval(lhs)? / Self::preprocessor_constant_eval(rhs)?;
-                Ok(val)
-            },
-            ExpressionNode::Modulo(lhs, rhs) => {
-                let val = Self::preprocessor_constant_eval(lhs)? % Self::preprocessor_constant_eval(rhs)?;
-                Ok(val)
-            },
-            ExpressionNode::Add(lhs, rhs) => {
-                let val = Self::preprocessor_constant_eval(lhs)? + Self::preprocessor_constant_eval(rhs)?;
-                Ok(val)
-            },
-            ExpressionNode::Subtract(lhs, rhs) => {
-                let val = Self::preprocessor_constant_eval(lhs)? - Self::preprocessor_constant_eval(rhs)?;
-                Ok(val)
-            },
-            
-            ExpressionNode::Sizeof(_) => todo!("implement sizeof"),
-            ExpressionNode::UnaryPlus(target) => {
-                let val = Self::preprocessor_constant_eval(target)?;
-                Ok(val)
-            },
-            ExpressionNode::UnaryMinus(target) => {
-                let val = Self::preprocessor_constant_eval(target)?;
-                Ok(-val)
-            },
-            ExpressionNode::BitwiseNot(target) => {
-                let val = Self::preprocessor_constant_eval(target)?;
-                Ok(!val)
-            },
-            ExpressionNode::Not(target) => {
-                let val = if Self::preprocessor_constant_eval(target)? != 0 { 0 } else { 1 };
-                Ok(val)
-            },
-            
-            ExpressionNode::Constant(constant) => {
-                match constant {
-                    Constant::Int(v) => Ok(*v as i64),
-                    Constant::LongInt(v) => Ok(*v as i64),
-                    Constant::UInt(v) => Ok(*v as i64),
-                    Constant::ULongInt(v) => Ok(*v as i64),
-                    Constant::Float(v) => return Err(ConstantExprError::PreprocessorConstantExprError),
-                    Constant::Double(v) => return Err(ConstantExprError::PreprocessorConstantExprError),
-                }
-            },
-            
-        }
-    }
 }

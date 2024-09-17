@@ -148,8 +148,6 @@ pub(crate) enum ParseError {
         "member access (with '.' or '->' operators) expects identifier, not arbitrary expression"
     )]
     BadMemberAccess,
-    #[error("redeclared label name within same function")]
-    RedeclaredLabel(#[source] SymtabError),
     #[error("couldn't parse int")]
     BadInt,
     #[error("couldn't parse float")]
