@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::{
+    constexpr::integer_constant_eval,
     symtab::{Scope, SymbolTable, SymtabError},
     types::{AggregateMember, BasicType, QualifiedType},
 };
@@ -45,6 +46,55 @@ enum ASTResolveError {
     RedeclaredLabel(#[source] SymtabError),
     #[error("error while evaluating compile-time integer constant")]
     IntegerConstantExprError,
+    #[error("case labels only allowed within switch statements")]
+    UnexpectedCaseLabel,
+    #[error("only one default case within a switch statement")]
+    MultipleDefaultLabels,
+}
+
+struct SwitchStatement {
+    enclosing_switch: Option<usize>,
+    case_values: Vec<Constant>,
+    has_default: bool,
+}
+
+struct ResolverState {
+    current_switch_statement: Option<usize>,
+    switch_statements: Vec<SwitchStatement>,
+}
+
+impl ResolverState {
+    fn add_switch(&mut self) {
+        let new_switch = SwitchStatement {
+            enclosing_switch: self.current_switch_statement,
+            case_values: Default::default(),
+            has_default: false,
+        };
+        let new_switch_idx = self.switch_statements.len();
+        self.switch_statements.push(new_switch);
+        self.current_switch_statement = Some(new_switch_idx);
+    }
+
+    fn current_switch(&self) -> Option<&SwitchStatement> {
+        self.current_switch_statement
+            .and_then(|idx| self.switch_statements.get(idx))
+    }
+
+    fn current_switch_mut(&mut self) -> Option<&mut SwitchStatement> {
+        self.current_switch_statement
+            .and_then(|idx| self.switch_statements.get_mut(idx))
+    }
+
+    fn close_switch(&mut self) {
+        match self.current_switch() {
+            Some(cur_switch) => {
+                self.current_switch_statement = cur_switch.enclosing_switch;
+            }
+            None => {
+                debug_assert!(false)
+            }
+        }
+    }
 }
 
 /// 1. resolve declarations (place values into symbol table and enforce rules about redeclaration)
@@ -57,11 +107,12 @@ pub fn resolve_ast(
     symtab: &mut SymbolTable,
     ast: &mut ASTNode,
     parser_types: &[CanonicalType],
+    resolve_state: &mut ResolverState,
 ) -> Result<(), ASTResolveError> {
     match ast {
         ASTNode::TranslationUnit(definitions, _) => {
             for defn in definitions {
-                resolve_ast(symtab, defn, parser_types)?;
+                resolve_ast(symtab, defn, parser_types, resolve_state)?;
             }
 
             Ok(())
@@ -87,21 +138,43 @@ pub fn resolve_ast(
         }
         ASTNode::CaseLabel(labelee, case_value) => {
             let value = resolve_integer_constant_expression(symtab, case_value)?;
+            let replacement_node = Box::new(ExpressionNode::Constant(value));
+            let _ = std::mem::replace(case_value, replacement_node);
 
-            todo!()
-        }
-        ASTNode::DefaultLabel(_) => todo!(),
-        ASTNode::CompoundStatement(inner_statements, _) => {
-            for stmt in inner_statements {
-                resolve_ast(symtab, stmt, parser_types)?;
+            match resolve_state.current_switch_mut() {
+                Some(SwitchStatement { case_values, .. }) => {
+                    case_values.push(value);
+                }
+                None => return Err(ASTResolveError::UnexpectedCaseLabel),
             }
 
-            todo!()
+            Ok(())
+        }
+        ASTNode::DefaultLabel(_) => match resolve_state.current_switch_mut() {
+            Some(SwitchStatement { has_default, .. }) => {
+                if *has_default {
+                    return Err(ASTResolveError::MultipleDefaultLabels);
+                }
+                Ok(())
+            }
+            None => Err(ASTResolveError::UnexpectedCaseLabel),
+        },
+        ASTNode::CompoundStatement(inner_statements, _) => {
+            for stmt in inner_statements {
+                resolve_ast(symtab, stmt, parser_types, resolve_state)?;
+            }
+
+            Ok(())
         }
         ASTNode::ExpressionStatement(_, _) => todo!(),
         ASTNode::NullStatement => Ok(()),
         ASTNode::IfStatement(_, _, _, _) => todo!(),
-        ASTNode::SwitchStatement(_, _, _) => todo!(),
+        ASTNode::SwitchStatement(controlling_expr, body, _) => {
+            resolve_state.add_switch();
+            todo!();
+            resolve_state.close_switch();
+            todo!()
+        }
         ASTNode::WhileStatement(_, _, _) => todo!(),
         ASTNode::DoWhileStatement(_, _, _) => todo!(),
         ASTNode::ForStatement(_, _, _, _, _) => todo!(),
@@ -190,8 +263,11 @@ fn resolve_declaration(
     )?;
 
     match symtab.direct_lookup_symbol(declaration.name.scope, &declaration.name.name) {
-        Some(_) => todo!(),
-        None => todo!(),
+        Some(_) => {
+            // symbol is already declared
+            return Err(ASTResolveError::SymbolRedeclaration);
+        }
+        None => {}
     }
 
     todo!()
@@ -597,10 +673,19 @@ fn resolve_member_types(
 fn resolve_integer_constant_expression(
     symtab: &SymbolTable,
     expr: &ExpressionNode,
-) -> Result<i32, ASTResolveError> {
-    todo!()
+) -> Result<Constant, ASTResolveError> {
+    let constant = integer_constant_eval(symtab, expr);
+    match constant {
+        Ok(c) => match c {
+            Constant::Int(_) => todo!(),
+            Constant::LongInt(_) => todo!(),
+            Constant::UInt(_) => todo!(),
+            Constant::ULongInt(_) => todo!(),
+            Constant::Float(_) => Err(ASTResolveError::IntegerConstantExprError),
+            Constant::Double(_) => Err(ASTResolveError::IntegerConstantExprError),
+        },
+        Err(e) => Err(ASTResolveError::IntegerConstantExprError),
+    }
 }
 
-fn operand_type() -> BasicType {
-    todo!()
-}
+fn resolve_expr() {}

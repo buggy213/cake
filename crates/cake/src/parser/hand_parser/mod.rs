@@ -556,6 +556,7 @@ fn to_expr_part(
     Ok(expr_part)
 }
 
+const PREFIX_BINDING_POWER: u32 = 25;
 fn prefix_binding_power(op: Operator) -> Option<u32> {
     match op {
         // all prefix operators are implicitly right associative
@@ -567,16 +568,17 @@ fn prefix_binding_power(op: Operator) -> Option<u32> {
         | Operator::Tilde
         | Operator::Star
         | Operator::BitAnd
-        | Operator::Sizeof => Some(25),
+        | Operator::Sizeof => Some(PREFIX_BINDING_POWER),
         _ => None,
     }
 }
 
+const POSTFIX_BINDING_POWER: u32 = 27;
 fn postfix_binding_power(op: Operator) -> Option<u32> {
     match op {
         // all postfix operators are implicitly left-associative
         Operator::Increment | Operator::Decrement | Operator::LParen | Operator::LBracket => {
-            Some(27)
+            Some(POSTFIX_BINDING_POWER)
         }
 
         // grammatically, Dot / Arrow (member access, either directly or through a pointer)
@@ -588,7 +590,7 @@ fn postfix_binding_power(op: Operator) -> Option<u32> {
         // s->(a + b);
         // ```
         // is clearly nonsensical;
-        Operator::Dot | Operator::Arrow => Some(27),
+        Operator::Dot | Operator::Arrow => Some(POSTFIX_BINDING_POWER),
 
         _ => return None,
     }
@@ -704,8 +706,18 @@ fn parse_expr_rec(
                     lhs = atom.into();
                 }
                 ExprPart::Operator(Operator::LParen) => {
-                    lhs = parse_expr_rec(toks, state, 0)?;
-                    eat_or_error!(toks, CLexemes::RParen)?;
+                    if is_lookahead_type_name(toks, state) {
+                        // must be a cast
+                        let cast_target_type = parse_type_name(toks, state)?;
+                        eat_or_error!(toks, CLexemes::RParen)?;
+
+                        let rhs = parse_expr_rec(toks, state, PREFIX_BINDING_POWER)?;
+
+                        lhs = ExpressionNode::Cast(Box::new(rhs), cast_target_type);
+                    } else {
+                        lhs = parse_expr_rec(toks, state, 0)?;
+                        eat_or_error!(toks, CLexemes::RParen)?;
+                    }
                 }
                 ExprPart::Operator(op) => {
                     // it must be a prefix operator
@@ -1107,6 +1119,31 @@ fn parse_type_name(
     Ok(derived_type)
 }
 
+fn is_lookahead_type_name(toks: &mut impl TokenStream<CLexemes>, state: &mut ParserState) -> bool {
+    match toks.peek() {
+        Some((lexeme, text, _)) => match lexeme {
+            CLexemes::Const
+            | CLexemes::Volatile
+            | CLexemes::Restrict
+            | CLexemes::Void
+            | CLexemes::Char
+            | CLexemes::Short
+            | CLexemes::Int
+            | CLexemes::Long
+            | CLexemes::Float
+            | CLexemes::Double
+            | CLexemes::Unsigned
+            | CLexemes::Signed
+            | CLexemes::Struct
+            | CLexemes::Union
+            | CLexemes::Enum => true,
+            CLexemes::Identifier => state.is_typedef(text).is_some(),
+            _ => false,
+        },
+        None => false,
+    }
+}
+
 // distinguish between a declaration vs. expression
 // will need to be careful with typedefs here
 fn is_lookahead_declaration(
@@ -1120,6 +1157,9 @@ fn is_lookahead_declaration(
             | CLexemes::Static
             | CLexemes::Auto
             | CLexemes::Register
+            | CLexemes::Const
+            | CLexemes::Volatile
+            | CLexemes::Restrict
             | CLexemes::Void
             | CLexemes::Char
             | CLexemes::Short

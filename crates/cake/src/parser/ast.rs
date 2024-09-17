@@ -102,9 +102,72 @@ pub(crate) enum Constant {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub(crate) struct TypedExpressionNode {
-    expr_type: CType,
-    expr_node: ExpressionNode,
+pub(crate) enum TypedExpressionNode {
+    CommaExpr(Vec<TypedExpressionNode>, CType),
+
+    SimpleAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    MultiplyAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    DivideAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    ModuloAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    AddAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    SubAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    LShiftAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    RShiftAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    AndAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    XorAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    OrAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+
+    Ternary(
+        Box<TypedExpressionNode>,
+        Box<TypedExpressionNode>,
+        Box<TypedExpressionNode>,
+        CType,
+    ),
+
+    LogicalAnd(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    LogicalOr(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    BitwiseAnd(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    BitwiseOr(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    BitwiseXor(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+
+    Equal(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    NotEqual(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+
+    LessThan(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    GreaterThan(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    LessThanOrEqual(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    GreaterThanOrEqual(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+
+    LShift(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    RShift(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    Multiply(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    Divide(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    Modulo(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    Add(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    Subtract(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    Cast(Box<TypedExpressionNode>, QualifiedType),
+
+    PreIncrement(Box<TypedExpressionNode>, CType),
+    PreDecrement(Box<TypedExpressionNode>, CType),
+    Sizeof(Box<TypedExpressionNode>, CType),
+    AddressOf(Box<TypedExpressionNode>, CType),
+    Dereference(Box<TypedExpressionNode>, CType),
+    UnaryPlus(Box<TypedExpressionNode>, CType),
+    UnaryMinus(Box<TypedExpressionNode>, CType),
+    BitwiseNot(Box<TypedExpressionNode>, CType),
+    Not(Box<TypedExpressionNode>, CType),
+
+    PostIncrement(Box<TypedExpressionNode>, CType),
+    PostDecrement(Box<TypedExpressionNode>, CType),
+    ArraySubscript(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
+    FunctionCall(Box<TypedExpressionNode>, Vec<TypedExpressionNode>, CType),
+    DotAccess(Box<TypedExpressionNode>, Identifier, CType),
+    ArrowAccess(Box<TypedExpressionNode>, Identifier, CType),
+    // TODO: add support for compound initializers
+    // CompoundInitializer
+    Identifier(Identifier, CType),
+    Constant(Constant, CType),
+    StringLiteral(String, CType),
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -150,7 +213,7 @@ pub(crate) enum ExpressionNode {
     Modulo(Box<ExpressionNode>, Box<ExpressionNode>),
     Add(Box<ExpressionNode>, Box<ExpressionNode>),
     Subtract(Box<ExpressionNode>, Box<ExpressionNode>),
-    Cast(Box<ExpressionNode>, Box<ExpressionNode>),
+    Cast(Box<ExpressionNode>, QualifiedType),
 
     PreIncrement(Box<ExpressionNode>),
     PreDecrement(Box<ExpressionNode>),

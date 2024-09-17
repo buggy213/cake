@@ -24,6 +24,12 @@ macro_rules! make_expr {
     };
 }
 
+macro_rules! make_constant {
+    ($constant_type:path, $value:expr) => {
+        ExpressionNode::Constant($constant_type($value))
+    };
+}
+
 #[test]
 fn test_parse_expr_basic() {
     let basic_expr = r#"
@@ -88,6 +94,39 @@ fn test_parse_expr_parenthesized() {
     let expr = {
         let rhs = { make_expr!(ExpressionNode::Add, b, c) };
         make_expr!(ExpressionNode::Multiply, a, rhs)
+    };
+
+    assert_eq!(parse_expr(&mut toks, &mut state), Ok(expr));
+}
+
+#[test]
+fn test_parse_expr_cast() {
+    let basic_expr = r#"
+    (const void *) (1 - 1)
+    "#;
+    let (mut toks, mut state) = text_test_harness(basic_expr);
+
+    let expr = {
+        let cast_target_type = {
+            let const_void = QualifiedType {
+                base_type: CType::Void,
+                qualifier: TypeQualifier::Const,
+            };
+            QualifiedType {
+                base_type: CType::PointerType {
+                    pointee_type: Box::new(const_void),
+                },
+                qualifier: TypeQualifier::empty(),
+            }
+        };
+
+        let casted_expr = {
+            let lhs = make_constant!(Constant::Int, 1);
+            let rhs = make_constant!(Constant::Int, 1);
+            make_expr!(ExpressionNode::Subtract, lhs, rhs)
+        };
+
+        ExpressionNode::Cast(Box::new(casted_expr), cast_target_type)
     };
 
     assert_eq!(parse_expr(&mut toks, &mut state), Ok(expr));

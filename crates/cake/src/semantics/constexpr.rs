@@ -563,7 +563,7 @@ fn convert_constants(lhs: Constant, rhs: Constant) -> (Constant, Constant) {
     }
 }
 
-fn integer_constant_eval(symtab: &SymbolTable, root: &ExpressionNode) -> Result<Constant, ConstantExprError> {
+pub(crate) fn integer_constant_eval(symtab: &SymbolTable, root: &ExpressionNode) -> Result<Constant, ConstantExprError> {
     match root {
         ExpressionNode::CommaExpr(_)
         | ExpressionNode::SimpleAssign(_, _)
