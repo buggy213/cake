@@ -74,6 +74,26 @@ fn test_parse_expr_precedence() {
 }
 
 #[test]
+fn test_parse_expr_parenthesized() {
+    let basic_expr = r#"
+    a * (b + c)
+    "#;
+    let (mut toks, mut state) = text_test_harness(basic_expr);
+
+    // (a || (b && (c + (d / e))))
+    let a = make_identifier(&mut state, "a");
+    let b = make_identifier(&mut state, "b");
+    let c = make_identifier(&mut state, "c");
+
+    let expr = {
+        let rhs = { make_expr!(ExpressionNode::Add, b, c) };
+        make_expr!(ExpressionNode::Multiply, a, rhs)
+    };
+
+    assert_eq!(parse_expr(&mut toks, &mut state), Ok(expr));
+}
+
+#[test]
 fn test_parse_hello_world() {
     let hello_world = r#"
     int main(int argc, char **argv) {

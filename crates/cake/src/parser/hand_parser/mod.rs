@@ -705,7 +705,7 @@ fn parse_expr_rec(
                 }
                 ExprPart::Operator(Operator::LParen) => {
                     lhs = parse_expr_rec(toks, state, 0)?;
-                    eat_or_error!(toks, CLexemes::LParen)?;
+                    eat_or_error!(toks, CLexemes::RParen)?;
                 }
                 ExprPart::Operator(op) => {
                     // it must be a prefix operator
