@@ -1,5 +1,4 @@
 # Cake
-## Overview
 Personal project to learn more about compiler theory and implementation. Aims to compile *some* unspecified subset of C99.
 
 ## Cloning this repository
