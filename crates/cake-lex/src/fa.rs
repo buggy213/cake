@@ -340,6 +340,7 @@ impl FA<AsciiChar> {
             .0
     }
 
+    // Splits a set of DFA states on a given character, helper function for DFA minimization
     fn split(
         partitions: &[BitSet],
         dfa: &FA<AsciiChar>,
@@ -393,6 +394,9 @@ impl FA<AsciiChar> {
     }
 
     // use Hopcroft's Algorithm to minimize a DFA
+    // works by splitting groups of states until reaching a fixed point to find all, finitely many equivalence classes (Myhill-Nerode)
+    // a group of states is equivalent if it has same "behavior" on reading any given input character (i.e. all would transition to the same
+    // equivalence class)
     pub fn minimize_dfa(dfa: &FA<AsciiChar>, separate_finals: bool) -> FA<AsciiChar> {
         let accept: BitSet = dfa.accept_states.iter().copied().collect();
         let mut nonaccept: BitSet = (0..dfa.nodes.len()).collect();
@@ -503,6 +507,7 @@ impl FA<AsciiChar> {
                     );
                 }
 
+                // lower actions have higher priority, thus min()
                 let new_action = minimized_final.iter()
                     .map(|x| actions[x])
                     .min()
@@ -550,6 +555,9 @@ impl FA<AsciiChar> {
         return dfa.accept_states.contains(&state);
     }
 
+    // TODO: know this is possible by "ripping" states out within a GNFA
+    // but maybe complicated to implement this way.
+    // Not really needed for compiler
     pub fn re_from_dfa() -> String {
         todo!()
     }

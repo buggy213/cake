@@ -84,6 +84,7 @@ impl DFAScanner {
         Self { table }
     }
 
+    // implements "maximal munch" lexing - always try to "eat" as many characters as possible to form next token
     // output: lexeme + action + next token cursor
     pub fn next_word<'a>(&self, input: &'a [u8], start_cursor: usize) -> (&'a str, i32, usize) {
         if start_cursor >= input.len() {
@@ -91,6 +92,8 @@ impl DFAScanner {
         }
 
         let mut cursor = start_cursor;
+
+        // TODO: remaking entire failed table over and over defeats the point of having it
         let mut failed: Vec<bool> = Vec::new();
         failed.resize(input.len() * self.table.states, false);
 
@@ -148,7 +151,6 @@ impl DFAScanner {
         // TODO: add support for unicode
         assert!(input.is_ascii(), "only ascii supported");
 
-        // TODO: add preprocessor
         let mut cursor = 0;
         let input = input.as_bytes();
 
