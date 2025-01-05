@@ -1,5 +1,5 @@
 use crate::fa::FA;
-use crate::regex::{Regex, RegexError};
+use crate::regex::Regex;
 
 fn compile_regex(re_str: &str, quiet: bool) -> FA {
     let regex = Regex::from_str(re_str).expect("failed to parse regex");
