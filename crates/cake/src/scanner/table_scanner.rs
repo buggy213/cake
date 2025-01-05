@@ -82,7 +82,8 @@ impl DFAScanner {
     }
 
     // scan entire input at once
-    pub fn scan_string(&mut self, input: &str) {
+    #[cfg(test)]
+    pub(super) fn scan_string(&mut self, input: &str) {
         // TODO: add support for unicode
         assert!(input.is_ascii(), "only ascii supported");
 

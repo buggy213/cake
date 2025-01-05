@@ -347,7 +347,7 @@ impl Regex {
         }
     }
 
-    pub fn from_str(re_str: &str) -> Result<Regex, RegexError> {
+    pub(super) fn from_str(re_str: &str) -> Result<Regex, RegexError> {
         assert!(re_str.is_ascii());
         let mut tokens: VecDeque<AsciiChar> = re_str.as_bytes().iter().map(|x| *x).collect();
         let re = Self::parse_regex(&mut tokens)?;

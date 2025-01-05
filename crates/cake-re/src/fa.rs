@@ -11,8 +11,8 @@ use serde_binary::binary_stream::Endian;
 
 // pointer-based graphs in safe rust are somewhat tricky, so just do indices to keep things simple
 #[derive(Debug, Clone)]
-pub(super) struct FANode {
-    pub(super) transitions: Vec<(Option<AsciiChar>, usize)>,
+struct FANode {
+    transitions: Vec<(Option<AsciiChar>, usize)>,
 }
 
 #[derive(Debug)]
@@ -20,10 +20,10 @@ pub(super) struct FANode {
 // when constructing FA from multiple regexes, priority can be assigned to each one.
 // -1 = not a final state
 pub(super) struct FA {
-    pub(super) nodes: Vec<FANode>,
-    pub(super) initial_state: usize,
-    pub(super) accept_states: Vec<usize>,
-    pub(super) actions: Option<Vec<i32>>,
+    nodes: Vec<FANode>,
+    initial_state: usize,
+    accept_states: Vec<usize>,
+    actions: Option<Vec<i32>>,
 }
 
 impl FA {

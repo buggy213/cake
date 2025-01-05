@@ -1,6 +1,6 @@
 use lexeme_sets::c_preprocessor::CPreprocessor;
 
-use crate::scanner::{lexeme_sets::c_lexemes::CLexemes, table_scanner::DFAScanner};
+use crate::scanner::table_scanner::DFAScanner;
 
 use super::lexeme_sets;
 
