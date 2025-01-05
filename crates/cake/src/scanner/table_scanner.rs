@@ -80,24 +80,45 @@ impl DFAScanner {
             (slice, self.table.actions[state as usize], cursor)
         }
     }
+}
 
-    // scan entire input at once
-    #[cfg(test)]
-    pub(super) fn scan_string(&mut self, input: &str) {
-        // TODO: add support for unicode
-        assert!(input.is_ascii(), "only ascii supported");
+#[cfg(test)]
+mod tests {
+    use crate::scanner::lexeme_sets::c_preprocessor::CPreprocessor;
 
-        let mut cursor = 0;
-        let input = input.as_bytes();
+    use super::DFAScanner;
 
-        while cursor < input.len() {
-            let (lexeme, action, next_cursor) = self.next_word(input, cursor);
-            if action == -1 {
-                panic!("failed to tokenize string");
-            } else {
-                println!("'{}', {}", lexeme, action);
-                cursor = next_cursor;
+    impl DFAScanner {
+        fn scan_string(&mut self, input: &str) {
+            assert!(input.is_ascii(), "only ascii supported");
+
+            let mut cursor = 0;
+            let input = input.as_bytes();
+
+            while cursor < input.len() {
+                let (lexeme, action, next_cursor) = self.next_word(input, cursor);
+                if action == -1 {
+                    panic!("failed to tokenize string");
+                } else {
+                    println!("'{}', {}", lexeme, action);
+                    cursor = next_cursor;
+                }
             }
         }
+    }
+
+    #[test]
+    fn test_basic() {
+        let mut scanner = DFAScanner::build_lexeme_set_scanner::<CPreprocessor>();
+        scanner.scan_string(
+            "#include <stdio.h> void main() { int x = 0; while (x != 999) x++; return x; }",
+        );
+    }
+
+    #[test]
+    fn test_string_literal() {
+        let test = r#"#include "test.h""#;
+        let mut scanner = DFAScanner::load_lexeme_set_scanner::<CPreprocessor>();
+        scanner.scan_string(test);
     }
 }

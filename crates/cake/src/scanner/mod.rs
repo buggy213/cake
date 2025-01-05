@@ -1656,6 +1656,3 @@ impl TokenStream<CLexemes> for Preprocessor {
 
 #[cfg(test)]
 mod preprocessor_tests;
-
-#[cfg(test)]
-mod scanner_tests;
