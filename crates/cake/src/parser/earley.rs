@@ -11,8 +11,8 @@ use petgraph::adj::NodeIndex;
 use petgraph::graph::DiGraph;
 use petgraph::Graph;
 
+use crate::scanner::lexemes::LexemeSet;
 use crate::scanner::TokenStream;
-use cake_lex::LexemeSet;
 
 use super::grammar::Grammar;
 use super::grammar::Production;

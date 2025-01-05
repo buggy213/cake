@@ -4,6 +4,8 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 
+use cake_re::DFATable;
+
 // 3 representations for each token: Enum variant, string name, and numeric id
 // Enum variant is canonical, but the other two might be more convenient for
 // automatic / generated code to use
@@ -23,6 +25,7 @@ pub trait LexemeSet: Clone + Copy + Debug + Eq + Hash {
 
     fn pattern(self) -> &'static str;
     fn size() -> u32;
+    fn table() -> DFATable;
 }
 pub struct LexemeIterator<T: LexemeSet> {
     state: Option<T>,

@@ -1,10 +1,12 @@
 [package]
-name = "cake-lex"
+name = "cake-re"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 bit-set = "0.8.0"
 serde = { version = "1.0.204", features = ["derive"] }
+serde-binary = "0.5.0"
 cake-util = { path = "../cake-util" }
 thiserror = "1.0.63"
+convert_case = "0.6.0"

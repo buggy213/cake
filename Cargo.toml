@@ -1,3 +1,8 @@
 [workspace]
-members = ["crates/cake*"]
+members = [
+    "crates/cake",
+    "crates/cake-bin",
+    "crates/cake-re",
+    "crates/cake-util"
+]
 resolver = "2"

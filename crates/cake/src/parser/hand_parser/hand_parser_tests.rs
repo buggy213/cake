@@ -1,9 +1,8 @@
 use super::*;
-use cake_lex::DFAScanner;
+use crate::scanner::table_scanner::DFAScanner;
 
 fn text_test_harness<'text>(text: &'text str) -> (CTokenStream<'text>, ParserState) {
-    let c_table = CLexemes::load_table();
-    let scanner = DFAScanner::new(c_table);
+    let scanner = DFAScanner::load_lexeme_set_scanner::<CLexemes>();
     let toks = CTokenStream::new(scanner, text.as_bytes());
     let state = ParserState::new();
 

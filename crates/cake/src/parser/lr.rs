@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use cake_lex::LexemeSet;
+use crate::scanner::lexemes::LexemeSet;
 
 use super::grammar::{Grammar, NT};
 

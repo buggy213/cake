@@ -3,9 +3,8 @@ use cake::{
         earley,
         grammar::{Grammar, EBNF},
     },
-    scanner::{lexeme_sets::expressions::Expressions, RawTokenStream},
+    scanner::{lexeme_sets::expressions::Expressions, table_scanner::DFAScanner, RawTokenStream},
 };
-use cake_lex::DFAScanner;
 use petgraph::dot::{Config, Dot};
 
 #[test]
@@ -17,7 +16,7 @@ fn test_expression_parse() {
     println!("{:?}", expression_grammar);
 
     let expression = "1+(2*3-4)";
-    let expression_scanner = DFAScanner::from_lexeme_set::<Expressions>();
+    let expression_scanner = DFAScanner::load_lexeme_set_scanner::<Expressions>();
     let mut expression_tokenizer: RawTokenStream<'_, Expressions> =
         RawTokenStream::new(expression_scanner, expression.as_bytes());
 

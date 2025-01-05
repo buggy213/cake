@@ -1,41 +1,38 @@
+use crate::{regex::Regex, AsciiChar};
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
     iter,
 };
 
-use crate::alphabet::AsciiCharIterator;
-use crate::{alphabet::AsciiChar, regex::Regex};
-
 use bit_set::BitSet;
+use serde::{Deserialize, Serialize};
+use serde_binary::binary_stream::Endian;
 
 // pointer-based graphs in safe rust are somewhat tricky, so just do indices to keep things simple
 #[derive(Debug, Clone)]
-pub struct FANode<A: Eq> {
-    pub(super) transitions: Vec<(Option<A>, usize)>,
+pub(super) struct FANode {
+    pub(super) transitions: Vec<(Option<AsciiChar>, usize)>,
 }
 
 #[derive(Debug)]
 // action is a way to identify final state in NFA->DFA conversion and specify priority, lower action = higher priority
 // when constructing FA from multiple regexes, priority can be assigned to each one.
 // -1 = not a final state
-pub struct FA<A: Eq + Copy> {
-    pub(super) nodes: Vec<FANode<A>>,
+pub(super) struct FA {
+    pub(super) nodes: Vec<FANode>,
     pub(super) initial_state: usize,
     pub(super) accept_states: Vec<usize>,
     pub(super) actions: Option<Vec<i32>>,
 }
 
-impl FA<AsciiChar> {
+impl FA {
     // re + mutable nodes -> initial, accept state
     // invariant - push stuff into `nodes` before making pointers, otherwise memory unsafe
-    fn recursive_helper(
-        re: &Regex<AsciiChar>,
-        nodes: &mut Vec<FANode<AsciiChar>>,
-    ) -> (usize, usize) {
+    fn recursive_helper(re: &Regex, nodes: &mut Vec<FANode>) -> (usize, usize) {
         match re {
             Regex::Alternation(alternates) => {
-                let end: FANode<AsciiChar> = FANode {
+                let end: FANode = FANode {
                     transitions: Vec::new(),
                 };
 
@@ -49,7 +46,7 @@ impl FA<AsciiChar> {
                     start_transitions.push((None, alternate_start));
                 }
 
-                let start: FANode<AsciiChar> = FANode {
+                let start: FANode = FANode {
                     transitions: start_transitions,
                 };
 
@@ -75,7 +72,7 @@ impl FA<AsciiChar> {
             }
             Regex::Kleene(inner) => {
                 let (inner_start, inner_end) = Self::recursive_helper(inner.as_ref(), nodes);
-                let end: FANode<AsciiChar> = FANode {
+                let end: FANode = FANode {
                     transitions: Vec::new(),
                 };
                 nodes.push(end);
@@ -83,7 +80,7 @@ impl FA<AsciiChar> {
                 nodes[inner_end].transitions.push((None, inner_start));
                 nodes[inner_end].transitions.push((None, end_ptr));
 
-                let start: FANode<AsciiChar> = FANode {
+                let start: FANode = FANode {
                     transitions: vec![(None, inner_start), (None, end_ptr)],
                 };
                 nodes.push(start);
@@ -91,14 +88,14 @@ impl FA<AsciiChar> {
                 (start_ptr, end_ptr)
             }
             Regex::Char(c) => {
-                let end: FANode<AsciiChar> = FANode {
+                let end: FANode = FANode {
                     transitions: Vec::new(),
                 };
 
                 nodes.push(end);
                 let end_ptr: usize = nodes.len() - 1;
 
-                let start: FANode<AsciiChar> = FANode {
+                let start: FANode = FANode {
                     transitions: vec![(Some(*c), end_ptr)],
                 };
 
@@ -124,18 +121,16 @@ impl FA<AsciiChar> {
                     included.symmetric_difference_with(&all_chars);
                 }
 
-                let end: FANode<AsciiChar> = FANode {
+                let end: FANode = FANode {
                     transitions: Vec::new(),
                 };
                 nodes.push(end);
                 let end_ptr = nodes.len() - 1;
 
-                let transitions: Vec<(Option<AsciiChar>, usize)> = included
-                    .iter()
-                    .map(|x| (Some(AsciiChar::from_u8(x as u8)), end_ptr))
-                    .collect();
+                let transitions: Vec<(Option<AsciiChar>, usize)> =
+                    included.iter().map(|x| (Some(x as u8), end_ptr)).collect();
 
-                let start: FANode<AsciiChar> = FANode { transitions };
+                let start: FANode = FANode { transitions };
                 nodes.push(start);
                 let start_ptr = nodes.len() - 1;
 
@@ -163,8 +158,8 @@ impl FA<AsciiChar> {
 
     // creates a NFA from a regex using Thompson's Construction
     // guaranteed to only have one accept state
-    pub fn nfa_from_re(re: &Regex<AsciiChar>) -> FA<AsciiChar> {
-        let mut nodes: Vec<FANode<AsciiChar>> = Vec::new();
+    pub(super) fn nfa_from_re(re: &Regex) -> FA {
+        let mut nodes: Vec<FANode> = Vec::new();
 
         let (start, end) = Self::recursive_helper(re, &mut nodes);
         FA {
@@ -175,8 +170,8 @@ impl FA<AsciiChar> {
         }
     }
 
-    pub fn combine_res(res: &[Regex<AsciiChar>]) -> FA<AsciiChar> {
-        let mut nodes: Vec<FANode<AsciiChar>> = Vec::new();
+    pub(super) fn combine_res(res: &[Regex]) -> FA {
+        let mut nodes: Vec<FANode> = Vec::new();
         let heads_tails: Vec<_> = res
             .iter()
             .map(|re| Self::recursive_helper(re, &mut nodes))
@@ -208,7 +203,7 @@ impl FA<AsciiChar> {
     }
 
     // creates a DFA from an NFA using subset construction
-    pub fn dfa_from_nfa(nfa: &FA<AsciiChar>) -> FA<AsciiChar> {
+    pub(super) fn dfa_from_nfa(nfa: &FA) -> FA {
         let accepting_states: BitSet = nfa.accept_states.iter().copied().collect();
         let mut accept_states_dfa: Vec<usize> = Vec::new();
         let mut actions_dfa: Vec<i32> = Vec::new();
@@ -238,7 +233,7 @@ impl FA<AsciiChar> {
 
         while !work_queue.is_empty() {
             let q = work_queue.pop_front().unwrap();
-            for char in AsciiCharIterator::new() {
+            for char in 0..128 {
                 let mut t = Self::delta(&nfa.nodes, &q, char);
                 if t.len() == 0 {
                     continue;
@@ -272,7 +267,7 @@ impl FA<AsciiChar> {
             }
         }
 
-        let mut nodes: Vec<FANode<AsciiChar>> = Vec::with_capacity(id);
+        let mut nodes: Vec<FANode> = Vec::with_capacity(id);
         nodes.resize(
             id,
             FANode {
@@ -295,7 +290,7 @@ impl FA<AsciiChar> {
     }
 
     // basic BFS to compute epsilon closure
-    fn epsilon_closure(nodes: &[FANode<AsciiChar>], set: &mut BitSet) {
+    fn epsilon_closure(nodes: &[FANode], set: &mut BitSet) {
         let mut queue: VecDeque<usize> = set.iter().collect();
         let mut visited: BitSet = BitSet::with_capacity(set.capacity());
 
@@ -316,7 +311,7 @@ impl FA<AsciiChar> {
         }
     }
 
-    fn delta(nodes: &[FANode<AsciiChar>], set: &BitSet, c: AsciiChar) -> BitSet {
+    fn delta(nodes: &[FANode], set: &BitSet, c: AsciiChar) -> BitSet {
         let mut result = BitSet::with_capacity(set.capacity());
 
         for i in set.iter() {
@@ -341,12 +336,7 @@ impl FA<AsciiChar> {
     }
 
     // Splits a set of DFA states on a given character, helper function for DFA minimization
-    fn split(
-        partitions: &[BitSet],
-        dfa: &FA<AsciiChar>,
-        set: &BitSet,
-        c: AsciiChar,
-    ) -> (BitSet, BitSet) {
+    fn split(partitions: &[BitSet], dfa: &FA, set: &BitSet, c: AsciiChar) -> (BitSet, BitSet) {
         let mut a = BitSet::new();
         let mut b = BitSet::new();
 
@@ -397,7 +387,9 @@ impl FA<AsciiChar> {
     // works by splitting groups of states until reaching a fixed point to find all, finitely many equivalence classes (Myhill-Nerode)
     // a group of states is equivalent if it has same "behavior" on reading any given input character (i.e. all would transition to the same
     // equivalence class)
-    pub fn minimize_dfa(dfa: &FA<AsciiChar>, separate_finals: bool) -> FA<AsciiChar> {
+    pub(super) fn minimize_dfa(dfa: &FA, separate_finals: bool) -> FA {
+        println!("Before minimization: {} states", dfa.nodes.len());
+
         let accept: BitSet = dfa.accept_states.iter().copied().collect();
         let mut nonaccept: BitSet = (0..dfa.nodes.len()).collect();
         nonaccept.difference_with(&accept);
@@ -428,7 +420,7 @@ impl FA<AsciiChar> {
             b_partition.clear();
             for s in &a_partition {
                 let mut did_split = false;
-                for ch in AsciiCharIterator::new() {
+                for ch in 0..128 {
                     let (s1, s2) = Self::split(&a_partition, dfa, s, ch);
                     if s2.len() == 0 {
                         continue;
@@ -455,7 +447,7 @@ impl FA<AsciiChar> {
         // println!("{:?}", a_partition);
         // println!("{:?}", b_partition);
 
-        let mut minimal_nodes: Vec<FANode<AsciiChar>> = Vec::with_capacity(a_partition.len());
+        let mut minimal_nodes: Vec<FANode> = Vec::with_capacity(a_partition.len());
         minimal_nodes.resize(
             a_partition.len(),
             FANode {
@@ -519,6 +511,7 @@ impl FA<AsciiChar> {
             new_actions
         });
 
+        println!("After minimization: {} states", minimal_nodes.len());
         FA {
             nodes: minimal_nodes,
             initial_state,
@@ -527,14 +520,10 @@ impl FA<AsciiChar> {
         }
     }
 
-    pub fn simulate_dfa(dfa: &FA<AsciiChar>, input: &str) -> bool {
+    pub(super) fn simulate_dfa(dfa: &FA, input: &str) -> (bool, Option<i32>) {
         assert!(input.is_ascii());
         let mut state = dfa.initial_state;
-        let chars = input
-            .as_bytes()
-            .iter()
-            .copied()
-            .map(|x| AsciiChar::from_u8(x));
+        let chars = input.as_bytes().iter().copied().map(|x| x);
 
         for input_char in chars {
             let current_state = &dfa.nodes[state];
@@ -548,17 +537,94 @@ impl FA<AsciiChar> {
                 }
             }
             if !found {
-                return false;
+                return (false, Some(-1));
             }
         }
 
-        return dfa.accept_states.contains(&state);
+        let accept = dfa.accept_states.contains(&state);
+        let action = dfa.actions.as_ref().map(|actions| actions[state]);
+        (accept, action)
     }
 
     // TODO: know this is possible by "ripping" states out within a GNFA
     // but maybe complicated to implement this way.
     // Not really needed for compiler
-    pub fn re_from_dfa() -> String {
+    pub(super) fn re_from_dfa() -> String {
         todo!()
+    }
+}
+
+// Serialization format for DFA (and public interface with other code)
+// states = rows, 1 additional error state
+// characters = columns
+// -1 = invalid transition
+#[derive(Serialize, Deserialize)]
+pub struct DFATable {
+    pub data: Vec<u32>,
+    pub actions: Vec<i32>,
+    pub states: u32,
+    pub initial_state: u32,
+}
+
+impl DFATable {
+    pub fn get_next_state(&self, current_state: u32, ch: AsciiChar) -> u32 {
+        self.data[(current_state * 128 + ch as u32) as usize]
+    }
+
+    // populate dense lookup table from sparse FA data structure
+    // TODO: is this actually a reasonable thing to do? is maintaining sparsity when doing lexing actually better?
+    fn from_ascii_dfa(dfa: &FA) -> DFATable {
+        let num_states: u32 = dfa.nodes.len() as u32 + 1;
+        let num_inputs: usize = 128;
+        let table_size = num_states as usize * num_inputs;
+        let mut data: Vec<u32> = Vec::with_capacity(table_size);
+        data.resize(table_size, num_states - 1);
+
+        // fill table
+        for (i, state) in dfa.nodes.iter().enumerate() {
+            for (label, next) in &state.transitions {
+                let label = label.expect("DFA should not have epsilon transitions");
+                let next = *next;
+                data[i * num_inputs + label as usize] = next as u32;
+            }
+        }
+
+        let mut actions = dfa
+            .actions
+            .as_ref()
+            .expect("using DFA for table requires associated lexing actions")
+            .clone();
+        actions.push(-1); // add implicit error state
+
+        DFATable {
+            data,
+            actions,
+            states: num_states,
+            initial_state: dfa.initial_state as u32,
+        }
+    }
+
+    // convenience function to compile lexeme regexes to NFA, then DFA, then optimize, then create table
+    // should mainly be used for testing code only - loading precompiled table is much faster
+    pub fn from_regex_strs(re_strs: &[&str]) -> DFATable {
+        let lexemes: Vec<Regex> = re_strs
+            .iter()
+            .map(|x| Regex::from_str(x).expect("failed to parse regex"))
+            .collect();
+
+        let nfa = FA::combine_res(&lexemes);
+        let dfa = FA::dfa_from_nfa(&nfa);
+        let dfa = FA::minimize_dfa(&dfa, true);
+
+        DFATable::from_ascii_dfa(&dfa)
+    }
+
+    pub fn compile_table(&self) -> Vec<u8> {
+        serde_binary::to_vec(self, Endian::Little).expect("Unable to serialize DFA table")
+    }
+
+    pub fn from_precompiled_table(bytes: &[u8]) -> DFATable {
+        serde_binary::from_slice(bytes, Endian::Little)
+            .expect("Unable to load serialized DFA table")
     }
 }

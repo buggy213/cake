@@ -5,7 +5,7 @@ use std::{
 
 use bit_set::BitSet;
 
-use cake_lex::LexemeSet;
+use crate::scanner::lexemes::LexemeSet;
 use cake_util::RangeUInt;
 
 pub type NT = usize;

@@ -1,8 +1,6 @@
 /// tests are stored in this directory as well
 use std::{fs, path::PathBuf};
 
-use cake_lex::DFAScanner;
-
 use crate::platform::Platform;
 
 use super::{

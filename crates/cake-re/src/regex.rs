@@ -28,23 +28,23 @@ use std::collections::VecDeque;
 use cake_util::RangeUInt;
 use thiserror::Error;
 
-use super::alphabet::AsciiChar;
+use crate::AsciiChar;
 
 #[derive(Clone, Debug)]
-pub enum Regex<A: Eq> {
-    Alternation(Vec<Regex<A>>),
-    Concatenation(Vec<Regex<A>>),
-    Kleene(Box<Regex<A>>),
-    Char(A),
+pub(super) enum Regex {
+    Alternation(Vec<Regex>),
+    Concatenation(Vec<Regex>),
+    Kleene(Box<Regex>),
+    Char(AsciiChar),
 
-    Class(RegexClass<A>),
+    Class(RegexClass),
     Empty,
 }
 
 #[derive(Clone, Debug)]
-pub struct RegexClass<A: Eq> {
-    pub(super) ranges: Vec<(A, A)>,
-    pub(super) characters: Vec<A>,
+pub(super) struct RegexClass {
+    pub(super) ranges: Vec<(AsciiChar, AsciiChar)>,
+    pub(super) characters: Vec<AsciiChar>,
     pub(super) negated: bool,
 }
 
@@ -55,21 +55,17 @@ enum ClassItem<A: Eq> {
 }
 
 #[derive(Debug, Error)]
-pub enum RegexError {
+pub(super) enum RegexError {
     #[error("Malformed regex")]
     Malformed,
 }
 
 // basic recursive descent parsing
-impl Regex<AsciiChar> {
-    fn parse_regex(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex<AsciiChar>, RegexError> {
+impl Regex {
+    fn parse_regex(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex, RegexError> {
         let term = Self::parse_term(tokens)?;
-        let mut alternates: Vec<Regex<AsciiChar>> = Vec::new();
-        while tokens
-            .front()
-            .is_some_and(|x| *x == AsciiChar::VerticalLine)
-        {
-            // '|'
+        let mut alternates: Vec<Regex> = Vec::new();
+        while tokens.front().is_some_and(|x| *x == b'|') {
             tokens.pop_front();
             let alternate = Self::parse_term(tokens)?;
             alternates.push(alternate);
@@ -82,12 +78,9 @@ impl Regex<AsciiChar> {
         }
     }
 
-    fn parse_term(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex<AsciiChar>, RegexError> {
-        let mut factors: Vec<Regex<AsciiChar>> = Vec::new();
-        while tokens
-            .front()
-            .is_some_and(|x| *x != AsciiChar::VerticalLine && *x != AsciiChar::RightParenthesis)
-        {
+    fn parse_term(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex, RegexError> {
+        let mut factors: Vec<Regex> = Vec::new();
+        while tokens.front().is_some_and(|x| *x != b'|' && *x != b')') {
             let factor = Self::parse_factor(tokens)?;
             factors.push(factor);
         }
@@ -106,7 +99,7 @@ impl Regex<AsciiChar> {
         let mut found_right = false;
         while let Some(x) = tokens.pop_front() {
             count_string.push(char::from_u32(x as u32).expect("should be valid ascii"));
-            if x == AsciiChar::RightCurlyBracket {
+            if x == b'}' {
                 found_right = true;
                 break;
             }
@@ -164,26 +157,26 @@ impl Regex<AsciiChar> {
         }
     }
 
-    fn parse_factor(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex<AsciiChar>, RegexError> {
+    fn parse_factor(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex, RegexError> {
         let base = Self::parse_base(tokens)?;
         let mut range_low = RangeUInt::Finite(1);
         let mut range_high = RangeUInt::Finite(1);
         while let Some(x) = tokens.front() {
             match x {
-                AsciiChar::Asterisk => {
+                b'*' => {
                     range_low = RangeUInt::Finite(0);
                     range_high = RangeUInt::Infinite;
                     tokens.pop_front();
                 }
-                AsciiChar::PlusSign => {
+                b'+' => {
                     range_high = RangeUInt::Infinite;
                     tokens.pop_front();
                 }
-                AsciiChar::QuestionMark => {
+                b'?' => {
                     range_low = RangeUInt::Finite(0);
                     tokens.pop_front();
                 }
-                AsciiChar::LeftCurlyBracket => {
+                b'{' => {
                     let (low, high) = Self::parse_count(tokens)?;
                     range_low = range_low * low;
                     range_high = range_high * high;
@@ -200,10 +193,10 @@ impl Regex<AsciiChar> {
                 // parts of the AST? NFA has to contain multiple copies at the end
                 // regardless
 
-                let mut alternates: Vec<Regex<AsciiChar>> = Vec::new();
+                let mut alternates: Vec<Regex> = Vec::new();
                 for i in low..=high {
                     if i > 1 {
-                        let mut base_repeats: Vec<Regex<AsciiChar>> = Vec::new();
+                        let mut base_repeats: Vec<Regex> = Vec::new();
                         base_repeats.resize(i as usize, base.clone());
                         alternates.push(Regex::Concatenation(base_repeats))
                     } else if i == 1 {
@@ -220,7 +213,7 @@ impl Regex<AsciiChar> {
             (RangeUInt::Finite(low), RangeUInt::Infinite) => {
                 let kleene = Regex::Kleene(Box::new(base.clone()));
                 if low != 0 {
-                    let mut base_repeats: Vec<Regex<AsciiChar>> = Vec::new();
+                    let mut base_repeats: Vec<Regex> = Vec::new();
                     base_repeats.resize(low as usize, base);
                     base_repeats.push(kleene);
                     Ok(Regex::Concatenation(base_repeats))
@@ -234,10 +227,10 @@ impl Regex<AsciiChar> {
         factor
     }
 
-    fn parse_class(tokens: &mut VecDeque<AsciiChar>) -> Result<RegexClass<AsciiChar>, RegexError> {
+    fn parse_class(tokens: &mut VecDeque<AsciiChar>) -> Result<RegexClass, RegexError> {
         let negated;
         if let Some(x) = tokens.front() {
-            if *x == AsciiChar::CircumflexAccent {
+            if *x == b'^' {
                 tokens.pop_front();
                 negated = true;
             } else {
@@ -249,7 +242,7 @@ impl Regex<AsciiChar> {
 
         let mut class_items: Vec<ClassItem<AsciiChar>> = Vec::new();
         while let Some(x) = tokens.front() {
-            if *x == AsciiChar::RightSquareBracket {
+            if *x == b']' {
                 break;
             }
 
@@ -292,12 +285,12 @@ impl Regex<AsciiChar> {
 
     fn escape_codes(code: AsciiChar) -> AsciiChar {
         match code {
-            AsciiChar::SmallN => AsciiChar::LineFeed,
-            AsciiChar::SmallA => AsciiChar::Bell,
-            AsciiChar::SmallF => AsciiChar::FormFeed,
-            AsciiChar::SmallT => AsciiChar::CharacterTabulation,
-            AsciiChar::SmallR => AsciiChar::CarriageReturn,
-            AsciiChar::SmallV => AsciiChar::LineTabulation,
+            b'n' => b'\n',
+            b'a' => b'\x07',
+            b'f' => b'\x0C',
+            b't' => b'\t',
+            b'r' => b'\r',
+            b'v' => b'\x0B',
             x => x,
         }
     }
@@ -306,12 +299,12 @@ impl Regex<AsciiChar> {
         tokens: &mut VecDeque<AsciiChar>,
     ) -> Result<ClassItem<AsciiChar>, RegexError> {
         match tokens.pop_front().ok_or(RegexError::Malformed)? {
-            AsciiChar::ReverseSolidus => {
+            b'\\' => {
                 let code = tokens.pop_front().ok_or(RegexError::Malformed)?;
                 let escaped = Self::escape_codes(code);
                 Ok(ClassItem::Char(escaped))
             }
-            AsciiChar::HyphenMinus => {
+            b'-' => {
                 let range_end = tokens.pop_front().ok_or(RegexError::Malformed)?;
                 Ok(ClassItem::RangeEnd(range_end))
             }
@@ -319,37 +312,31 @@ impl Regex<AsciiChar> {
         }
     }
 
-    fn parse_base(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex<AsciiChar>, RegexError> {
+    fn parse_base(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex, RegexError> {
         let front = tokens.pop_front().ok_or(RegexError::Malformed)?;
-        if front == AsciiChar::ReverseSolidus {
+        if front == b'\\' {
             // funny name for backslash
             // escape next character
             let code = tokens.pop_front().ok_or(RegexError::Malformed)?;
             let escaped = Self::escape_codes(code);
             Ok(Regex::Char(escaped))
-        } else if front == AsciiChar::LeftParenthesis {
+        } else if front == b'(' {
             let parenthesized_regex = Self::parse_regex(tokens)?;
-            if tokens
-                .pop_front()
-                .is_some_and(|x| x == AsciiChar::RightParenthesis)
-            {
+            if tokens.pop_front().is_some_and(|x| x == b')') {
                 Ok(parenthesized_regex)
             } else {
                 Err(RegexError::Malformed)
             }
-        } else if front == AsciiChar::LeftSquareBracket {
+        } else if front == b'[' {
             let class = Self::parse_class(tokens)?;
-            if tokens
-                .pop_front()
-                .is_some_and(|x| x == AsciiChar::RightSquareBracket)
-            {
+            if tokens.pop_front().is_some_and(|x| x == b']') {
                 Ok(Regex::Class(class))
             } else {
                 Err(RegexError::Malformed)
             }
-        } else if front == AsciiChar::FullStop {
-            let ranges = vec![(AsciiChar::Null, AsciiChar::Delete)];
-            let class: RegexClass<AsciiChar> = RegexClass {
+        } else if front == b'.' {
+            let ranges = vec![(b'\0', b'\x7F')];
+            let class: RegexClass = RegexClass {
                 ranges,
                 characters: vec![],
                 negated: false,
@@ -360,13 +347,9 @@ impl Regex<AsciiChar> {
         }
     }
 
-    pub fn from_str(re_str: &str) -> Result<Regex<AsciiChar>, RegexError> {
+    pub fn from_str(re_str: &str) -> Result<Regex, RegexError> {
         assert!(re_str.is_ascii());
-        let mut tokens: VecDeque<AsciiChar> = re_str
-            .as_bytes()
-            .iter()
-            .map(|x| AsciiChar::from_u8(*x))
-            .collect();
+        let mut tokens: VecDeque<AsciiChar> = re_str.as_bytes().iter().map(|x| *x).collect();
         let re = Self::parse_regex(&mut tokens)?;
         if tokens.len() > 0 {
             Err(RegexError::Malformed)
