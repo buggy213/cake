@@ -8,6 +8,12 @@ pub struct DFAScanner {
     table: DFATable,
 }
 
+pub enum ScannerResult<'scanner_input> {
+    EndOfInput,
+    Failed,
+    Ok(&'scanner_input str, u32, usize), // output: lexeme text, action, next cursor
+}
+
 impl DFAScanner {
     // create and optimize DFA from LexemeSet at runtime
     pub fn build_lexeme_set_scanner<T: LexemeSet>() -> DFAScanner {
@@ -22,15 +28,14 @@ impl DFAScanner {
         DFAScanner::new(table)
     }
 
-    pub fn new(table: DFATable) -> Self {
+    fn new(table: DFATable) -> Self {
         Self { table }
     }
 
     // implements "maximal munch" lexing - always try to "eat" as many characters as possible to form next token
-    // output: lexeme + action + next token cursor
-    pub fn next_word<'a>(&self, input: &'a [u8], start_cursor: usize) -> (&'a str, i32, usize) {
+    pub fn next_word<'a>(&self, input: &'a [u8], start_cursor: usize) -> ScannerResult<'a> {
         if start_cursor >= input.len() {
-            return ("", -1, start_cursor);
+            return ScannerResult::EndOfInput;
         }
 
         let mut cursor = start_cursor;
@@ -75,16 +80,19 @@ impl DFAScanner {
         // SAFETY: earlier passes ensured its valid utf8 (ascii)
         let slice = unsafe { std::str::from_utf8_unchecked(&input[start_cursor..cursor]) };
         if state == u32::MAX {
-            (slice, -1, cursor)
+            ScannerResult::Failed
         } else {
-            (slice, self.table.actions[state as usize], cursor)
+            let action = self.table.actions[state as usize];
+            ScannerResult::Ok(slice, action as u32, cursor)
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::scanner::lexeme_sets::c_preprocessor::CPreprocessor;
+    use crate::scanner::{
+        lexeme_sets::c_preprocessor::CPreprocessor, table_scanner::ScannerResult,
+    };
 
     use super::DFAScanner;
 
@@ -96,12 +104,13 @@ mod tests {
             let input = input.as_bytes();
 
             while cursor < input.len() {
-                let (lexeme, action, next_cursor) = self.next_word(input, cursor);
-                if action == -1 {
-                    panic!("failed to tokenize string");
-                } else {
-                    println!("'{}', {}", lexeme, action);
-                    cursor = next_cursor;
+                match self.next_word(input, cursor) {
+                    ScannerResult::EndOfInput => unreachable!(), // should not happen
+                    ScannerResult::Failed => panic!("failed to tokenize string"),
+                    ScannerResult::Ok(lexeme_text, action, next_cursor) => {
+                        println!("'{}', {}", lexeme_text, action);
+                        cursor = next_cursor;
+                    }
                 }
             }
         }

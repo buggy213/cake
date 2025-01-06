@@ -1,15 +1,23 @@
 /// tests are stored in this directory as well
 use std::{fs, path::PathBuf};
 
-use crate::platform::Platform;
+use crate::{platform::Platform, scanner::lexemes::LexemeSet};
 
-use super::{
-    lexeme_sets::{c_lexemes::CLexemes, c_preprocessor::CPreprocessor},
-    tokenize_all, Preprocessor,
-};
+use super::{Preprocessor, TokenStream};
+
+fn tokenize_all<T: LexemeSet>(mut tokenizer: impl TokenStream<T>, delimiter: &str) -> String {
+    let mut tokenized = String::new();
+
+    while let Some((_, token, _)) = tokenizer.advance() {
+        tokenized.push_str(token);
+        tokenized.push_str(delimiter);
+    }
+
+    tokenized
+}
 
 fn text_test_harness(filename: &str) -> (Preprocessor, PathBuf) {
-    const RELATIVE_PATH: &str = "src/scanner/preprocessor_tests";
+    const RELATIVE_PATH: &str = "src/scanner/preprocessor/preprocessor_tests";
     let working_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(RELATIVE_PATH);
     let file = working_dir.clone().join(filename);
     let contents = fs::read_to_string(&file).expect("filename in test should be valid");

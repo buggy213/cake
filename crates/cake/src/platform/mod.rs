@@ -23,10 +23,14 @@ impl Platform {
     // first look in working directory, then in normal_header_paths
     // to match gcc/clang behavior, these would be system paths like /usr/include as well as
     // any additional include paths specified using -I
-    pub(crate) fn resolve_normal_include_path(&self, normal: &str) -> Option<PathBuf> {
-        let working_dir_path = self.working_dir.join(normal);
-        if Path::exists(&working_dir_path) {
-            return Some(working_dir_path);
+    pub(crate) fn resolve_normal_include_path(
+        &self,
+        normal: &str,
+        current_directory: PathBuf,
+    ) -> Option<PathBuf> {
+        let current_dir_path = current_directory.join(normal);
+        if Path::exists(&current_dir_path) {
+            return Some(current_dir_path);
         }
 
         for normal_path in &self.normal_header_paths {
