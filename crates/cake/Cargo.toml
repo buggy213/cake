@@ -22,4 +22,3 @@ glob = { workspace = true }
 convert_case = { workspace = true }
 cake-re = { path = "../cake-re" }
 anyhow = { workspace = true }
-lazy_static = { workspace = true }

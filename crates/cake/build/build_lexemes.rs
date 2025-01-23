@@ -1,6 +1,7 @@
 use std::{
     fs::{self},
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
 use anyhow::Context;
@@ -8,7 +9,6 @@ use cake_re::lexeme_def::parse_lexeme_def;
 use cake_re::lexeme_def::LexemeSetDef;
 use codegen::*;
 use glob::*;
-use lazy_static::lazy_static;
 
 // relative to root of crate
 const LEXEME_DIR: &str = "src/scanner/lexeme_sets";
@@ -16,21 +16,26 @@ const LEXEME_DIR: &str = "src/scanner/lexeme_sets";
 // relative to root of workspace
 const LEXEME_DIR_DEFS: &str = "data/lexeme_sets";
 
-lazy_static! {
-    static ref PACKAGE_ROOT: String =
-        std::env::var("CARGO_MANIFEST_DIR").expect("must use cargo as build system");
-    static ref WORKSPACE_ROOT: PathBuf = Path::new(PACKAGE_ROOT.as_str())
+static PACKAGE_ROOT: LazyLock<String> =
+    LazyLock::new(|| std::env::var("CARGO_MANIFEST_DIR").expect("must use cargo as build system"));
+static WORKSPACE_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
+    Path::new(PACKAGE_ROOT.as_str())
         .parent()
         .and_then(Path::parent)
         .expect("corrupted folder structure")
-        .to_path_buf();
-    static ref LEXEME_DIR_ABS: PathBuf = Path::new(PACKAGE_ROOT.as_str()).join(LEXEME_DIR);
-    static ref LEXEME_DIR_DEF_ABS: PathBuf = WORKSPACE_ROOT.join(LEXEME_DIR_DEFS);
-    static ref LEXEME_DIR_DEF_STR: String = LEXEME_DIR_DEF_ABS
+        .to_path_buf()
+});
+
+static LEXEME_DIR_ABS: LazyLock<PathBuf> =
+    LazyLock::new(|| Path::new(PACKAGE_ROOT.as_str()).join(LEXEME_DIR));
+static LEXEME_DIR_DEF_ABS: LazyLock<PathBuf> =
+    LazyLock::new(|| WORKSPACE_ROOT.join(LEXEME_DIR_DEFS));
+static LEXEME_DIR_DEF_STR: LazyLock<String> = LazyLock::new(|| {
+    LEXEME_DIR_DEF_ABS
         .to_str()
         .expect("path to package contains non-UTF8 characters, which cargo does not like")
-        .to_string();
-}
+        .to_string()
+});
 
 pub fn parse_lexeme_defs() -> Result<Vec<LexemeSetDef>, anyhow::Error> {
     println!("cargo:rerun-if-changed={}", *LEXEME_DIR_DEF_STR);
