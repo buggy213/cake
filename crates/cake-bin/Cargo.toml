@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-petgraph = "0.6.4"
+petgraph = { workspace = true }
 cake = { path = "../cake" }
 cake-re = { path = "../cake-re" }
-clap = { version = "4.5.16", features = ["derive"] }
+clap = { workspace = true, features = ["derive"] }
