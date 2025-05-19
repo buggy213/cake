@@ -23,9 +23,8 @@
 // | '-' <char>
 // | '\' <char>
 
-use std::collections::VecDeque;
-
 use cake_util::RangeUInt;
+use std::iter::Peekable;
 use thiserror::Error;
 
 use crate::AsciiChar;
@@ -49,27 +48,32 @@ pub(super) struct RegexClass {
 }
 
 #[derive(Debug)]
-enum ClassItem<A: Eq> {
-    Char(A),
-    RangeEnd(A),
+enum ClassItem {
+    Char(AsciiChar),
+    RangeEnd(AsciiChar),
 }
 
 #[derive(Debug, Error)]
 pub(super) enum RegexError {
     #[error("Malformed regex")]
     Malformed,
+    #[error("Regex over non-ASCII characters is not supported")]
+    NotAscii
 }
 
 // basic recursive descent parsing
 impl Regex {
-    fn parse_regex(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex, RegexError> {
+    fn parse_regex<I>(tokens: &mut Peekable<I>) -> Result<Regex, RegexError>
+        where I: Iterator<Item = AsciiChar>
+    {
         let term = Self::parse_term(tokens)?;
         let mut alternates: Vec<Regex> = Vec::new();
-        while tokens.front().is_some_and(|x| *x == b'|') {
-            tokens.pop_front();
+        while tokens.peek().is_some_and(|x| *x == b'|') {
+            _ = tokens.next();
             let alternate = Self::parse_term(tokens)?;
             alternates.push(alternate);
         }
+
         if alternates.is_empty() {
             Ok(term)
         } else {
@@ -78,40 +82,44 @@ impl Regex {
         }
     }
 
-    fn parse_term(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex, RegexError> {
+    fn parse_term<I>(tokens: &mut Peekable<I>) -> Result<Regex, RegexError>
+        where I: Iterator<Item = AsciiChar>
+    {
         let mut factors: Vec<Regex> = Vec::new();
-        while tokens.front().is_some_and(|x| *x != b'|' && *x != b')') {
+        while tokens.peek().is_some_and(|x| *x != b'|' && *x != b')') {
             let factor = Self::parse_factor(tokens)?;
             factors.push(factor);
         }
 
-        assert!(factors.len() != 0);
+        // Factors should always be nonempty
+        assert_ne!(factors.len(), 0);
 
         if factors.len() == 1 {
-            Ok(factors.remove(0))
+            Ok(factors.pop().expect("Must be nonempty"))
         } else {
             Ok(Regex::Concatenation(factors))
         }
     }
 
-    fn parse_count(tokens: &mut VecDeque<AsciiChar>) -> Result<(RangeUInt, RangeUInt), RegexError> {
+    fn parse_count<I>(tokens: &mut Peekable<I>) -> Result<(RangeUInt, RangeUInt), RegexError>
+        where I: Iterator<Item = AsciiChar>
+    {
         let mut count_string = String::new();
         let mut found_right = false;
-        while let Some(x) = tokens.pop_front() {
-            count_string.push(char::from_u32(x as u32).expect("should be valid ascii"));
+        while let Some(x) = tokens.next() {
+            if x == b'{' {
+                continue;
+            }
             if x == b'}' {
                 found_right = true;
                 break;
             }
+            count_string.push(char::from_u32(x as u32).expect("should be valid ascii"));
         }
 
         if !found_right {
             return Err(RegexError::Malformed);
         }
-
-        // remove parentheses
-        count_string.remove(0);
-        count_string.pop();
 
         let parse_str = |x: &str| {
             let x = x.parse::<u32>();
@@ -127,6 +135,7 @@ impl Regex {
             let mut it = count_string.split(',');
             let first = it.next().ok_or(RegexError::Malformed)?;
             let second = it.next().ok_or(RegexError::Malformed)?;
+            if let Some(_) = it.next() { return Err(RegexError::Malformed); }
 
             let first = parse_str(first)?;
             low_count = RangeUInt::Finite(first);
@@ -157,31 +166,35 @@ impl Regex {
         }
     }
 
-    fn parse_factor(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex, RegexError> {
+    fn parse_factor<I>(tokens: &mut Peekable<I>) -> Result<Regex, RegexError>
+        where I: Iterator<Item = AsciiChar>
+    {
         let base = Self::parse_base(tokens)?;
         let mut range_low = RangeUInt::Finite(1);
         let mut range_high = RangeUInt::Finite(1);
-        while let Some(x) = tokens.front() {
+
+        if let Some(x) = tokens.peek() {
             match x {
                 b'*' => {
                     range_low = RangeUInt::Finite(0);
                     range_high = RangeUInt::Infinite;
-                    tokens.pop_front();
+                    _ = tokens.next();
                 }
                 b'+' => {
                     range_high = RangeUInt::Infinite;
-                    tokens.pop_front();
+                    _ = tokens.next();
                 }
                 b'?' => {
                     range_low = RangeUInt::Finite(0);
-                    tokens.pop_front();
+                    _ = tokens.next();
                 }
                 b'{' => {
                     let (low, high) = Self::parse_count(tokens)?;
-                    range_low = range_low * low;
-                    range_high = range_high * high;
+                    range_low = low;
+                    range_high = high;
                 }
-                _ => break,
+
+                _ => ()
             }
         }
 
@@ -227,11 +240,13 @@ impl Regex {
         factor
     }
 
-    fn parse_class(tokens: &mut VecDeque<AsciiChar>) -> Result<RegexClass, RegexError> {
+    fn parse_class<I>(tokens: &mut Peekable<I>) -> Result<RegexClass, RegexError>
+        where I: Iterator<Item = AsciiChar>
+    {
         let negated;
-        if let Some(x) = tokens.front() {
+        if let Some(x) = tokens.peek() {
             if *x == b'^' {
-                tokens.pop_front();
+                _ = tokens.next();
                 negated = true;
             } else {
                 negated = false;
@@ -240,8 +255,8 @@ impl Regex {
             negated = false;
         }
 
-        let mut class_items: Vec<ClassItem<AsciiChar>> = Vec::new();
-        while let Some(x) = tokens.front() {
+        let mut class_items: Vec<ClassItem> = Vec::new();
+        while let Some(x) = tokens.peek() {
             if *x == b']' {
                 break;
             }
@@ -250,7 +265,6 @@ impl Regex {
             class_items.push(class_item);
         }
 
-        // println!("{:?}", class_items);
         let mut characters: Vec<AsciiChar> = Vec::new();
         let mut ranges: Vec<(AsciiChar, AsciiChar)> = Vec::new();
         let mut i: i32 = (class_items.len() - 1) as i32;
@@ -295,41 +309,44 @@ impl Regex {
         }
     }
 
-    fn parse_class_item(
-        tokens: &mut VecDeque<AsciiChar>,
-    ) -> Result<ClassItem<AsciiChar>, RegexError> {
-        match tokens.pop_front().ok_or(RegexError::Malformed)? {
+    fn parse_class_item<I>(
+        tokens: &mut Peekable<I>,
+    ) -> Result<ClassItem, RegexError>
+        where I: Iterator<Item = AsciiChar>
+    {
+        match tokens.next().ok_or(RegexError::Malformed)? {
             b'\\' => {
-                let code = tokens.pop_front().ok_or(RegexError::Malformed)?;
+                let code = tokens.next().ok_or(RegexError::Malformed)?;
                 let escaped = Self::escape_codes(code);
                 Ok(ClassItem::Char(escaped))
             }
             b'-' => {
-                let range_end = tokens.pop_front().ok_or(RegexError::Malformed)?;
+                let range_end = tokens.next().ok_or(RegexError::Malformed)?;
                 Ok(ClassItem::RangeEnd(range_end))
             }
             x => Ok(ClassItem::Char(x)),
         }
     }
 
-    fn parse_base(tokens: &mut VecDeque<AsciiChar>) -> Result<Regex, RegexError> {
-        let front = tokens.pop_front().ok_or(RegexError::Malformed)?;
+    fn parse_base<I>(tokens: &mut Peekable<I>) -> Result<Regex, RegexError>
+        where I: Iterator<Item = AsciiChar>
+    {
+        let front = tokens.next().ok_or(RegexError::Malformed)?;
         if front == b'\\' {
-            // funny name for backslash
             // escape next character
-            let code = tokens.pop_front().ok_or(RegexError::Malformed)?;
+            let code = tokens.next().ok_or(RegexError::Malformed)?;
             let escaped = Self::escape_codes(code);
             Ok(Regex::Char(escaped))
         } else if front == b'(' {
             let parenthesized_regex = Self::parse_regex(tokens)?;
-            if tokens.pop_front().is_some_and(|x| x == b')') {
+            if tokens.next().is_some_and(|x| x == b')') {
                 Ok(parenthesized_regex)
             } else {
                 Err(RegexError::Malformed)
             }
         } else if front == b'[' {
             let class = Self::parse_class(tokens)?;
-            if tokens.pop_front().is_some_and(|x| x == b']') {
+            if tokens.next().is_some_and(|x| x == b']') {
                 Ok(Regex::Class(class))
             } else {
                 Err(RegexError::Malformed)
@@ -348,8 +365,11 @@ impl Regex {
     }
 
     pub(super) fn from_str(re_str: &str) -> Result<Regex, RegexError> {
-        assert!(re_str.is_ascii());
-        let mut tokens: VecDeque<AsciiChar> = re_str.as_bytes().iter().map(|x| *x).collect();
+        if !re_str.is_ascii() {
+            return Err(RegexError::NotAscii);
+        }
+
+        let mut tokens = re_str.as_bytes().iter().cloned().peekable();
         let re = Self::parse_regex(&mut tokens)?;
         if tokens.len() > 0 {
             Err(RegexError::Malformed)

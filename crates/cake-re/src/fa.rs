@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_binary::binary_stream::Endian;
 
 // pointer-based graphs in safe rust are somewhat tricky, so just do indices to keep things simple
+// None represents epsilon-move
 #[derive(Debug, Clone)]
 struct FANode {
     transitions: Vec<(Option<AsciiChar>, usize)>,
@@ -60,12 +61,13 @@ impl FA {
                     .into_iter()
                     .map(|x| Self::recursive_helper(x, nodes))
                     .collect();
-                let start_ptr = heads_tails.first().unwrap().0;
-                let end_ptr = heads_tails.last().unwrap().1;
+                let start_ptr = heads_tails.first().expect("Factors must be nonempty").0;
+                let end_ptr = heads_tails.last().expect("Factors must be nonempty").1;
 
                 for i in 0..heads_tails.len() - 1 {
+                    let this_tail = heads_tails[i].1;
                     let next_head = heads_tails[i + 1].0;
-                    nodes[heads_tails[i].1].transitions.push((None, next_head))
+                    nodes[this_tail].transitions.push((None, next_head))
                 }
 
                 (start_ptr, end_ptr)
@@ -158,6 +160,7 @@ impl FA {
 
     // creates a NFA from a regex using Thompson's Construction
     // guaranteed to only have one accept state
+    #[allow(dead_code)] // used in tests
     pub(super) fn nfa_from_re(re: &Regex) -> FA {
         let mut nodes: Vec<FANode> = Vec::new();
 
@@ -253,7 +256,7 @@ impl FA {
                                 .map(|x| nfa_actions[x])
                                 .filter(|x| *x != -1)
                                 .min()
-                                .expect("t should be nonempty");
+                                .expect("t should contain accepting state");
                             actions_dfa.push(dfa_action);
                         }
                     } else {

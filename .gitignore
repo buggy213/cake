@@ -1,2 +1,5 @@
 target
+
+# editor
 .vscode
+.idea
