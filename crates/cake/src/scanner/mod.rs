@@ -18,7 +18,7 @@ pub mod table_scanner;
 pub trait TokenStream<T: LexemeSet> {
     fn eat(&mut self, lexeme: T) -> bool;
     fn peek(&mut self) -> Option<(T, &str, usize)>;
-    fn peekn(&mut self, n: usize) -> Option<(T, &str, usize)>;
+    fn peek_n(&mut self, n: usize) -> Option<(T, &str, usize)>;
     fn advance(&mut self) -> Option<(T, &str, usize)>;
 
     fn rollback(&mut self, target: usize);
@@ -99,6 +99,11 @@ where
         self.buffer.front().copied()
     }
 
+    fn peek_n(&mut self, n: usize) -> Option<(T, &str, usize)> {
+        self.refill_buffer_to_size(n + 1);
+        self.buffer.get(n).copied()
+    }
+
     fn advance(&mut self) -> Option<(T, &str, usize)> {
         self.refill_buffer();
         let old_memo = self.buffer.pop_front();
@@ -112,11 +117,6 @@ where
 
     fn get_location(&self) -> usize {
         self.cursor
-    }
-
-    fn peekn(&mut self, n: usize) -> Option<(T, &str, usize)> {
-        self.refill_buffer_to_size(n + 1);
-        self.buffer.get(n).copied()
     }
 }
 

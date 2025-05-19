@@ -1470,7 +1470,7 @@ impl<'a> TokenStream<CLexemes> for FixedTokens<'a> {
         Some((*lexeme, text, 0))
     }
 
-    fn peekn(&mut self, n: usize) -> Option<(CLexemes, &str, usize)> {
+    fn peek_n(&mut self, n: usize) -> Option<(CLexemes, &str, usize)> {
         if self.cursor + n >= self.buffer.len() {
             return None;
         }
@@ -1517,7 +1517,7 @@ impl TokenStream<CLexemes> for Preprocessor {
         Some((front.token(), front.text(self), 0))
     }
 
-    fn peekn(&mut self, n: usize) -> Option<(CLexemes, &str, usize)> {
+    fn peek_n(&mut self, n: usize) -> Option<(CLexemes, &str, usize)> {
         if !self.fill_buffer(n) {
             return None;
         }

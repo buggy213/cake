@@ -19,63 +19,9 @@ use crate::{
     },
 };
 
-use super::ast::{ASTNode, Declaration, ExpressionNode, Identifier};
+use super::ast::{ASTExpressionNode, ASTNode, Declaration, ExpressionNode, Identifier};
 
 type CTokenStream<'a> = crate::scanner::RawTokenStream<'a, CLexemes>;
-
-// can explicitly materialize parse tree for debugging purposes, though not required
-#[cfg(debug_assertions)]
-enum DebugParseNode {
-    EnumSpecifier(usize, usize),
-    StructSpecifier(usize, usize),
-    UnionSpecifier(usize, usize),
-}
-
-#[cfg(debug_assertions)]
-// start / end are describe position of the text corresponding to this parse node,
-// variant is the enum variant for this parse node
-// non-leaf parse nodes must be tuple structs (Box<ParseNode>, usize, usize) or (Vec<ParseNode>, usize, usize)
-// leaf parse nodes must be tuple structs of (usize, usize)
-macro_rules! materialize_debug_parse_node {
-    // child count must be tt for it to be matched correctly by sub-macro
-    ($start:expr, $end:expr, $variant:expr, $child_count:tt, $node_vec:expr) => {{
-        // generates either a Box or Vec
-        let parse_node_children = materialize_debug_parse_node! {
-            @MATERIALIZE_CHILDREN,
-            $child_count,
-            $node_vec
-        };
-        let parse_node = $variant(parse_node_children, $start, $end);
-        $node_vec.push_back(parse_node);
-    }};
-
-    ($start:expr, $end:expr, $variant:expr, $node_vec:expr) => {{
-        // generates either a Box or Vec
-        let parse_node = $variant($start, $end);
-        $node_vec.push_back(parse_node);
-    }};
-
-    (@MATERIALIZE_CHILDREN, 1, $node_vec:expr) => {
-        Box::new(
-            $node_vec
-                .pop_back()
-                .expect("Expected at least one element in parse stack"),
-        )
-    };
-
-    (@MATERIALIZE_CHILDREN, $n:literal, $node_vec:expr) => {{
-        let mut children = Vec::with_capacity($n);
-        for _ in 0..$n {
-            children.push(
-                $node_vec
-                    .pop_back()
-                    .expect("Expected at least $n elements in the vector"),
-            );
-        }
-        children.reverse(); // Reverse to maintain the original order
-        children
-    }};
-}
 
 macro_rules! eat_or_error {
     ($toks:expr, $tok:path) => {
@@ -170,9 +116,6 @@ pub(crate) struct ParserState {
     current_scope: Scope,
     types: Vec<CanonicalType>,
     typedefs: Vec<HashMap<String, QualifiedType>>,
-
-    #[cfg(debug_assertions)]
-    parse_tree_stack: VecDeque<DebugParseNode>,
 }
 
 impl ParserState {
@@ -183,9 +126,6 @@ impl ParserState {
             current_scope: file_scope,
             types: Vec::new(),
             typedefs: vec![Default::default()],
-
-            #[cfg(debug_assertions)]
-            parse_tree_stack: VecDeque::new(),
         }
     }
 
@@ -1921,10 +1861,6 @@ fn parse_enum_specifier(
     */
 
     let end = toks.get_location();
-    #[cfg(debug_assertions)]
-    state
-        .parse_tree_stack
-        .push_back(DebugParseNode::EnumSpecifier(start, end));
     Ok(enum_type_idx)
 }
 
@@ -2044,7 +1980,7 @@ fn parse_declarator_base(
             Some((CLexemes::LParen, _, _)) => {
                 // problem: in abstract declarator, identifer is omitted, so this might be grouping paren
                 // or a function. need lookahead to determine which
-                match toks.peekn(1) {
+                match toks.peek_n(1) {
                     Some((CLexemes::Star, _, _))
                     | Some((CLexemes::LParen, _, _))
                     | Some((CLexemes::LBracket, _, _)) => {
@@ -2503,7 +2439,7 @@ fn is_lookahead_label(toks: &mut impl TokenStream<CLexemes>, _state: &mut Parser
                 CLexemes::Identifier => {
                     // only other place colon appears in grammar is for ternaries
                     // which should get completely parsed by parse_expr
-                    if let Some((CLexemes::Colon, _, _)) = toks.peekn(1) {
+                    if let Some((CLexemes::Colon, _, _)) = toks.peek_n(1) {
                         true
                     } else {
                         false
@@ -2558,7 +2494,7 @@ fn parse_labeled_statement(
             eat_or_error!(toks, CLexemes::Colon)?;
             let case_body = parse_statement(toks, state)?;
 
-            let case_node = ASTNode::CaseLabel(Box::new(case_body), Box::new(case));
+            let case_node = ASTNode::CaseLabel(Box::new(case_body), Box::new(ASTExpressionNode::Untyped(case)));
 
             Ok(case_node)
         }
@@ -2625,7 +2561,7 @@ fn parse_expression_statement(
             let expr = parse_expr(toks, state)?;
             eat_or_error!(toks, CLexemes::Semicolon)?;
             Ok(ASTNode::ExpressionStatement(
-                Box::new(expr),
+                Box::new(ASTExpressionNode::Untyped(expr)),
                 state.current_scope,
             ))
         }
@@ -2650,14 +2586,14 @@ fn parse_selection_statement(
                     toks.eat(CLexemes::Else);
                     let else_body = parse_statement(toks, state)?;
                     ASTNode::IfStatement(
-                        Box::new(condition),
+                        Box::new(ASTExpressionNode::Untyped(condition)),
                         Box::new(body),
                         Some(Box::new(else_body)),
                         state.current_scope,
                     )
                 }
                 Some((_, _, _)) => ASTNode::IfStatement(
-                    Box::new(condition),
+                    Box::new(ASTExpressionNode::Untyped(condition)),
                     Box::new(body),
                     None,
                     state.current_scope,
@@ -2676,7 +2612,7 @@ fn parse_selection_statement(
             eat_or_error!(toks, CLexemes::RParen)?;
             let body = parse_statement(toks, state)?;
             let switch_node = ASTNode::SwitchStatement(
-                Box::new(switch_expr),
+                Box::new(ASTExpressionNode::Untyped(switch_expr)),
                 Box::new(body),
                 state.current_scope,
             );
@@ -2704,7 +2640,7 @@ fn parse_iteration_statement(
             eat_or_error!(toks, CLexemes::RParen)?;
             let statement = parse_statement(toks, state)?;
             let while_statement =
-                ASTNode::WhileStatement(Box::new(expr), Box::new(statement), state.current_scope);
+                ASTNode::WhileStatement(Box::new(ASTExpressionNode::Untyped(expr)), Box::new(statement), state.current_scope);
             Ok(while_statement)
         }
         Some((CLexemes::Do, _, _)) => {
@@ -2716,7 +2652,7 @@ fn parse_iteration_statement(
             eat_or_error!(toks, CLexemes::RParen)?;
             eat_or_error!(toks, CLexemes::Semicolon)?;
             let do_while_statement =
-                ASTNode::DoWhileStatement(Box::new(expr), Box::new(statement), state.current_scope);
+                ASTNode::DoWhileStatement(Box::new(ASTExpressionNode::Untyped(expr)), Box::new(statement), state.current_scope);
             Ok(do_while_statement)
         }
         Some((CLexemes::For, _, _)) => {
@@ -2736,7 +2672,7 @@ fn parse_iteration_statement(
                     Some((_, _, _)) => {
                         let expr = parse_expr(toks, state)?;
                         Some(ASTNode::ExpressionStatement(
-                            Box::new(expr),
+                            Box::new(ASTExpressionNode::Untyped(expr)),
                             state.current_scope,
                         ))
                     }
@@ -2760,8 +2696,8 @@ fn parse_iteration_statement(
             let loop_body = parse_statement(toks, state)?;
             let for_node = ASTNode::ForStatement(
                 first_clause.map(Box::new),
-                second_clause.map(Box::new),
-                third_clause.map(Box::new),
+                second_clause.map(ASTExpressionNode::Untyped).map(Box::new),
+                third_clause.map(ASTExpressionNode::Untyped).map(Box::new),
                 Box::new(loop_body),
                 state.current_scope,
             );
@@ -2810,7 +2746,8 @@ fn parse_jump_statement(
                 Some((_, _, _)) => {
                     let expr = parse_expr(toks, state)?;
                     eat_or_error!(toks, CLexemes::Semicolon)?;
-                    Ok(ASTNode::ReturnStatement(Some(Box::new(expr))))
+                    let expr = Box::new(ASTExpressionNode::Untyped(expr));
+                    Ok(ASTNode::ReturnStatement(Some(expr)))
                 }
                 None => Err(ParseError::UnexpectedEOF),
             }

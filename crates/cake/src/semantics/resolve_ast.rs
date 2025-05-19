@@ -3,7 +3,7 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use crate::{
-    parser::ast::{ASTNode, Constant, Declaration, ExpressionNode},
+    parser::ast::{ASTExpressionNode, ASTNode, Constant, Declaration, ExpressionNode},
     semantics::{
         symtab::{ScopeType, StorageClass, Symbol, TypeIdx},
         types::{CType, CanonicalType, TypeQualifier},
@@ -54,6 +54,7 @@ enum ASTResolveError {
 
 struct SwitchStatement {
     enclosing_switch: Option<usize>,
+    value_type: BasicType, // type of controlling expression, case values are promoted to it
     case_values: Vec<Constant>,
     has_default: bool,
 }
@@ -64,9 +65,10 @@ struct ResolverState {
 }
 
 impl ResolverState {
-    fn add_switch(&mut self) {
+    fn add_switch(&mut self, value_type: BasicType) {
         let new_switch = SwitchStatement {
             enclosing_switch: self.current_switch_statement,
+            value_type,
             case_values: Default::default(),
             has_default: false,
         };
@@ -99,7 +101,7 @@ impl ResolverState {
 
 /// 1. resolve declarations (place values into symbol table and enforce rules about redeclaration)
 /// 2. resolve identifiers (i.e. check that there is a corresponding definition)
-///    - todo: consider using numeric indices rather than string-based hashtable lookup for everything
+///    - TODO: consider using numeric indices rather than string-based hashtable lookup for everything
 /// 3. perform type checking for expressions
 /// 4. evaluate compile time constants
 /// goal: by the end of `resolve_ast`, the code is guaranteed to be free of compilation (though maybe not link-time) errors
@@ -137,17 +139,30 @@ pub fn resolve_ast(
             }
         }
         ASTNode::CaseLabel(labelee, case_value) => {
-            let value = resolve_integer_constant_expression(symtab, case_value)?;
-            let replacement_node = Box::new(ExpressionNode::Constant(value));
-            let _ = std::mem::replace(case_value, replacement_node);
-
-            match resolve_state.current_switch_mut() {
-                Some(SwitchStatement { case_values, .. }) => {
-                    case_values.push(value);
-                }
+            let current_switch = match resolve_state.current_switch_mut() {
+                Some(switch) => switch,
                 None => return Err(ASTResolveError::UnexpectedCaseLabel),
-            }
+            };
 
+            let value_type = current_switch.value_type;
+            let value_expr: &ExpressionNode = match &(**case_value) {
+                ASTExpressionNode::Typed(expression_node, ctype) => {
+                    eprintln!("warn: case value already typed prior to resolve stage");
+                    expression_node
+                }
+                ASTExpressionNode::Untyped(expression_node) => expression_node,
+            };
+
+            let value = resolve_integer_constant_expression(symtab, value_expr)?;
+
+            let replacement_node = Box::new(ASTExpressionNode::Typed(
+                ExpressionNode::Constant(value),
+                CType::BasicType {
+                    basic_type: value_type,
+                },
+            ));
+            let _ = std::mem::replace(case_value, replacement_node);
+            current_switch.case_values.push(value);
             Ok(())
         }
         ASTNode::DefaultLabel(_) => match resolve_state.current_switch_mut() {
@@ -166,14 +181,14 @@ pub fn resolve_ast(
 
             Ok(())
         }
-        ASTNode::ExpressionStatement(_, _) => todo!(),
+        ASTNode::ExpressionStatement(expr, _scope) => {
+            // resolve_expr(expr);
+            todo!()
+        }
         ASTNode::NullStatement => Ok(()),
         ASTNode::IfStatement(_, _, _, _) => todo!(),
         ASTNode::SwitchStatement(controlling_expr, body, _) => {
-            resolve_state.add_switch();
             todo!();
-            resolve_state.close_switch();
-            todo!()
         }
         ASTNode::WhileStatement(_, _, _) => todo!(),
         ASTNode::DoWhileStatement(_, _, _) => todo!(),
@@ -241,7 +256,7 @@ fn resolve_function_definition(
         }
     }
 
-    todo!()
+    Ok(())
 }
 
 fn resolve_external_declaration() {}
@@ -267,10 +282,23 @@ fn resolve_declaration(
             // symbol is already declared
             return Err(ASTResolveError::SymbolRedeclaration);
         }
-        None => {}
+        None => {
+            let symbol = match declaration_type_category {
+                TypeCategory::Object => {
+                    todo!()
+                }
+                TypeCategory::Function => todo!(),
+                TypeCategory::Incomplete => todo!(),
+            };
+            symtab.add_symbol(
+                declaration.name.scope,
+                declaration.name.name.clone(),
+                symbol,
+            );
+        }
     }
 
-    todo!()
+    Ok(())
 }
 
 enum TypeCategory {

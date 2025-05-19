@@ -201,11 +201,11 @@ fn test_parse_hello_world() {
                     let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
                     let printf_expr =
                         ExpressionNode::FunctionCall(Box::new(printf_ident), vec![printf_arg]);
-                    ASTNode::ExpressionStatement(Box::new(printf_expr), dummy_state.current_scope)
+                    ASTNode::ExpressionStatement(Box::new(ASTExpressionNode::Untyped(printf_expr)), dummy_state.current_scope)
                 };
                 let return_stmt = {
                     let zero = ExpressionNode::Constant(Constant::Int(0));
-                    ASTNode::ReturnStatement(Some(Box::new(zero)))
+                    ASTNode::ReturnStatement(Some(Box::new(ASTExpressionNode::Untyped(zero))))
                 };
                 dummy_state.close_scope().unwrap();
                 ASTNode::CompoundStatement(vec![printf, return_stmt], dummy_state.current_scope)

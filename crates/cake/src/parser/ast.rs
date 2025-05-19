@@ -15,25 +15,25 @@ pub(crate) enum ASTNode {
     Declaration(Vec<Declaration>), // identifier + (optional) initializer
 
     Label(Rc<ASTNode>, Identifier), // both symbol table and label node will have reference to labeled stmt
-    CaseLabel(Box<ASTNode>, Box<ExpressionNode>),
+    CaseLabel(Box<ASTNode>, Box<ASTExpressionNode>),
     DefaultLabel(Box<ASTNode>),
 
     CompoundStatement(Vec<ASTNode>, Scope),
-    ExpressionStatement(Box<ExpressionNode>, Scope),
+    ExpressionStatement(Box<ASTExpressionNode>, Scope),
     NullStatement,
     IfStatement(
-        Box<ExpressionNode>,
+        Box<ASTExpressionNode>,
         Box<ASTNode>,
         Option<Box<ASTNode>>,
         Scope,
     ),
-    SwitchStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
-    WhileStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
-    DoWhileStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
+    SwitchStatement(Box<ASTExpressionNode>, Box<ASTNode>, Scope),
+    WhileStatement(Box<ASTExpressionNode>, Box<ASTNode>, Scope),
+    DoWhileStatement(Box<ASTExpressionNode>, Box<ASTNode>, Scope),
     ForStatement(
         Option<Box<ASTNode>>,
-        Option<Box<ExpressionNode>>,
-        Option<Box<ExpressionNode>>,
+        Option<Box<ASTExpressionNode>>,
+        Option<Box<ASTExpressionNode>>,
         Box<ASTNode>,
         Scope,
     ),
@@ -41,7 +41,7 @@ pub(crate) enum ASTNode {
     GotoStatement(Identifier),
     ContinueStatement,
     BreakStatement,
-    ReturnStatement(Option<Box<ExpressionNode>>),
+    ReturnStatement(Option<Box<ASTExpressionNode>>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -101,73 +101,10 @@ pub(crate) enum Constant {
     // enums have type int (6.4.4.3)
 }
 
-#[derive(Clone, PartialEq, Debug)]
-pub(crate) enum TypedExpressionNode {
-    CommaExpr(Vec<TypedExpressionNode>, CType),
-
-    SimpleAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    MultiplyAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    DivideAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    ModuloAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    AddAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    SubAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    LShiftAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    RShiftAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    AndAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    XorAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    OrAssign(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-
-    Ternary(
-        Box<TypedExpressionNode>,
-        Box<TypedExpressionNode>,
-        Box<TypedExpressionNode>,
-        CType,
-    ),
-
-    LogicalAnd(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    LogicalOr(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    BitwiseAnd(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    BitwiseOr(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    BitwiseXor(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-
-    Equal(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    NotEqual(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-
-    LessThan(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    GreaterThan(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    LessThanOrEqual(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    GreaterThanOrEqual(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-
-    LShift(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    RShift(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    Multiply(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    Divide(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    Modulo(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    Add(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    Subtract(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    Cast(Box<TypedExpressionNode>, QualifiedType),
-
-    PreIncrement(Box<TypedExpressionNode>, CType),
-    PreDecrement(Box<TypedExpressionNode>, CType),
-    Sizeof(Box<TypedExpressionNode>, CType),
-    AddressOf(Box<TypedExpressionNode>, CType),
-    Dereference(Box<TypedExpressionNode>, CType),
-    UnaryPlus(Box<TypedExpressionNode>, CType),
-    UnaryMinus(Box<TypedExpressionNode>, CType),
-    BitwiseNot(Box<TypedExpressionNode>, CType),
-    Not(Box<TypedExpressionNode>, CType),
-
-    PostIncrement(Box<TypedExpressionNode>, CType),
-    PostDecrement(Box<TypedExpressionNode>, CType),
-    ArraySubscript(Box<TypedExpressionNode>, Box<TypedExpressionNode>, CType),
-    FunctionCall(Box<TypedExpressionNode>, Vec<TypedExpressionNode>, CType),
-    DotAccess(Box<TypedExpressionNode>, Identifier, CType),
-    ArrowAccess(Box<TypedExpressionNode>, Identifier, CType),
-    // TODO: add support for compound initializers
-    // CompoundInitializer
-    Identifier(Identifier, CType),
-    Constant(Constant, CType),
-    StringLiteral(String, CType),
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ASTExpressionNode {
+    Typed(ExpressionNode, CType),
+    Untyped(ExpressionNode),
 }
 
 #[derive(Clone, PartialEq, Debug)]
