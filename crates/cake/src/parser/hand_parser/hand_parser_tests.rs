@@ -181,7 +181,7 @@ fn test_parse_hello_world() {
                 }
             };
 
-            let fn_type = CanonicalType::FunctionType {
+            let fn_type = FunctionTypeInner {
                 parameter_types: vec![
                     (Some(String::from("argc")), argc_type),
                     (Some(String::from("argv")), argv_type),
@@ -192,6 +192,7 @@ fn test_parse_hello_world() {
                 prototype_scope: dummy_state.current_scope,
             };
 
+            let fn_type = CanonicalType::FunctionType(fn_type);
             let fn_type_idx = dummy_state.add_type(fn_type);
 
             let body = {
@@ -201,11 +202,11 @@ fn test_parse_hello_world() {
                     let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
                     let printf_expr =
                         ExpressionNode::FunctionCall(Box::new(printf_ident), vec![printf_arg]);
-                    ASTNode::ExpressionStatement(Box::new(ASTExpressionNode::Untyped(printf_expr)), dummy_state.current_scope)
+                    ASTNode::ExpressionStatement(Box::new(printf_expr), dummy_state.current_scope)
                 };
                 let return_stmt = {
                     let zero = ExpressionNode::Constant(Constant::Int(0));
-                    ASTNode::ReturnStatement(Some(Box::new(ASTExpressionNode::Untyped(zero))))
+                    ASTNode::ReturnStatement(Some(Box::new(zero)))
                 };
                 dummy_state.close_scope().unwrap();
                 ASTNode::CompoundStatement(vec![printf, return_stmt], dummy_state.current_scope)
@@ -239,7 +240,7 @@ fn test_parse_hello_world() {
     let translation_unit_parsed =
         parse_translation_unit(&mut toks, &mut state).expect("parse failed");
     assert_eq!(translation_unit, translation_unit_parsed);
-    assert_eq!(dummy_state.types, state.types);
+    assert_eq!(dummy_state.canonical_types, state.canonical_types);
 }
 
 #[test]
@@ -334,13 +335,14 @@ fn parse_abstract_type_test_2() {
     let abstract_type = {
         let fn_type_idx = {
             dummy_state.open_scope(ScopeType::FunctionScope);
-            let fn_type = CanonicalType::FunctionType {
+            let fn_type = FunctionTypeInner {
                 parameter_types: vec![],
                 return_type: Box::new(base_type),
                 function_specifier: FunctionSpecifier::None,
                 varargs: false,
                 prototype_scope: dummy_state.current_scope,
             };
+            let fn_type = CanonicalType::FunctionType(fn_type);
             dummy_state.close_scope().unwrap();
             dummy_state.add_type(fn_type)
         };
@@ -355,7 +357,7 @@ fn parse_abstract_type_test_2() {
     let (mut toks, mut state) = text_test_harness(&fn_abstract_type_str);
     let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
     assert_eq!(abstract_type, abstract_type_parsed);
-    assert_eq!(state.types, dummy_state.types);
+    assert_eq!(state.canonical_types, dummy_state.canonical_types);
 }
 
 #[test]
@@ -384,13 +386,14 @@ fn parse_abstract_type_test_3() {
                     }
                 };
                 dummy_state.open_scope(ScopeType::FunctionScope);
-                let anon_fn_type = CanonicalType::FunctionType {
+                let anon_fn_type = FunctionTypeInner {
                     parameter_types: vec![(None, uint_type)],
                     return_type: Box::new(base_type),
                     function_specifier: FunctionSpecifier::None,
                     varargs: true,
                     prototype_scope: dummy_state.current_scope,
                 };
+                let anon_fn_type = CanonicalType::FunctionType(anon_fn_type);
                 dummy_state.close_scope().unwrap();
                 let anon_fn_type_idx = dummy_state.add_type(anon_fn_type);
 
@@ -421,7 +424,7 @@ fn parse_abstract_type_test_3() {
     let (mut toks, mut state) = text_test_harness(&abstract_type_str);
     let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
     assert_eq!(abstract_type, abstract_type_parsed);
-    assert_eq!(state.types, dummy_state.types);
+    assert_eq!(state.canonical_types, dummy_state.canonical_types);
 }
 
 #[test]
@@ -451,7 +454,7 @@ fn parse_struct_declaration_incomplete() {
     )]);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
-    assert_eq!(state.types, dummy_state.types);
+    assert_eq!(state.canonical_types, dummy_state.canonical_types);
 }
 
 #[test]
@@ -496,7 +499,7 @@ fn parse_struct_declaration_anonymous() {
     )]);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
-    assert_eq!(state.types, dummy_state.types);
+    assert_eq!(state.canonical_types, dummy_state.canonical_types);
 }
 
 #[test]
@@ -541,7 +544,7 @@ fn parse_struct_declaration() {
     )]);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
-    assert_eq!(state.types, dummy_state.types);
+    assert_eq!(state.canonical_types, dummy_state.canonical_types);
 }
 
 // parser does not check for directly / indirectly recursive struct (which would have infinite size)
@@ -623,7 +626,7 @@ fn parse_struct_declaration_recursive() {
     )]);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
-    assert_eq!(state.types, dummy_state.types);
+    assert_eq!(state.canonical_types, dummy_state.canonical_types);
 }
 
 #[test]
@@ -678,4 +681,42 @@ fn parse_typedef_basic() {
 
     assert_eq!(typedef_parsed, ASTNode::Declaration(vec![int_ptr]));
     assert_eq!(declaration_parsed, ASTNode::Declaration(vec![iptr]));
+}
+
+#[test]
+fn parse_bad_switch() {
+    let bad_switch = r#"
+    switch (expr) {
+        case 1:
+        case 2:
+        case 3:
+    }
+    "#;
+
+    let dummy_state = ParserState::new();
+    let (mut toks, mut state) = text_test_harness(&bad_switch);
+    let res = parse_statement(&mut toks, &mut state);
+
+    eprintln!("{:?}", res);
+
+    assert!(res.is_err(), "Bad switch statement");
+}
+
+#[test]
+//
+fn function_typedef_constraint() {
+    let fn_typedef_constraint = r#"
+    typedef int F(void);         // type F is function with no parameters returning int
+    F f, g;                      // f and g both have type compatible with F
+    F f { /* ... */ }            // WRONG: syntax/constraint error
+    F g() { /* ... */ }          // WRONG: declares that g returns a function
+    int f(void) { /* ... */ }    // RIGHT: f has type compatible with F
+    int g() { /* ... */ }        // RIGHT: g has type compatible with F
+    F *e(void) { /* ... */ }     // e returns a pointer to a function
+    F *((e))(void) { /* ... */ } // same: parentheses irrelevant
+    int (*fp)(void);             // fp points to a function that has type F
+    F *Fp;                       // Fp points to a function that has type F
+    "#;
+
+    // todo!("write the test (maybe copilot can do it)")
 }

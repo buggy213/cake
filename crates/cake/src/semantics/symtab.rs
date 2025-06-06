@@ -6,9 +6,9 @@ use std::{
 
 use thiserror::Error;
 
-use crate::parser::ast::{ASTNode, Constant};
+use crate::parser::ast::{ASTNode, Constant, NodeRef};
 
-use super::types::{CanonicalType, QualifiedType};
+use super::types::{CType, CanonicalType, QualifiedType};
 
 // "function prototype scope" not included,
 // just ignore symbol table when processing a function prototype
@@ -53,60 +53,66 @@ pub(crate) enum StorageClass {
     None,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Linkage {
     External,
     Internal,
     None,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Symbol {
     Object {
-        symbol_type: QualifiedType,
-        storage_class: StorageClass,
+        object_type: TypeIdx,
         linkage: Linkage,
     },
     // used only for enumeration constants
     Constant(Constant),
     Function {
+        function_type: TypeIdx,
+
         // 2 types of linkage: internal and external
         // by default, functions have external linkage, i.e. the linker can see the function and use it to resolve function calls in other translation units
         // internal linkage means that the linker is not allowed to use a function definition to resolve calls in other translation units (i.e. it is local to the current translation unit)
-        // TODO: maybe implement inline function linkage rules (actual inlining optimization can be done using any function we have definition of)
+        // TODO: maybe implement inline function linkage rules (actual inlining optimization can be done using any function we have definition of in this translation unit)
         internal_linkage: bool,
         defined: bool,
     },
-    // only used for bookkeeping purposes
-    Typedef,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TypeIdx(pub(crate) usize);
-impl Index<TypeIdx> for Vec<CanonicalType> {
+pub(crate) struct CanonicalTypeIdx(pub(crate) usize);
+impl Index<CanonicalTypeIdx> for Vec<CanonicalType> {
     type Output = CanonicalType;
 
-    fn index(&self, index: TypeIdx) -> &Self::Output {
+    fn index(&self, index: CanonicalTypeIdx) -> &Self::Output {
         return &self[index.0];
     }
 }
-impl IndexMut<TypeIdx> for Vec<CanonicalType> {
-    fn index_mut(&mut self, index: TypeIdx) -> &mut Self::Output {
+impl IndexMut<CanonicalTypeIdx> for Vec<CanonicalType> {
+    fn index_mut(&mut self, index: CanonicalTypeIdx) -> &mut Self::Output {
         return &mut self[index.0];
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TypeIdx(pub(crate) usize);
+
 // monolithic symbol table contains all symbols in program
 // in particular, every symbol has an associated identifier and type
 // will likely need to add storage / linkage / layout information as well
+#[derive(Debug, Default, PartialEq)]
 pub(crate) struct SymbolTable {
     // these are built during parse; types may need to be merged during resolve
     scopes: Vec<Scope>,
-    types: Vec<CanonicalType>,
 
     // these are built during resolve phase
     symbols: Vec<HashMap<String, Symbol>>,
-    labels: Vec<HashMap<String, Rc<ASTNode>>>,
-    tags: Vec<HashMap<String, TypeIdx>>,
+    labels: Vec<HashMap<String, NodeRef>>,
+    tags: Vec<HashMap<String, CanonicalTypeIdx>>,
+
+    types: Vec<QualifiedType>,
+    canonical_types: Vec<CanonicalType>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -120,20 +126,25 @@ pub(crate) enum SymtabError {
 }
 
 impl SymbolTable {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new_with_scopes(scopes: Vec<Scope>) -> Self {
+        let symbols = vec![HashMap::new(); scopes.len()];
+        let labels = vec![HashMap::new(); scopes.len()];
+        let tags = vec![HashMap::new(); scopes.len()];
         Self {
-            scopes: Vec::new(),
-            symbols: Vec::new(),
-            labels: Vec::new(),
-            tags: Vec::new(),
-            types: Vec::new(),
+            scopes,
+
+            symbols,
+            labels,
+            tags,
+
+            ..Default::default()
         }
     }
 
     // look in current scope and all parent scopes
     pub(crate) fn lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CanonicalType> {
         self.lookup_tag_type_idx(scope, tag)
-            .map(|idx| &self.types[idx])
+            .map(|idx| &self.canonical_types[idx])
     }
 
     pub(crate) fn lookup_tag_type_mut(
@@ -142,10 +153,10 @@ impl SymbolTable {
         tag: &str,
     ) -> Option<&mut CanonicalType> {
         self.lookup_tag_type_idx(scope, tag)
-            .map(|idx| &mut self.types[idx])
+            .map(|idx| &mut self.canonical_types[idx])
     }
 
-    pub(crate) fn lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<TypeIdx> {
+    pub(crate) fn lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<CanonicalTypeIdx> {
         let mut current_scope = scope;
         loop {
             match self.direct_lookup_tag_type_idx(current_scope, tag) {
@@ -161,7 +172,7 @@ impl SymbolTable {
     // only look in current scope
     pub(crate) fn direct_lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CanonicalType> {
         self.direct_lookup_tag_type_idx(scope, tag)
-            .map(|idx| &self.types[idx])
+            .map(|idx| &self.canonical_types[idx])
     }
 
     pub(crate) fn direct_lookup_tag_type_mut(
@@ -170,10 +181,14 @@ impl SymbolTable {
         tag: &str,
     ) -> Option<&mut CanonicalType> {
         self.direct_lookup_tag_type_idx(scope, tag)
-            .map(|idx| &mut self.types[idx])
+            .map(|idx| &mut self.canonical_types[idx])
     }
 
-    pub(crate) fn direct_lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<TypeIdx> {
+    pub(crate) fn direct_lookup_tag_type_idx(
+        &self,
+        scope: Scope,
+        tag: &str,
+    ) -> Option<CanonicalTypeIdx> {
         let direct_lookup = self.tags[scope.index].get(tag);
         direct_lookup.copied()
     }
@@ -203,9 +218,36 @@ impl SymbolTable {
         self.symbols[scope.index].get_mut(name)
     }
 
-    pub(crate) fn add_type(&mut self, ctype: CanonicalType) -> TypeIdx {
-        let type_idx = TypeIdx(self.types.len() - 1);
-        self.types.push(ctype);
+    pub(crate) fn lookup_label(&self, scope: Scope, name: &str) -> Option<NodeRef> {
+        let mut scope = scope;
+        loop {
+            if scope.scope_type == ScopeType::FunctionScope {
+                break;
+            } else if let Some(parent) = scope.parent_scope {
+                scope = self.scopes[parent];
+            } else {
+                // maybe not unrecoverable, but grammar should 100% prevent this from happening
+                unreachable!("label statement declared with no function scope as ancestor (should be impossible)");
+            }
+        }
+
+        let fn_scope = &self.labels[scope.index];
+        fn_scope.get(name).copied()
+    }
+
+    pub(crate) fn all_symbols_at_scope(&self, scope: Scope) -> impl Iterator<Item = &Symbol> {
+        self.symbols[scope.index].values()
+    }
+
+    pub(crate) fn add_qualified_type(&mut self, qualified_type: QualifiedType) -> TypeIdx {
+        let type_idx = TypeIdx(self.types.len());
+        self.types.push(qualified_type);
+        type_idx
+    }
+
+    pub(crate) fn add_canonical_type(&mut self, canonical_type: CanonicalType) -> CanonicalTypeIdx {
+        let type_idx = CanonicalTypeIdx(self.canonical_types.len());
+        self.canonical_types.push(canonical_type);
         type_idx
     }
 
@@ -213,7 +255,7 @@ impl SymbolTable {
         &mut self,
         scope: Scope,
         name: String,
-        tag: TypeIdx,
+        tag: CanonicalTypeIdx,
     ) -> Result<(), SymtabError> {
         if self.tags[scope.index].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
@@ -241,7 +283,7 @@ impl SymbolTable {
         &mut self,
         scope: Scope,
         name: String,
-        labeled_statement: Rc<ASTNode>,
+        labeled_statement: NodeRef,
     ) -> Result<(), SymtabError> {
         // label names must be unique within a function
         // -> easiest is just to associate labels w/ function scopes.
@@ -266,12 +308,12 @@ impl SymbolTable {
         Ok(())
     }
 
-    pub(crate) fn get_type(&self, idx: TypeIdx) -> &CanonicalType {
-        &self.types[idx]
+    pub(crate) fn get_type(&self, idx: CanonicalTypeIdx) -> &CanonicalType {
+        &self.canonical_types[idx]
     }
 
-    pub(crate) fn get_type_mut(&mut self, idx: TypeIdx) -> &mut CanonicalType {
-        &mut self.types[idx]
+    pub(crate) fn get_type_mut(&mut self, idx: CanonicalTypeIdx) -> &mut CanonicalType {
+        &mut self.canonical_types[idx]
     }
 
     pub(crate) fn new_scope(&mut self, parent: Option<Scope>, scope_type: ScopeType) -> Scope {

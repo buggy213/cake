@@ -1,5 +1,3 @@
-//
-
 use std::rc::Rc;
 
 use crate::semantics::{
@@ -14,26 +12,26 @@ pub(crate) enum ASTNode {
     FunctionDefinition(Box<Declaration>, Box<ASTNode>),
     Declaration(Vec<Declaration>), // identifier + (optional) initializer
 
-    Label(Rc<ASTNode>, Identifier), // both symbol table and label node will have reference to labeled stmt
-    CaseLabel(Box<ASTNode>, Box<ASTExpressionNode>),
+    Label(Box<ASTNode>, Identifier), // both symbol table and label node will have reference to labeled stmt
+    CaseLabel(Box<ASTNode>, Box<ExpressionNode>),
     DefaultLabel(Box<ASTNode>),
 
     CompoundStatement(Vec<ASTNode>, Scope),
-    ExpressionStatement(Box<ASTExpressionNode>, Scope),
+    ExpressionStatement(Box<ExpressionNode>, Scope),
     NullStatement,
     IfStatement(
-        Box<ASTExpressionNode>,
+        Box<ExpressionNode>,
         Box<ASTNode>,
         Option<Box<ASTNode>>,
         Scope,
     ),
-    SwitchStatement(Box<ASTExpressionNode>, Box<ASTNode>, Scope),
-    WhileStatement(Box<ASTExpressionNode>, Box<ASTNode>, Scope),
-    DoWhileStatement(Box<ASTExpressionNode>, Box<ASTNode>, Scope),
+    SwitchStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
+    WhileStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
+    DoWhileStatement(Box<ExpressionNode>, Box<ASTNode>, Scope),
     ForStatement(
         Option<Box<ASTNode>>,
-        Option<Box<ASTExpressionNode>>,
-        Option<Box<ASTExpressionNode>>,
+        Option<Box<ExpressionNode>>,
+        Option<Box<ExpressionNode>>,
         Box<ASTNode>,
         Scope,
     ),
@@ -41,7 +39,7 @@ pub(crate) enum ASTNode {
     GotoStatement(Identifier),
     ContinueStatement,
     BreakStatement,
-    ReturnStatement(Option<Box<ASTExpressionNode>>),
+    ReturnStatement(Option<Box<ExpressionNode>>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -99,12 +97,6 @@ pub(crate) enum Constant {
     Float(f32),
     Double(f64),
     // enums have type int (6.4.4.3)
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ASTExpressionNode {
-    Typed(ExpressionNode, CType),
-    Untyped(ExpressionNode),
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -173,4 +165,175 @@ pub(crate) enum ExpressionNode {
     Identifier(Identifier),
     Constant(Constant),
     StringLiteral(String),
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub(crate) struct NodeRef(pub u32);
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub(crate) struct NodeRangeRef(pub u32, pub u32);
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub(crate) struct ExprRef(pub u32);
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub(crate) struct ContextRef(pub u32);
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub(crate) struct ExprRangeRef(pub u32, pub u32);
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum ResolvedASTNode {
+    TranslationUnit {
+        children: NodeRangeRef,
+        scope: Scope,
+    },
+    FunctionDefinition {
+        parent: NodeRef,
+        ident: Identifier,
+        body: NodeRef,
+    },
+
+    Label {
+        parent: NodeRef,
+        labelee: NodeRef,
+    },
+    CaseLabel {
+        parent: NodeRef,
+        labelee: NodeRef,
+        case_value: ExprRef,
+    },
+    DefaultLabel {
+        parent: NodeRef,
+        labelee: NodeRef,
+    },
+
+    NullStatement {
+        parent: NodeRef,
+    },
+    CompoundStatement {
+        parent: NodeRef,
+        stmts: NodeRangeRef,
+        scope: Scope,
+    },
+    ExpressionStatement {
+        parent: NodeRef,
+        expr: ExprRef,
+        scope: Scope,
+    },
+    IfStatement {
+        parent: NodeRef,
+        condition: ExprRef,
+        taken: NodeRef,
+        not_taken: Option<NodeRef>,
+        scope: Scope,
+    },
+    SwitchStatement {
+        parent: NodeRef,
+        controlling_expr: ExprRef,
+        body: NodeRef,
+        context: ContextRef,
+        scope: Scope,
+    },
+    WhileStatement {
+        parent: NodeRef,
+        condition: ExprRef,
+        body: NodeRef,
+        scope: Scope,
+    },
+    DoWhileStatement {
+        parent: NodeRef,
+        condition: ExprRef,
+        body: NodeRef,
+        scope: Scope,
+    },
+    ForStatement {
+        parent: NodeRef,
+        init: Option<NodeRef>,
+        condition: Option<ExprRef>,
+        post_body: Option<ExprRef>,
+        body: NodeRef,
+        scope: Scope,
+    },
+
+    GotoStatement {
+        parent: NodeRef,
+        target: Identifier,
+    },
+    ContinueStatement {
+        parent: NodeRef,
+        target: NodeRef,
+    },
+    BreakStatement {
+        parent: NodeRef,
+        target: NodeRef,
+    },
+    ReturnStatement {
+        parent: NodeRef,
+        return_value: Option<ExprRef>,
+    },
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum TypedExpressionNode {
+    CommaExpr(QualifiedType, ExprRangeRef),
+
+    SimpleAssign(QualifiedType, ExprRef, ExprRef),
+    MultiplyAssign(QualifiedType, ExprRef, ExprRef),
+    DivideAssign(QualifiedType, ExprRef, ExprRef),
+    ModuloAssign(QualifiedType, ExprRef, ExprRef),
+    AddAssign(QualifiedType, ExprRef, ExprRef),
+    SubAssign(QualifiedType, ExprRef, ExprRef),
+    LShiftAssign(QualifiedType, ExprRef, ExprRef),
+    RShiftAssign(QualifiedType, ExprRef, ExprRef),
+    AndAssign(QualifiedType, ExprRef, ExprRef),
+    XorAssign(QualifiedType, ExprRef, ExprRef),
+    OrAssign(QualifiedType, ExprRef, ExprRef),
+
+    Ternary(QualifiedType, ExprRef, ExprRef, ExprRef),
+
+    LogicalAnd(QualifiedType, ExprRef, ExprRef),
+    LogicalOr(QualifiedType, ExprRef, ExprRef),
+    BitwiseAnd(QualifiedType, ExprRef, ExprRef),
+    BitwiseOr(QualifiedType, ExprRef, ExprRef),
+    BitwiseXor(QualifiedType, ExprRef, ExprRef),
+
+    Equal(QualifiedType, ExprRef, ExprRef),
+    NotEqual(QualifiedType, ExprRef, ExprRef),
+
+    LessThan(QualifiedType, ExprRef, ExprRef),
+    GreaterThan(QualifiedType, ExprRef, ExprRef),
+    LessThanOrEqual(QualifiedType, ExprRef, ExprRef),
+    GreaterThanOrEqual(QualifiedType, ExprRef, ExprRef),
+
+    LShift(QualifiedType, ExprRef, ExprRef),
+    RShift(QualifiedType, ExprRef, ExprRef),
+    Multiply(QualifiedType, ExprRef, ExprRef),
+    Divide(QualifiedType, ExprRef, ExprRef),
+    Modulo(QualifiedType, ExprRef, ExprRef),
+    Add(QualifiedType, ExprRef, ExprRef),
+    Subtract(QualifiedType, ExprRef, ExprRef),
+    Cast(QualifiedType, ExprRef, QualifiedType),
+
+    PreIncrement(QualifiedType, ExprRef),
+    PreDecrement(QualifiedType, ExprRef),
+    Sizeof(QualifiedType, ExprRef),
+    AddressOf(QualifiedType, ExprRef),
+    Dereference(QualifiedType, ExprRef),
+    UnaryPlus(QualifiedType, ExprRef),
+    UnaryMinus(QualifiedType, ExprRef),
+    BitwiseNot(QualifiedType, ExprRef),
+    Not(QualifiedType, ExprRef),
+
+    PostIncrement(QualifiedType, ExprRef),
+    PostDecrement(QualifiedType, ExprRef),
+    ArraySubscript(QualifiedType, ExprRef, ExprRef),
+    FunctionCall(QualifiedType, ExprRef, Vec<ExpressionNode>),
+    DotAccess(QualifiedType, ExprRef, Identifier),
+    ArrowAccess(QualifiedType, ExprRef, Identifier),
+    // TODO: add support for compound initializers
+    // CompoundInitializer
+    Identifier(QualifiedType, Identifier),
+    Constant(QualifiedType, Constant),
+    StringLiteral(QualifiedType, String),
 }

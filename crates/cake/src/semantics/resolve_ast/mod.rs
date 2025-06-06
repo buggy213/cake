@@ -1,0 +1,978 @@
+use resolve_decls::{resolve_declaration, resolve_function_definition};
+use resolve_exprs::resolve_integer_constant_expression;
+use std::mem::MaybeUninit;
+use thiserror::Error;
+
+use super::{
+    constexpr::integer_constant_eval,
+    symtab::{Scope, SymbolTable, SymtabError},
+    types::{AggregateMember, BasicType, QualifiedType},
+};
+use crate::parser::ast::{
+    ContextRef, ExprRef, Identifier, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
+};
+use crate::parser::hand_parser::ParserState;
+use crate::{
+    parser::ast::{ASTNode, Constant, Declaration, ExpressionNode},
+    semantics::{
+        symtab::{CanonicalTypeIdx, ScopeType, StorageClass, Symbol},
+        types::{CType, CanonicalType, TypeQualifier},
+    },
+};
+
+#[derive(Debug, Error)]
+enum ASTResolveError {
+    #[error("function declaration must have storage class of extern or static")]
+    BadFunctionStorageClass,
+    #[error("symbol redeclaration error")]
+    SymbolRedeclaration,
+    #[error("function redefinition error")]
+    FunctionRedefinition,
+    #[error("function declared static after being declared extern")]
+    StaticFunctionAfterExternFunction,
+    #[error("symtab error")]
+    SymtabError(#[from] SymtabError),
+    #[error("declaration cannot have incomplete type")]
+    IncompleteDeclaration,
+    #[error("redefined enum / union / struct tag")]
+    TagRedefinition,
+    #[error("parser type table corrupted")]
+    CorruptedParserTypeTable,
+    #[error("symtab type table corrupted")]
+    CorruptedSymtabTypeTable,
+    #[error("restrict qualifier only applies to pointers")]
+    BadRestrictQualifier,
+    #[error("object type is required")]
+    ObjectTypeRequired,
+    #[error("function return type is incomplete")]
+    IncompleteReturnType,
+    #[error("redeclared label name within same function")]
+    RedeclaredLabel(#[source] SymtabError),
+    #[error("error while evaluating compile-time integer constant")]
+    IntegerConstantExprError,
+    #[error("case labels only allowed within switch statements")]
+    UnexpectedCaseLabel,
+    #[error("only one default case within a switch statement")]
+    MultipleDefaultLabels,
+    #[error("duplicate case label")]
+    DuplicateCaseLabel,
+    #[error("goto target label doesn't exist in current function")]
+    BadGotoTarget,
+    #[error("continue statement not within for/while/do-while")]
+    BadContinue,
+    #[error("break statement not within switch/for/while/do-while")]
+    BadBreak,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct ResolvedAST {
+    pub(crate) nodes: Vec<ResolvedASTNode>,
+    pub(crate) ast_indices: Vec<NodeRef>,
+    pub(crate) exprs: Vec<TypedExpressionNode>,
+    pub(crate) symtab: SymbolTable,
+}
+
+// during postorder walk, need to have uninitialized values
+// i.e. "reserve" space in nodes / exprs Vec to have something to point to,
+// even though they won't be filled in before their children
+struct IntermediateAST {
+    nodes: Vec<MaybeUninit<ResolvedASTNode>>,
+    ast_indices: Vec<NodeRef>,
+    exprs: Vec<MaybeUninit<TypedExpressionNode>>,
+}
+
+impl ResolvedAST {
+    // Precondition: every element of intermediate.nodes / intermediate.exprs is initialized
+    unsafe fn from_intermediate_ast(
+        intermediate: IntermediateAST,
+        symtab: SymbolTable,
+    ) -> ResolvedAST {
+        let IntermediateAST {
+            nodes,
+            ast_indices,
+            exprs,
+        } = intermediate;
+
+        // relies on "in-place collect" optimization for efficiency
+        // MaybeUninit<T> is guaranteed to have same size and alignment as T
+        let nodes: Vec<_> = nodes.into_iter().map(|n| n.assume_init()).collect();
+        let exprs: Vec<_> = exprs.into_iter().map(|e| e.assume_init()).collect();
+
+        ResolvedAST {
+            nodes,
+            ast_indices,
+            exprs,
+            symtab,
+        }
+    }
+}
+
+// Needed for tracking target of case / default labels, break statements
+struct SwitchStatementContext {
+    node: NodeRef, // node in AST that this switch statement corresponds to
+    enclosing_context: Option<usize>,
+
+    value_type: BasicType, // type of controlling expression, case values are promoted to it
+    case_values: Vec<Constant>,
+    has_default: bool,
+}
+
+// Needed for tracking target of break / continue statements (for, while, do-while loops)
+struct IterationStatementContext {
+    node: NodeRef, // node in AST that this while statement corresponds to
+    enclosing_context: Option<usize>,
+}
+
+enum ResolverContext {
+    Switch(SwitchStatementContext),
+    Iteration(IterationStatementContext),
+}
+
+struct ResolverState {
+    pub(crate) symtab: SymbolTable,
+
+    current_context: Option<usize>,
+    context_stack: Vec<ResolverContext>,
+
+    deferred_goto_resolve: Vec<NodeRef>,
+}
+
+impl ResolverState {
+    fn new(scopes: Vec<Scope>) -> ResolverState {
+        ResolverState {
+            symtab: SymbolTable::new_with_scopes(scopes),
+            current_context: None,
+            context_stack: Vec::new(),
+            deferred_goto_resolve: Vec::new(),
+        }
+    }
+
+    fn current_context(&self) -> Option<&ResolverContext> {
+        self.current_context
+            .and_then(|idx| self.context_stack.get(idx))
+    }
+
+    fn add_switch(&mut self, value_type: BasicType, node: NodeRef) {
+        let new_switch = SwitchStatementContext {
+            node,
+            enclosing_context: self.current_context,
+
+            value_type,
+            case_values: Default::default(),
+            has_default: false,
+        };
+        let new_switch_idx = self.context_stack.len();
+        self.context_stack.push(ResolverContext::Switch(new_switch));
+        self.current_context = Some(new_switch_idx);
+    }
+
+    // Get index of the lexically closest switch statement context
+    fn current_switch_idx(&self) -> Option<usize> {
+        let mut idx = self.current_context;
+        while let Some(current_idx) = idx {
+            match &self.context_stack[current_idx] {
+                ResolverContext::Switch(_) => return Some(current_idx),
+                ResolverContext::Iteration(iteration_stmt) => {
+                    // continue searching in the enclosing context
+                    idx = iteration_stmt.enclosing_context;
+                }
+            }
+        }
+
+        None
+    }
+
+    // Get reference to lexically closest switch statement context
+    fn current_switch(&self) -> Option<&SwitchStatementContext> {
+        self.current_switch_idx()
+            .and_then(|idx| match self.context_stack.get(idx) {
+                Some(ResolverContext::Switch(switch)) => Some(switch),
+                Some(_) => unreachable!("current_switch_idx should only return switch contexts"),
+                None => None,
+            })
+    }
+
+    // Get mutable reference to lexically closest switch statement context
+    fn current_switch_mut(&mut self) -> Option<&mut SwitchStatementContext> {
+        self.current_switch_idx()
+            .and_then(|idx| match self.context_stack.get_mut(idx) {
+                Some(ResolverContext::Switch(switch)) => Some(switch),
+                Some(_) => unreachable!("current_switch_idx should only return switch contexts"),
+                None => None,
+            })
+    }
+
+    // Precondition: current context is a switch statement
+    fn close_switch(&mut self) {
+        match self.current_context() {
+            Some(ResolverContext::Switch(switch)) => {
+                // pop switch context
+                self.current_context = switch.enclosing_context;
+            }
+            _ => {
+                // Internal compiler error
+                panic!("Cannot close switch statement when current context is not a switch");
+            }
+        }
+    }
+
+    fn add_iterstmt(&mut self, node: NodeRef) {
+        let new_iterstmt = IterationStatementContext {
+            node,
+            enclosing_context: self.current_context,
+        };
+        let new_iterstmt_idx = self.context_stack.len();
+        self.context_stack
+            .push(ResolverContext::Iteration(new_iterstmt));
+        self.current_context = Some(new_iterstmt_idx);
+    }
+
+    // Get index of the lexically closest iteration statement context
+    fn current_iterstmt_idx(&self) -> Option<usize> {
+        let mut idx = self.current_context;
+        while let Some(current_idx) = idx {
+            match &self.context_stack[current_idx] {
+                ResolverContext::Switch(switch_stmt) => {
+                    // continue searching in the enclosing context
+                    idx = switch_stmt.enclosing_context;
+                }
+                ResolverContext::Iteration(_) => return Some(current_idx),
+            }
+        }
+
+        None
+    }
+
+    // Get reference to lexically closest switch statement context
+    fn current_iterstmt(&self) -> Option<&IterationStatementContext> {
+        self.current_iterstmt_idx()
+            .and_then(|idx| match self.context_stack.get(idx) {
+                Some(ResolverContext::Iteration(iterstmt)) => Some(iterstmt),
+                Some(_) => unreachable!("current_iterstmt_idx should only return switch contexts"),
+                None => None,
+            })
+    }
+
+    // Get mutable reference to lexically closest switch statement context
+    fn current_iterstmt_mut(&mut self) -> Option<&mut IterationStatementContext> {
+        self.current_iterstmt_idx()
+            .and_then(|idx| match self.context_stack.get_mut(idx) {
+                Some(ResolverContext::Iteration(iterstmt)) => Some(iterstmt),
+                Some(_) => unreachable!("current_iterstmt_idx should only return switch contexts"),
+                None => None,
+            })
+    }
+
+    // Precondition: current context is an iteration statement
+    fn close_iterstmt(&mut self) {
+        match self.current_context() {
+            Some(ResolverContext::Iteration(iterstmt)) => {
+                // pop switch context
+                self.current_context = iterstmt.enclosing_context
+            }
+            _ => {
+                // Internal compiler error
+                panic!("Cannot close switch statement when current context is not a switch");
+            }
+        }
+    }
+}
+
+/// 1. resolve declarations (place values into symbol table and enforce rules about redeclaration)
+/// 2. resolve identifiers (i.e. check that there is a corresponding definition) within expressions
+///    - TODO: consider using numeric indices rather than string-based hashtable lookup for everything
+/// 3. perform type checking for expressions
+/// 4. evaluate compile time constants
+/// goal: by the end of `resolve_ast`, the code is guaranteed to be free of compilation (though maybe not link-time) errors
+/// resolve_ast also checks internal compiler invariants
+pub fn resolve_ast(
+    ast_root: ASTNode,
+    parser_state: ParserState,
+) -> Result<ResolvedAST, ASTResolveError> {
+    let ParserState {
+        scopes,
+        canonical_types: types,
+        ..
+    } = parser_state;
+
+    let mut intermediate_ast = IntermediateAST {
+        nodes: Vec::new(),
+        ast_indices: Vec::new(),
+        exprs: Vec::new(),
+    };
+
+    let mut resolver_state = ResolverState::new(scopes);
+
+    resolve_ast_top(
+        &mut intermediate_ast,
+        &ast_root,
+        &types,
+        &mut resolver_state,
+    )?;
+
+    // SAFETY: we initialize all entries of resolved AST
+    let resolved_ast =
+        unsafe { ResolvedAST::from_intermediate_ast(intermediate_ast, resolver_state.symtab) };
+
+    Ok(resolved_ast)
+}
+
+// Helper functions for manipulating "linear" AST
+fn insert_placeholder(nodes: &mut Vec<MaybeUninit<ResolvedASTNode>>) -> (usize, NodeRef) {
+    nodes.push(MaybeUninit::uninit());
+    let node_idx = nodes.len() - 1;
+    let node_ref = NodeRef(node_idx as u32);
+
+    (node_idx, node_ref)
+}
+
+fn add_indices(
+    indices: &mut Vec<NodeRef>,
+    new_indices: impl Iterator<Item = NodeRef>,
+) -> NodeRangeRef {
+    let start = indices.len();
+    indices.extend(new_indices);
+    let end = indices.len();
+
+    NodeRangeRef(start as u32, end as u32)
+}
+
+// TODO: is there some way to obviate the need for 3 separate functions?
+// using Option is annoying since the only case where a node isn't put into AST is for declarations
+// maybe we should just keep declarations around in resolved AST too?
+fn resolve_ast_top(
+    intermediate_ast: &mut IntermediateAST,
+    ast: &ASTNode,
+    parser_types: &[CanonicalType],
+    resolve_state: &mut ResolverState,
+) -> Result<NodeRef, ASTResolveError> {
+    match ast {
+        ASTNode::TranslationUnit(definitions, scope) => {
+            assert_eq!(
+                scope.scope_type,
+                ScopeType::FileScope,
+                "Translation unit must be at file scope"
+            );
+            assert_eq!(
+                scope.parent_scope, None,
+                "Translation unit must be top scope"
+            );
+
+            let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+
+            let mut children = Vec::new();
+            for defn in definitions {
+                match defn {
+                    ASTNode::Declaration(_) => resolve_ast_declaration(
+                        node_ref,
+                        intermediate_ast,
+                        defn,
+                        parser_types,
+                        resolve_state,
+                    )?,
+                    _ => {
+                        let child_ref = resolve_ast_inner(
+                            node_ref,
+                            intermediate_ast,
+                            defn,
+                            parser_types,
+                            resolve_state,
+                        )?;
+
+                        children.push(child_ref);
+                    }
+                }
+            }
+
+            let range = add_indices(&mut intermediate_ast.ast_indices, children.into_iter());
+
+            let translation_unit_node = ResolvedASTNode::TranslationUnit {
+                children: range,
+                scope: *scope,
+            };
+            intermediate_ast.nodes[node_idx].write(translation_unit_node);
+
+            Ok(node_ref)
+        }
+
+        _ => {
+            unreachable!("Should only be called on top node");
+        }
+    }
+}
+
+fn resolve_ast_inner(
+    parent: NodeRef,
+    intermediate_ast: &mut IntermediateAST,
+    ast: &ASTNode,
+    parser_types: &[CanonicalType],
+    resolve_state: &mut ResolverState,
+) -> Result<NodeRef, ASTResolveError> {
+    match ast {
+        ASTNode::TranslationUnit(_, _) => unreachable!("Must call resolve_ast_top"),
+        ASTNode::FunctionDefinition(fn_declaration, body) => {
+            todo!("goal is to get top level (global) declarations working first");
+
+            let ident = resolve_function_definition(&mut resolve_state.symtab, &fn_declaration)?;
+
+            let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+
+            let body_ref = resolve_ast_inner(
+                node_ref,
+                intermediate_ast,
+                body,
+                parser_types,
+                resolve_state,
+            )?;
+
+            // check that all goto statements in this function have a proper target
+            for goto_node_ref in resolve_state.deferred_goto_resolve.iter().copied() {
+                // SAFETY: children nodes of this function definition would necessarily be initialized
+                let goto_node =
+                    unsafe { intermediate_ast.nodes[goto_node_ref.0 as usize].assume_init_ref() };
+
+                let goto_target = match goto_node {
+                    ResolvedASTNode::GotoStatement { target, .. } => target,
+                    _ => unreachable!("should only be goto node"),
+                };
+
+                resolve_state
+                    .symtab
+                    .lookup_label(goto_target.scope, &goto_target.name)
+                    .ok_or(ASTResolveError::BadGotoTarget)?;
+            }
+            resolve_state.deferred_goto_resolve.clear();
+
+            let fn_definition_node = ResolvedASTNode::FunctionDefinition {
+                parent,
+                ident,
+                body: body_ref,
+            };
+            intermediate_ast.nodes[node_idx].write(fn_definition_node);
+
+            Ok(node_ref)
+        }
+        ASTNode::Declaration(declaration_list) => unreachable!("call resolve_ast_declaration"),
+        ASTNode::Label(labelee, ident) => {
+            let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+
+            let labelee_node = resolve_ast_inner(
+                node_ref,
+                intermediate_ast,
+                labelee,
+                parser_types,
+                resolve_state,
+            )?;
+
+            // Prevent duplicate labels in same function
+            match resolve_state
+                .symtab
+                .add_label(ident.scope, ident.name.clone(), labelee_node)
+            {
+                Err(e @ SymtabError::LabelAlreadyDeclared(_)) => {
+                    return Err(ASTResolveError::RedeclaredLabel(e))
+                }
+                Err(e) => return Err(ASTResolveError::SymtabError(e)),
+
+                _ => (),
+            }
+
+            let label_node = ResolvedASTNode::Label {
+                parent,
+                labelee: labelee_node,
+            };
+            intermediate_ast.nodes[node_idx].write(label_node);
+
+            Ok(node_ref)
+        }
+        ASTNode::CaseLabel(labelee, case_value) => {
+            let current_switch_idx = resolve_state
+                .current_switch_idx()
+                .ok_or(ASTResolveError::UnexpectedCaseLabel)?;
+
+            let value_type = resolve_state
+                .current_switch()
+                .expect("guarded by current_switch_idx")
+                .value_type;
+
+            let value_expr: &ExpressionNode = &(**case_value);
+
+            let value = resolve_integer_constant_expression(&mut resolve_state.symtab, value_expr)?;
+
+            let case_expr = TypedExpressionNode::Constant(
+                QualifiedType {
+                    base_type: CType::BasicType {
+                        basic_type: value_type,
+                    },
+                    qualifier: TypeQualifier::empty(),
+                },
+                value,
+            );
+
+            intermediate_ast.exprs.push(MaybeUninit::new(case_expr));
+            let expr_ref = intermediate_ast.exprs.len() - 1;
+            let expr_ref = ExprRef(expr_ref as u32);
+
+            let current_switch = match resolve_state.current_switch_mut() {
+                Some(switch) => switch,
+                None => return Err(ASTResolveError::UnexpectedCaseLabel),
+            };
+
+            // prevent duplicate case labels
+            if current_switch.case_values.contains(&value) {
+                return Err(ASTResolveError::DuplicateCaseLabel);
+            }
+
+            current_switch.case_values.push(value);
+
+            let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+            let labelee_ref = resolve_ast_inner(
+                node_ref,
+                intermediate_ast,
+                labelee,
+                parser_types,
+                resolve_state,
+            )?;
+
+            let current_switch_ref = ContextRef(current_switch_idx as u32);
+
+            let case_label_node = ResolvedASTNode::CaseLabel {
+                parent,
+                labelee: labelee_ref,
+                case_value: expr_ref,
+            };
+            intermediate_ast.nodes[node_idx].write(case_label_node);
+
+            Ok(node_ref)
+        }
+        ASTNode::DefaultLabel(labelee) => match resolve_state.current_switch_mut() {
+            Some(SwitchStatementContext { has_default, .. }) => {
+                if *has_default {
+                    return Err(ASTResolveError::MultipleDefaultLabels);
+                }
+
+                *has_default = true;
+
+                let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+                let labelee_ref = resolve_ast_inner(
+                    node_ref,
+                    intermediate_ast,
+                    labelee,
+                    parser_types,
+                    resolve_state,
+                )?;
+                let default_label_node = ResolvedASTNode::DefaultLabel {
+                    parent,
+                    labelee: labelee_ref,
+                };
+                intermediate_ast.nodes[node_idx].write(default_label_node);
+
+                Ok(node_ref)
+            }
+            None => Err(ASTResolveError::UnexpectedCaseLabel),
+        },
+        ASTNode::CompoundStatement(inner_statements, scope) => {
+            let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+
+            let mut children = Vec::new();
+            for stmt in inner_statements {
+                match stmt {
+                    ASTNode::Declaration(_) => resolve_ast_declaration(
+                        node_ref,
+                        intermediate_ast,
+                        stmt,
+                        parser_types,
+                        resolve_state,
+                    )?,
+                    _ => {
+                        let child_ref = resolve_ast_inner(
+                            node_ref,
+                            intermediate_ast,
+                            stmt,
+                            parser_types,
+                            resolve_state,
+                        )?;
+
+                        children.push(child_ref);
+                    }
+                }
+            }
+
+            let range = add_indices(&mut intermediate_ast.ast_indices, children.into_iter());
+
+            let compound_statement_node = ResolvedASTNode::CompoundStatement {
+                parent,
+                stmts: range,
+                scope: *scope,
+            };
+            intermediate_ast.nodes[node_idx].write(compound_statement_node);
+
+            Ok(node_ref)
+        }
+        ASTNode::ExpressionStatement(expr, _scope) => {
+            todo!("resolve expr")
+        }
+        ASTNode::NullStatement => {
+            let null_statement_node = ResolvedASTNode::NullStatement { parent };
+            intermediate_ast
+                .nodes
+                .push(MaybeUninit::new(null_statement_node));
+            let node_idx = intermediate_ast.nodes.len() - 1;
+            let node_ref = NodeRef(node_idx as u32);
+
+            Ok(node_ref)
+        }
+        ASTNode::IfStatement(controlling_expr, body, else_body, scope) => {
+            // resolve_expr(controlling_expr)
+            todo!("resolve expr");
+
+            let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+
+            let taken_ref = resolve_ast_inner(
+                node_ref,
+                intermediate_ast,
+                body,
+                parser_types,
+                resolve_state,
+            )?;
+
+            let not_taken_ref = else_body
+                .as_mut()
+                .map(|else_body| {
+                    resolve_ast_inner(
+                        node_ref,
+                        intermediate_ast,
+                        else_body,
+                        parser_types,
+                        resolve_state,
+                    )
+                })
+                .transpose()?;
+
+            let if_statement_node = ResolvedASTNode::IfStatement {
+                parent,
+                condition: todo!(),
+                taken: taken_ref,
+                not_taken: not_taken_ref,
+                scope: *scope,
+            };
+            intermediate_ast.nodes[node_idx].write(if_statement_node);
+
+            Ok(node_ref)
+        }
+        ASTNode::SwitchStatement(controlling_expr, body, scope) => {
+            todo!("resolve expr");
+
+            let value_type = todo!();
+            let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+
+            resolve_state.add_switch(value_type, node_ref);
+            let context_idx = resolve_state
+                .current_switch_idx()
+                .expect("added a switch above");
+            let context_ref = ContextRef(context_idx as u32);
+
+            let body_ref = resolve_ast_inner(
+                node_ref,
+                intermediate_ast,
+                body,
+                parser_types,
+                resolve_state,
+            )?;
+
+            resolve_state.close_switch();
+
+            let switch_statement_node = ResolvedASTNode::SwitchStatement {
+                parent,
+                controlling_expr: todo!(),
+                body: body_ref,
+                context: context_ref,
+                scope: *scope,
+            };
+            intermediate_ast.nodes[node_idx].write(switch_statement_node);
+
+            Ok(node_ref)
+        }
+        ASTNode::WhileStatement(controlling_expr, body, scope)
+        | ASTNode::DoWhileStatement(controlling_expr, body, scope) => {
+            // resolve_expr(controlling_expr);
+            todo!("resolve expr");
+
+            let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+
+            resolve_state.add_iterstmt(node_ref);
+            let body_ref = resolve_ast_inner(
+                node_ref,
+                intermediate_ast,
+                body,
+                parser_types,
+                resolve_state,
+            )?;
+            resolve_state.close_iterstmt();
+
+            let while_statement_node = ResolvedASTNode::WhileStatement {
+                parent,
+                condition: todo!(),
+                body: body_ref,
+                scope: *scope,
+            };
+            intermediate_ast.nodes[node_idx].write(while_statement_node);
+
+            Ok(node_ref)
+        }
+        ASTNode::ForStatement(decl_or_expr, condition, post_loop, body, scope) => {
+            let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
+
+            let first_clause = match decl_or_expr {
+                None => None,
+                Some(decl) if matches!(&**decl, ASTNode::Declaration(_)) => {
+                    resolve_ast_declaration(
+                        node_ref,
+                        intermediate_ast,
+                        decl,
+                        parser_types,
+                        resolve_state,
+                    )?;
+                    None
+                }
+                Some(expr) if matches!(&**expr, ASTNode::ExpressionStatement(_, _)) => {
+                    let expr_ref = resolve_ast_inner(
+                        node_ref,
+                        intermediate_ast,
+                        expr,
+                        parser_types,
+                        resolve_state,
+                    )?;
+
+                    Some(expr_ref)
+                }
+                Some(_) => unreachable!("prohibited by grammar"),
+            };
+
+            let second_clause: Option<ExprRef> = match condition {
+                None => None,
+                Some(expr) => {
+                    todo!("resolve expr");
+                }
+            };
+
+            let third_clause: Option<ExprRef> = match post_loop {
+                None => None,
+                Some(expr) => {
+                    todo!("resolve expr");
+                }
+            };
+
+            resolve_state.add_iterstmt(node_ref);
+            let body_ref = resolve_ast_inner(
+                node_ref,
+                intermediate_ast,
+                body,
+                parser_types,
+                resolve_state,
+            )?;
+            resolve_state.close_iterstmt();
+
+            let for_statement_node = ResolvedASTNode::ForStatement {
+                parent,
+                init: first_clause,
+                condition: second_clause,
+                post_body: third_clause,
+                body: body_ref,
+                scope: *scope,
+            };
+            intermediate_ast.nodes[node_idx].write(for_statement_node);
+
+            Ok(node_ref)
+        }
+        ASTNode::GotoStatement(label_ident) => {
+            let goto_statement_node = ResolvedASTNode::GotoStatement {
+                parent,
+                target: label_ident.clone(),
+            };
+
+            intermediate_ast
+                .nodes
+                .push(MaybeUninit::new(goto_statement_node));
+            let node_idx = intermediate_ast.nodes.len() - 1;
+            let node_ref = NodeRef(node_idx as u32);
+
+            // add deferred check that label exists, evaluate once function definition body is resolved
+            resolve_state.deferred_goto_resolve.push(node_ref);
+
+            Ok(node_ref)
+        }
+        ASTNode::ContinueStatement => {
+            let continue_target_ref = resolve_state
+                .current_iterstmt()
+                .ok_or(ASTResolveError::BadContinue)?
+                .node;
+
+            let continue_statement_node = ResolvedASTNode::ContinueStatement {
+                parent,
+                target: continue_target_ref,
+            };
+
+            intermediate_ast
+                .nodes
+                .push(MaybeUninit::new(continue_statement_node));
+            let node_idx = intermediate_ast.nodes.len() - 1;
+            let node_ref = NodeRef(node_idx as u32);
+            Ok(node_ref)
+        }
+        ASTNode::BreakStatement => {
+            let break_target = resolve_state
+                .current_context()
+                .ok_or(ASTResolveError::BadBreak)?;
+
+            let break_target_ref = match break_target {
+                ResolverContext::Switch(switch_statement_context) => switch_statement_context.node,
+                ResolverContext::Iteration(iteration_statement_context) => {
+                    iteration_statement_context.node
+                }
+            };
+
+            let break_statement_node = ResolvedASTNode::BreakStatement {
+                parent,
+                target: break_target_ref,
+            };
+            intermediate_ast
+                .nodes
+                .push(MaybeUninit::new(break_statement_node));
+            let node_idx = intermediate_ast.nodes.len() - 1;
+            let node_ref = NodeRef(node_idx as u32);
+
+            Ok(node_ref)
+        }
+        ASTNode::ReturnStatement(expr) => {
+            todo!("resolve expr, if it exists");
+
+            let return_statement_node = ResolvedASTNode::ReturnStatement {
+                parent,
+                return_value: todo!(),
+            };
+            intermediate_ast
+                .nodes
+                .push(MaybeUninit::new(return_statement_node));
+            let node_idx = intermediate_ast.nodes.len() - 1;
+            let node_ref = NodeRef(node_idx as u32);
+
+            Ok(node_ref)
+        }
+    }
+}
+
+fn resolve_ast_declaration(
+    parent: NodeRef,
+    intermediate_ast: &mut IntermediateAST,
+    ast: &ASTNode,
+    parser_types: &[CanonicalType],
+    resolve_state: &mut ResolverState,
+) -> Result<(), ASTResolveError> {
+    if let ASTNode::Declaration(declaration_list) = ast {
+        for decl in declaration_list {
+            resolve_declaration(&mut resolve_state.symtab, decl, parser_types)?;
+        }
+    } else {
+        unreachable!("Must be called on ASTNode::Declaration")
+    }
+
+    Ok(())
+}
+
+mod resolve_decls;
+mod resolve_exprs;
+
+mod resolve_ast_tests {
+    use crate::{
+        parser::{
+            ast::{NodeRangeRef, ResolvedASTNode},
+            hand_parser::{parse_translation_unit, CTokenStream, ParserState},
+        },
+        scanner::{lexeme_sets::c_lexemes::CLexemes, table_scanner::DFAScanner},
+        semantics::{
+            symtab::{CanonicalTypeIdx, Scope, ScopeType, SymbolTable},
+            types::{CType, CanonicalType, QualifiedType, TypeQualifier},
+        },
+    };
+
+    use super::{resolve_ast, ResolvedAST};
+
+    struct ResolveHarnessInput {
+        code: &'static str,
+    }
+    fn resolve_harness(input: ResolveHarnessInput /* expected: ResolvedAST */) {
+        // parse code
+        let scanner = DFAScanner::load_lexeme_set_scanner::<CLexemes>();
+        let mut toks = CTokenStream::new(scanner, input.code.as_bytes());
+        let mut state = ParserState::new();
+
+        // resolve parsed input
+        let parse_result =
+            parse_translation_unit(&mut toks, &mut state).expect("unsuccessful parse");
+        let resolve_result = resolve_ast(parse_result, state).expect("resolve unsuccessful");
+
+        // compare
+        dbg!(resolve_result);
+    }
+
+    #[test]
+    fn resolve_file_scope_declarations_test() {
+        let file_scope_declarations = r#"
+        struct node { struct node* next; } first;
+        struct node second;
+        "#;
+
+        let input = ResolveHarnessInput {
+            code: file_scope_declarations,
+        };
+
+        // resolve_harness(input);
+
+        let file_scope_declarations = r#"
+        struct node *first_ptr;
+        struct node { struct node *next; } first;
+        struct node second;
+        "#;
+
+        let input = ResolveHarnessInput {
+            code: file_scope_declarations,
+        };
+
+        // resolve_harness(input);
+
+        let file_scope_declarations = r#"
+        struct node_data {
+            int num;
+        };
+        struct node { 
+            struct node_data data;
+            struct node *next; 
+        } first;
+        "#;
+
+        let input = ResolveHarnessInput {
+            code: file_scope_declarations,
+        };
+
+        resolve_harness(input);
+
+        // this should not resolve, i believe - struct node_data doesn't exist and wouldn't be compatible
+        // with the one declared later (?)
+        let file_scope_declarations = r#"
+        struct node { 
+            struct node_data *data_ptr;
+            struct node *next; 
+        } first;
+        struct node_data {
+            int num;
+        };
+        "#;
+
+        let input = ResolveHarnessInput {
+            code: file_scope_declarations,
+        };
+
+        resolve_harness(input);
+    }
+}

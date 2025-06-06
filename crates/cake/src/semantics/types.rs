@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use super::symtab::{Scope, TypeIdx};
+use super::symtab::{Scope, CanonicalTypeIdx};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BasicType {
@@ -46,10 +46,36 @@ pub(crate) struct QualifiedType {
 pub(crate) type FunctionArgument = (Option<String>, QualifiedType);
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FunctionTypeInner {
+    pub(crate) parameter_types: Vec<FunctionArgument>,
+    pub(crate) return_type: Box<QualifiedType>,
+    pub(crate) function_specifier: FunctionSpecifier,
+    pub(crate) varargs: bool,
+    pub(crate) prototype_scope: Scope,
+}
+
+impl FunctionTypeInner {
+    // are two function types compatible?
+    fn compatible(a: &Self, b: &Self) -> bool {
+        // 1. return types are compatible
+        todo!();
+
+        // 2. parameter types are compatible
+        todo!();
+
+        // 3. whether they have varargs must be same
+        if a.varargs != b.varargs {
+            return false;
+        }
+
+        todo!()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CanonicalType {
-    // "Canonical" types go into symbol table, should try to only keep 1 around
-    // if possible. Incomplete types can be std::mem::replace'd once they are completed
-    // in addition, they do not specify type qualifiers (though their members might)
+    // "Canonical" types go into type table, should try to only keep 1 around
+    // if possible. in addition, they do not specify type qualifiers (though their members might)
     IncompleteUnionType {
         tag: String,
     },
@@ -71,13 +97,7 @@ pub(crate) enum CanonicalType {
         tag: Option<String>,
         members: Vec<EnumVariant>,
     },
-    FunctionType {
-        parameter_types: Vec<FunctionArgument>,
-        return_type: Box<QualifiedType>,
-        function_specifier: FunctionSpecifier,
-        varargs: bool,
-        prototype_scope: Scope,
-    },
+    FunctionType(FunctionTypeInner),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,15 +122,15 @@ pub(crate) enum CType {
     // Pointers into symbol table to avoid having deep copies of highly-nested structs / unions
     // need to be careful to avoid circular / recursive structs (infinite size!)
     StructureTypeRef {
-        symtab_idx: TypeIdx,
+        symtab_idx: CanonicalTypeIdx,
     },
     UnionTypeRef {
-        symtab_idx: TypeIdx,
+        symtab_idx: CanonicalTypeIdx,
     },
     EnumTypeRef {
-        symtab_idx: TypeIdx,
+        symtab_idx: CanonicalTypeIdx,
     },
     FunctionTypeRef {
-        symtab_idx: TypeIdx,
+        symtab_idx: CanonicalTypeIdx,
     },
 }

@@ -1,8 +1,7 @@
 use core::panic;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     num::{ParseFloatError, ParseIntError},
-    rc::Rc,
 };
 
 use thiserror::Error;
@@ -11,17 +10,17 @@ use crate::{
     parser::ast::Constant,
     scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream},
     semantics::{
-        symtab::{Scope, ScopeType, StorageClass, SymtabError, TypeIdx},
+        symtab::{CanonicalTypeIdx, Scope, ScopeType, StorageClass, SymtabError},
         types::{
             AggregateMember, BasicType, CType, CanonicalType, FunctionArgument, FunctionSpecifier,
-            QualifiedType, TypeQualifier,
+            FunctionTypeInner, QualifiedType, TypeQualifier,
         },
     },
 };
 
-use super::ast::{ASTExpressionNode, ASTNode, Declaration, ExpressionNode, Identifier};
+use super::ast::{ASTNode, Declaration, ExpressionNode, Identifier};
 
-type CTokenStream<'a> = crate::scanner::RawTokenStream<'a, CLexemes>;
+pub(crate) type CTokenStream<'a> = crate::scanner::RawTokenStream<'a, CLexemes>;
 
 macro_rules! eat_or_error {
     ($toks:expr, $tok:path) => {
@@ -112,9 +111,20 @@ pub(crate) enum ParseError {
 }
 
 pub(crate) struct ParserState {
-    scopes: Vec<Scope>,
+    // during parse, we build up a series of lexical scopes
+    // these will get passed on to the resolve phase
+    pub(crate) scopes: Vec<Scope>,
     current_scope: Scope,
-    types: Vec<CanonicalType>,
+
+    // similarly, we build up a series of "canonical types"
+    // i.e. functions, structs, enums, and incomplete variants.
+    // every declaration in the AST gets its own canonical type, and
+    // the resolve phase is responsible for "deduplicating" them, i.e.
+    // struct node { struct node *next; } a;
+    // struct node b;
+    // a and b should be recognized as the same type,
+    // and next recognized as a pointer to that type.
+    pub(crate) canonical_types: Vec<CanonicalType>,
     typedefs: Vec<HashMap<String, QualifiedType>>,
 }
 
@@ -124,7 +134,7 @@ impl ParserState {
         Self {
             scopes: vec![file_scope],
             current_scope: file_scope,
-            types: Vec::new(),
+            canonical_types: Vec::new(),
             typedefs: vec![Default::default()],
         }
     }
@@ -146,10 +156,10 @@ impl ParserState {
         Ok(())
     }
 
-    fn add_type(&mut self, canonical_type: CanonicalType) -> TypeIdx {
-        let idx = self.types.len();
-        self.types.push(canonical_type);
-        TypeIdx(idx)
+    fn add_type(&mut self, canonical_type: CanonicalType) -> CanonicalTypeIdx {
+        let idx = self.canonical_types.len();
+        self.canonical_types.push(canonical_type);
+        CanonicalTypeIdx(idx)
     }
 
     fn add_typedef(&mut self, name: String, typedef: QualifiedType) -> Result<(), ParseError> {
@@ -161,6 +171,8 @@ impl ParserState {
         Ok(())
     }
 
+    /// Looks up typedefs with a given name, starting from the current scope
+    /// and working up to top lexical scope (i.e. file scope)
     fn is_typedef(&mut self, name: &str) -> Option<&QualifiedType> {
         let mut scope = self.current_scope;
         loop {
@@ -951,10 +963,10 @@ fn parse_external_declaration(
             match declaration_type.base_type {
                 CType::FunctionTypeRef { symtab_idx } => {
                     // set scope to function prototype scope so that we inherit parameter names
-                    let fn_type = &state.types[symtab_idx];
-                    if let CanonicalType::FunctionType {
+                    let fn_type = &state.canonical_types[symtab_idx];
+                    if let CanonicalType::FunctionType(FunctionTypeInner {
                         prototype_scope, ..
-                    } = fn_type
+                    }) = fn_type
                     {
                         state.current_scope = *prototype_scope;
                     } else {
@@ -1024,6 +1036,7 @@ fn parse_external_declaration(
                 declarations.push(declaration);
             }
             Some((CLexemes::Semicolon, _, _)) => {
+                toks.eat(CLexemes::Semicolon);
                 let decl_node = ASTNode::Declaration(declarations);
                 return Ok(decl_node);
             }
@@ -1514,7 +1527,7 @@ fn parse_struct_declarator_list(
 fn parse_struct_or_union_specifier(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-) -> Result<TypeIdx, ParseError> {
+) -> Result<CanonicalTypeIdx, ParseError> {
     #[derive(PartialEq, Eq)]
     enum StructOrUnion {
         Struct,
@@ -1658,7 +1671,7 @@ fn parse_struct_or_union_specifier(
 fn parse_enum_specifier(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-) -> Result<TypeIdx, ParseError> {
+) -> Result<CanonicalTypeIdx, ParseError> {
     let start = toks.get_location();
     match toks.peek() {
         Some((CLexemes::Enum, _, _)) => {
@@ -2125,14 +2138,14 @@ fn parse_declarator_base(
                             _ => {}
                         }
                         */
-
-                        let fn_type = CanonicalType::FunctionType {
+                        let fn_type = FunctionTypeInner {
                             parameter_types: func.argument_types,
                             return_type: Box::new(current_type),
                             function_specifier: FunctionSpecifier::None, // TODO: figure out inline
                             varargs: func.varargs,
                             prototype_scope: func.prototype_scope,
                         };
+                        let fn_type = CanonicalType::FunctionType(fn_type);
 
                         let fn_type_idx = state.add_type(fn_type);
                         let new_type = CType::FunctionTypeRef {
@@ -2466,7 +2479,7 @@ fn parse_labeled_statement(
             // but gcc and clang will (only complaining on -Wpedantic)
             // follow standard for now
             let labelee = parse_statement(toks, state)?;
-            let labelee = Rc::new(labelee);
+            let labelee = Box::new(labelee);
             /* RESOLVE LOGIC
             // let res = state.symbol_table.add_label(
             //     state.current_scope,
@@ -2494,7 +2507,7 @@ fn parse_labeled_statement(
             eat_or_error!(toks, CLexemes::Colon)?;
             let case_body = parse_statement(toks, state)?;
 
-            let case_node = ASTNode::CaseLabel(Box::new(case_body), Box::new(ASTExpressionNode::Untyped(case)));
+            let case_node = ASTNode::CaseLabel(Box::new(case_body), Box::new(case));
 
             Ok(case_node)
         }
@@ -2561,7 +2574,7 @@ fn parse_expression_statement(
             let expr = parse_expr(toks, state)?;
             eat_or_error!(toks, CLexemes::Semicolon)?;
             Ok(ASTNode::ExpressionStatement(
-                Box::new(ASTExpressionNode::Untyped(expr)),
+                Box::new(expr),
                 state.current_scope,
             ))
         }
@@ -2586,14 +2599,14 @@ fn parse_selection_statement(
                     toks.eat(CLexemes::Else);
                     let else_body = parse_statement(toks, state)?;
                     ASTNode::IfStatement(
-                        Box::new(ASTExpressionNode::Untyped(condition)),
+                        Box::new(condition),
                         Box::new(body),
                         Some(Box::new(else_body)),
                         state.current_scope,
                     )
                 }
                 Some((_, _, _)) => ASTNode::IfStatement(
-                    Box::new(ASTExpressionNode::Untyped(condition)),
+                    Box::new(condition),
                     Box::new(body),
                     None,
                     state.current_scope,
@@ -2612,7 +2625,7 @@ fn parse_selection_statement(
             eat_or_error!(toks, CLexemes::RParen)?;
             let body = parse_statement(toks, state)?;
             let switch_node = ASTNode::SwitchStatement(
-                Box::new(ASTExpressionNode::Untyped(switch_expr)),
+                Box::new(switch_expr),
                 Box::new(body),
                 state.current_scope,
             );
@@ -2640,7 +2653,7 @@ fn parse_iteration_statement(
             eat_or_error!(toks, CLexemes::RParen)?;
             let statement = parse_statement(toks, state)?;
             let while_statement =
-                ASTNode::WhileStatement(Box::new(ASTExpressionNode::Untyped(expr)), Box::new(statement), state.current_scope);
+                ASTNode::WhileStatement(Box::new(expr), Box::new(statement), state.current_scope);
             Ok(while_statement)
         }
         Some((CLexemes::Do, _, _)) => {
@@ -2652,7 +2665,7 @@ fn parse_iteration_statement(
             eat_or_error!(toks, CLexemes::RParen)?;
             eat_or_error!(toks, CLexemes::Semicolon)?;
             let do_while_statement =
-                ASTNode::DoWhileStatement(Box::new(ASTExpressionNode::Untyped(expr)), Box::new(statement), state.current_scope);
+                ASTNode::DoWhileStatement(Box::new(expr), Box::new(statement), state.current_scope);
             Ok(do_while_statement)
         }
         Some((CLexemes::For, _, _)) => {
@@ -2661,10 +2674,12 @@ fn parse_iteration_statement(
             // or just an expression
             toks.eat(CLexemes::For);
             eat_or_error!(toks, CLexemes::LParen)?;
+            let mut opened_scope = false;
+
             let first_clause = if is_lookahead_declaration(toks, state) {
                 state.open_scope(ScopeType::BlockScope);
                 let declaration = parse_declaration(toks, state)?;
-                state.close_scope()?;
+                opened_scope = true;
                 Some(declaration)
             } else {
                 match toks.peek() {
@@ -2672,7 +2687,7 @@ fn parse_iteration_statement(
                     Some((_, _, _)) => {
                         let expr = parse_expr(toks, state)?;
                         Some(ASTNode::ExpressionStatement(
-                            Box::new(ASTExpressionNode::Untyped(expr)),
+                            Box::new(expr),
                             state.current_scope,
                         ))
                     }
@@ -2696,11 +2711,15 @@ fn parse_iteration_statement(
             let loop_body = parse_statement(toks, state)?;
             let for_node = ASTNode::ForStatement(
                 first_clause.map(Box::new),
-                second_clause.map(ASTExpressionNode::Untyped).map(Box::new),
-                third_clause.map(ASTExpressionNode::Untyped).map(Box::new),
+                second_clause.map(Box::new),
+                third_clause.map(Box::new),
                 Box::new(loop_body),
                 state.current_scope,
             );
+
+            if opened_scope {
+                state.close_scope()?;
+            }
 
             Ok(for_node)
         }
@@ -2746,7 +2765,8 @@ fn parse_jump_statement(
                 Some((_, _, _)) => {
                     let expr = parse_expr(toks, state)?;
                     eat_or_error!(toks, CLexemes::Semicolon)?;
-                    let expr = Box::new(ASTExpressionNode::Untyped(expr));
+
+                    let expr = Box::new(expr);
                     Ok(ASTNode::ReturnStatement(Some(expr)))
                 }
                 None => Err(ParseError::UnexpectedEOF),

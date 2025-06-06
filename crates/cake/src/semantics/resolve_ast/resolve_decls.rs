@@ -1,282 +1,37 @@
-use std::rc::Rc;
-
-use thiserror::Error;
-
 use crate::{
-    parser::ast::{ASTExpressionNode, ASTNode, Constant, Declaration, ExpressionNode},
+    parser::ast::Identifier,
     semantics::{
-        symtab::{ScopeType, StorageClass, Symbol, TypeIdx},
+        symtab::{Linkage, Scope, ScopeType, StorageClass, SymbolTable},
+        types::{AggregateMember, FunctionTypeInner, QualifiedType},
+    },
+};
+use crate::{
+    parser::ast::{Constant, Declaration},
+    semantics::{
+        symtab::{CanonicalTypeIdx, Symbol},
         types::{CType, CanonicalType, TypeQualifier},
     },
 };
 
-use super::{
-    constexpr::integer_constant_eval,
-    symtab::{Scope, SymbolTable, SymtabError},
-    types::{AggregateMember, BasicType, QualifiedType},
-};
+use super::ASTResolveError;
 
-#[derive(Debug, Error)]
-enum ASTResolveError {
-    #[error("function declaration must have storage class of extern or static")]
-    BadFunctionStorageClass,
-    #[error("symbol redeclaration error")]
-    SymbolRedeclaration,
-    #[error("function redefinition error")]
-    FunctionRedefinition,
-    #[error("function declared static after being declared extern")]
-    StaticFunctionAfterExternFunction,
-    #[error("symtab error")]
-    SymtabError(#[from] SymtabError),
-    #[error("declaration cannot have type void")]
-    VoidDeclaration,
-    #[error("redefined enum / union / struct tag")]
-    TagRedefinition,
-    #[error("parser type table corrupted")]
-    CorruptedParserTypeTable,
-    #[error("symtab type table corrupted")]
-    CorruptedSymtabTypeTable,
-    #[error("restrict qualifier only applies to pointers")]
-    BadRestrictQualifier,
-    #[error("object type is required")]
-    ObjectTypeRequired,
-    #[error("function return type is incomplete")]
-    IncompleteReturnType,
-    #[error("redeclared label name within same function")]
-    RedeclaredLabel(#[source] SymtabError),
-    #[error("error while evaluating compile-time integer constant")]
-    IntegerConstantExprError,
-    #[error("case labels only allowed within switch statements")]
-    UnexpectedCaseLabel,
-    #[error("only one default case within a switch statement")]
-    MultipleDefaultLabels,
-}
-
-struct SwitchStatement {
-    enclosing_switch: Option<usize>,
-    value_type: BasicType, // type of controlling expression, case values are promoted to it
-    case_values: Vec<Constant>,
-    has_default: bool,
-}
-
-struct ResolverState {
-    current_switch_statement: Option<usize>,
-    switch_statements: Vec<SwitchStatement>,
-}
-
-impl ResolverState {
-    fn add_switch(&mut self, value_type: BasicType) {
-        let new_switch = SwitchStatement {
-            enclosing_switch: self.current_switch_statement,
-            value_type,
-            case_values: Default::default(),
-            has_default: false,
-        };
-        let new_switch_idx = self.switch_statements.len();
-        self.switch_statements.push(new_switch);
-        self.current_switch_statement = Some(new_switch_idx);
-    }
-
-    fn current_switch(&self) -> Option<&SwitchStatement> {
-        self.current_switch_statement
-            .and_then(|idx| self.switch_statements.get(idx))
-    }
-
-    fn current_switch_mut(&mut self) -> Option<&mut SwitchStatement> {
-        self.current_switch_statement
-            .and_then(|idx| self.switch_statements.get_mut(idx))
-    }
-
-    fn close_switch(&mut self) {
-        match self.current_switch() {
-            Some(cur_switch) => {
-                self.current_switch_statement = cur_switch.enclosing_switch;
-            }
-            None => {
-                debug_assert!(false)
-            }
-        }
-    }
-}
-
-/// 1. resolve declarations (place values into symbol table and enforce rules about redeclaration)
-/// 2. resolve identifiers (i.e. check that there is a corresponding definition)
-///    - TODO: consider using numeric indices rather than string-based hashtable lookup for everything
-/// 3. perform type checking for expressions
-/// 4. evaluate compile time constants
-/// goal: by the end of `resolve_ast`, the code is guaranteed to be free of compilation (though maybe not link-time) errors
-pub fn resolve_ast(
+pub(super) fn resolve_declaration(
     symtab: &mut SymbolTable,
-    ast: &mut ASTNode,
-    parser_types: &[CanonicalType],
-    resolve_state: &mut ResolverState,
-) -> Result<(), ASTResolveError> {
-    match ast {
-        ASTNode::TranslationUnit(definitions, _) => {
-            for defn in definitions {
-                resolve_ast(symtab, defn, parser_types, resolve_state)?;
-            }
-
-            Ok(())
-        }
-        ASTNode::FunctionDefinition(fn_declaration, body) => {
-            resolve_function_definition(symtab, &fn_declaration, &body)
-        }
-        ASTNode::Declaration(declaration_list) => {
-            for decl in declaration_list {
-                resolve_declaration(symtab, decl, parser_types)?;
-            }
-
-            Ok(())
-        }
-        ASTNode::Label(labelee, ident) => {
-            match symtab.add_label(ident.scope, ident.name.clone(), Rc::clone(labelee)) {
-                Ok(_) => Ok(()),
-                Err(e @ SymtabError::LabelAlreadyDeclared(_)) => {
-                    Err(ASTResolveError::RedeclaredLabel(e))
-                }
-                Err(e) => Err(ASTResolveError::SymtabError(e)),
-            }
-        }
-        ASTNode::CaseLabel(labelee, case_value) => {
-            let current_switch = match resolve_state.current_switch_mut() {
-                Some(switch) => switch,
-                None => return Err(ASTResolveError::UnexpectedCaseLabel),
-            };
-
-            let value_type = current_switch.value_type;
-            let value_expr: &ExpressionNode = match &(**case_value) {
-                ASTExpressionNode::Typed(expression_node, ctype) => {
-                    eprintln!("warn: case value already typed prior to resolve stage");
-                    expression_node
-                }
-                ASTExpressionNode::Untyped(expression_node) => expression_node,
-            };
-
-            let value = resolve_integer_constant_expression(symtab, value_expr)?;
-
-            let replacement_node = Box::new(ASTExpressionNode::Typed(
-                ExpressionNode::Constant(value),
-                CType::BasicType {
-                    basic_type: value_type,
-                },
-            ));
-            let _ = std::mem::replace(case_value, replacement_node);
-            current_switch.case_values.push(value);
-            Ok(())
-        }
-        ASTNode::DefaultLabel(_) => match resolve_state.current_switch_mut() {
-            Some(SwitchStatement { has_default, .. }) => {
-                if *has_default {
-                    return Err(ASTResolveError::MultipleDefaultLabels);
-                }
-                Ok(())
-            }
-            None => Err(ASTResolveError::UnexpectedCaseLabel),
-        },
-        ASTNode::CompoundStatement(inner_statements, _) => {
-            for stmt in inner_statements {
-                resolve_ast(symtab, stmt, parser_types, resolve_state)?;
-            }
-
-            Ok(())
-        }
-        ASTNode::ExpressionStatement(expr, _scope) => {
-            // resolve_expr(expr);
-            todo!()
-        }
-        ASTNode::NullStatement => Ok(()),
-        ASTNode::IfStatement(_, _, _, _) => todo!(),
-        ASTNode::SwitchStatement(controlling_expr, body, _) => {
-            todo!();
-        }
-        ASTNode::WhileStatement(_, _, _) => todo!(),
-        ASTNode::DoWhileStatement(_, _, _) => todo!(),
-        ASTNode::ForStatement(_, _, _, _, _) => todo!(),
-        ASTNode::GotoStatement(_) => todo!(),
-        ASTNode::ContinueStatement => todo!(),
-        ASTNode::BreakStatement => todo!(),
-        ASTNode::ReturnStatement(_) => todo!(),
-    }
-}
-
-fn resolve_function_definition(
-    symtab: &mut SymbolTable,
-    fn_declaration: &Declaration,
-    body: &ASTNode,
-) -> Result<(), ASTResolveError> {
-    let scope = fn_declaration.name.scope;
-    debug_assert!(scope.scope_type == ScopeType::FileScope);
-
-    // check that storage class is extern, static, or none
-    if fn_declaration.is_typedef {
-        return Err(ASTResolveError::BadFunctionStorageClass);
-    }
-    let declared_static = match fn_declaration.storage_class {
-        StorageClass::Extern | StorageClass::None => false, // no storage class is equivalent to extern
-        StorageClass::Static => true,
-        _ => {
-            return Err(ASTResolveError::BadFunctionStorageClass);
-        }
-    };
-
-    match symtab.direct_lookup_symbol_mut(scope, &fn_declaration.name.name) {
-        Some(sym) => {
-            match sym {
-                Symbol::Function {
-                    internal_linkage,
-                    defined,
-                } => {
-                    // function was previously defined
-                    if *defined {
-                        return Err(ASTResolveError::FunctionRedefinition);
-                    }
-
-                    // declared static -> declared extern / w/o storage class is ok
-                    // but declared extern -> declared static is not ok
-                    if !*internal_linkage && declared_static {
-                        return Err(ASTResolveError::StaticFunctionAfterExternFunction);
-                    }
-
-                    *defined = true;
-                }
-                _ => {
-                    // collides with other identifier
-                    return Err(ASTResolveError::SymbolRedeclaration);
-                }
-            }
-        }
-        None => {
-            // first declaration and definition of function
-            let fn_symbol = Symbol::Function {
-                internal_linkage: declared_static,
-                defined: true,
-            };
-            symtab.add_symbol(scope, fn_declaration.name.name.clone(), fn_symbol)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn resolve_external_declaration() {}
-
-// resolving declarations is tricky
-// 1. file scope declarations
-//
-fn resolve_declaration(
-    symtab: &mut SymbolTable,
-    declaration: &mut Declaration,
+    declaration: &Declaration,
     parser_types: &[CanonicalType],
 ) -> Result<(), ASTResolveError> {
+    // TODO: think if there's a less expensive / jank way to do this
+    // do we really need to preserve parser AST?
+    let mut type_copy = declaration.qualified_type.clone();
+
     // first, resolve declaration type
-    let declaration_type_category = resolve_declaration_type(
-        symtab,
-        &mut declaration.qualified_type,
-        declaration.name.scope,
-        parser_types,
-    )?;
+    let declaration_type_category =
+        resolve_declaration_type(symtab, &mut type_copy, declaration.name.scope, parser_types)?;
 
+    // place resolved type into symbol table
+    let resolved_type_idx = symtab.add_qualified_type(type_copy);
+
+    // then, place identifier into symbol table
     match symtab.direct_lookup_symbol(declaration.name.scope, &declaration.name.name) {
         Some(_) => {
             // symbol is already declared
@@ -285,16 +40,38 @@ fn resolve_declaration(
         None => {
             let symbol = match declaration_type_category {
                 TypeCategory::Object => {
+                    // resolve linkage rules here for declarations
+                    // TODO: how to extend this to
+                    let linkage = match declaration.storage_class {
+                        StorageClass::Extern => Linkage::External,
+                        StorageClass::Static => Linkage::Internal,
+                        StorageClass::Auto | StorageClass::Register => {
+                            todo!("only dealing with top-level declarations right now, neither of these should be allowed")
+                        }
+                        StorageClass::None => Linkage::External,
+                    };
+
+                    Symbol::Object {
+                        object_type: resolved_type_idx,
+                        linkage,
+                    }
+                }
+                TypeCategory::Function => {
+                    // within block scope, declaration of function can only have storage class extern
+
+                    // declaration.name.scope.scope_type
                     todo!()
                 }
-                TypeCategory::Function => todo!(),
-                TypeCategory::Incomplete => todo!(),
+                TypeCategory::Incomplete => {
+                    // cannot declare an incomplete object
+                    return Err(ASTResolveError::IncompleteDeclaration);
+                }
             };
             symtab.add_symbol(
                 declaration.name.scope,
                 declaration.name.name.clone(),
                 symbol,
-            );
+            )?;
         }
     }
 
@@ -321,8 +98,9 @@ impl CanonicalType {
     }
 }
 
-/// ensure that type used in declaration is valid.
-/// directly mutates declarations within the AST to index into symtab
+/// ensure that type used in declaration is valid. intent is that caller
+/// takes ownership of qualified_type from parser AST (right now it's a clone)
+/// then places it into symbol table's types list; symbols will reference it through a TypeIdx
 fn resolve_declaration_type(
     symtab: &mut SymbolTable,
     qualified_type: &mut QualifiedType,
@@ -336,16 +114,26 @@ fn resolve_declaration_type(
             return Err(ASTResolveError::BadRestrictQualifier);
         }
     }
+    // function types should be unqualified (their return value + parameters can be qualified)
+    if !qualified_type.qualifier.is_empty() {
+        if matches!(qualified_type.base_type, CType::FunctionTypeRef { .. }) {
+            assert!(false, "warning: function types should not be qualified");
+        }
+    }
 
     // check base type
     match &mut qualified_type.base_type {
         // basic type is always ok
         CType::BasicType { .. } => return Ok(TypeCategory::Object),
+        // void type is incomplete, i.e.
+        // `void x;` is not a valid declaration
         CType::Void => return Ok(TypeCategory::Incomplete),
 
         CType::IncompleteArrayType { element_type } | CType::ArrayType { element_type, .. } => {
             let element_type_category =
                 resolve_declaration_type(symtab, element_type, scope, parser_types)?;
+
+            // element type must be an object (not function, not incomplete)
             if !matches!(element_type_category, TypeCategory::Object) {
                 return Err(ASTResolveError::ObjectTypeRequired);
             }
@@ -360,14 +148,17 @@ fn resolve_declaration_type(
             symtab_idx: ast_idx,
         } => {
             let mut function_type = parser_types[ast_idx.0].clone();
+
             match &mut function_type {
-                CanonicalType::FunctionType {
+                CanonicalType::FunctionType(FunctionTypeInner {
                     parameter_types,
                     return_type,
                     prototype_scope,
                     varargs,
                     ..
-                } => {
+                }) => {
+                    // Note: gcc / clang seem to disallow defining a new type (struct / enum / union)
+                    // inside the return type for C++ but not in C (I'm not totally sure why?)
                     let return_type_category = resolve_declaration_type(
                         symtab,
                         return_type,
@@ -385,7 +176,7 @@ fn resolve_declaration_type(
                         return Err(ASTResolveError::IncompleteReturnType);
                     }
 
-                    // handle special case of f(void)
+                    // handle special case of f(void) by removing it
                     let void_only = (
                         None,
                         QualifiedType {
@@ -399,11 +190,11 @@ fn resolve_declaration_type(
                     }
 
                     for (_, param_type) in parameter_types {
-                        let param_type_category =
-                            resolve_declaration_type(symtab, param_type, scope, parser_types)?;
+                        resolve_declaration_type(symtab, param_type, scope, parser_types)?;
 
-                        // adjust types - array / function decay
-                        let param_type_category = match &mut param_type.base_type {
+                        // adjust types - array / function decay (array / function parameters converted to
+                        // pointers to array / function types instead)
+                        match &mut param_type.base_type {
                             CType::IncompleteArrayType { element_type }
                             | CType::ArrayType {
                                 size: _,
@@ -417,7 +208,6 @@ fn resolve_declaration_type(
                                     }),
                                 );
                                 param_type.base_type = CType::PointerType { pointee_type };
-                                TypeCategory::Object
                             }
                             CType::FunctionTypeRef { symtab_idx } => {
                                 param_type.base_type = CType::PointerType {
@@ -428,25 +218,20 @@ fn resolve_declaration_type(
                                         qualifier: TypeQualifier::empty(),
                                     }),
                                 };
-                                TypeCategory::Object
                             }
-                            _ => param_type_category,
+                            _ => (),
                         };
 
-                        // incomplete types allowed in function prototypes, but not definitions
-                        let is_fn_definition: bool = todo!();
-                        if is_fn_definition {
-                            if matches!(param_type_category, TypeCategory::Incomplete) {
-                                return Err(ASTResolveError::ObjectTypeRequired);
-                            }
-                        }
+                        // incomplete types allowed in function prototypes, but not function definitions
+                        // we check this within resolve_function_definition
                     }
                 }
                 _ => {
                     return Err(ASTResolveError::CorruptedParserTypeTable);
                 }
             }
-            let fn_type_idx = symtab.add_type(function_type);
+            let fn_type_idx = symtab.add_canonical_type(function_type);
+            // now a index into symtab's type table, rather than parser type table
             *ast_idx = fn_type_idx;
             return Ok(TypeCategory::Function);
         }
@@ -481,13 +266,13 @@ fn resolve_declaration_type(
                     if let Some(type_idx) = symtab.direct_lookup_tag_type_idx(scope, tag) {
                         type_idx
                     } else {
-                        let new_enum_type_idx = symtab.add_type(incomplete_standin);
+                        let new_enum_type_idx = symtab.add_canonical_type(incomplete_standin);
                         symtab.add_tag(scope, tag.clone(), new_enum_type_idx)?;
                         new_enum_type_idx
                     }
                 } else {
                     // anonymous enums always define a new type (6.7.2.3 5)
-                    let new_enum_type_idx = symtab.add_type(incomplete_standin);
+                    let new_enum_type_idx = symtab.add_canonical_type(incomplete_standin);
                     new_enum_type_idx
                 };
 
@@ -510,6 +295,7 @@ fn resolve_declaration_type(
                 return Err(ASTResolveError::CorruptedParserTypeTable);
             }
         },
+
         CType::StructureTypeRef {
             symtab_idx: ast_idx,
         } => match &parser_types[ast_idx.0] {
@@ -542,13 +328,13 @@ fn resolve_declaration_type(
                     if let Some(type_idx) = symtab.direct_lookup_tag_type_idx(scope, tag) {
                         type_idx
                     } else {
-                        let new_struct_type_idx = symtab.add_type(incomplete_standin);
+                        let new_struct_type_idx = symtab.add_canonical_type(incomplete_standin);
                         symtab.add_tag(scope, tag.clone(), new_struct_type_idx)?;
                         new_struct_type_idx
                     }
                 } else {
                     // anonymous structs always define a new type
-                    symtab.add_type(incomplete_standin)
+                    symtab.add_canonical_type(incomplete_standin)
                 };
 
                 resolve_member_types(symtab, &mut new_struct_members, scope, parser_types)?;
@@ -602,13 +388,13 @@ fn resolve_declaration_type(
                     if let Some(type_idx) = symtab.direct_lookup_tag_type_idx(scope, tag) {
                         type_idx
                     } else {
-                        let new_union_type_idx = symtab.add_type(incomplete_standin);
+                        let new_union_type_idx = symtab.add_canonical_type(incomplete_standin);
                         symtab.add_tag(scope, tag.clone(), new_union_type_idx)?;
                         new_union_type_idx
                     }
                 } else {
                     // anonymous unions always define a new type
-                    symtab.add_type(incomplete_standin)
+                    symtab.add_canonical_type(incomplete_standin)
                 };
 
                 resolve_member_types(symtab, &mut new_union_members, scope, parser_types)?;
@@ -634,14 +420,23 @@ fn resolve_declaration_type(
     }
 }
 
+// Tries to resolve incomplete types (which will be most types) from AST
+// e.g. `struct node k` where `struct node` was defined earlier
+// is considered an incomplete type before resolution
+// If appropriate type to resolve to is not found, then creates a new one
 fn resolve_incomplete_type(
     symtab: &mut SymbolTable,
-    ast_idx: &mut TypeIdx,
-    tag: &String,
+    ast_idx: &mut CanonicalTypeIdx,
+    tag: &str,
     scope: Scope,
     predicate: fn(&CanonicalType) -> bool,
     incomplete_ast_type: &CanonicalType,
 ) -> Result<TypeCategory, ASTResolveError> {
+    // lexical lookup; caller provides predicate to check if it should be resolved
+    // i.e. if we have
+    // struct node { struct node *next; } n;
+    // union node m;
+    // even though they have the same tag, you definitely cannot resolve one to the other
     if let Some(type_idx) = symtab.lookup_tag_type_idx(scope, tag) {
         let symtab_type = symtab.get_type(type_idx);
         if predicate(symtab_type) {
@@ -650,16 +445,17 @@ fn resolve_incomplete_type(
         }
     }
 
-    // 6.7.2.3 3 technically forbids forward references to enums, but clang and gcc allow it (as will we)
-    let new_type_idx = symtab.add_type(incomplete_ast_type.clone());
-    symtab.add_tag(scope, tag.clone(), new_type_idx)?;
+    // 6.7.2.3 3 technically forbids forward references to enums, but clang and gcc allow it (as will cake)
+    // also, if the tag is already declared in our direct scope, add_tag will error.
+    let new_type_idx = symtab.add_canonical_type(incomplete_ast_type.clone());
+    symtab.add_tag(scope, tag.to_string(), new_type_idx)?;
     *ast_idx = new_type_idx;
     Ok(TypeCategory::Incomplete)
 }
 
 fn complete_type(
     symtab: &mut SymbolTable,
-    type_idx: TypeIdx,
+    type_idx: CanonicalTypeIdx,
     predicate: fn(&CanonicalType) -> bool,
     completed: CanonicalType,
 ) -> Result<(), ASTResolveError> {
@@ -691,6 +487,8 @@ fn resolve_member_types(
         let member_type_category =
             resolve_declaration_type(symtab, member_type, scope, parser_types)?;
         if !matches!(member_type_category, TypeCategory::Object) {
+            // structs / unions cannot contain function type / incomplete type
+            // (they can contain pointer to function / incomplete; the latter is necessary for self-referential types to work)
             return Err(ASTResolveError::ObjectTypeRequired);
         }
     }
@@ -698,22 +496,69 @@ fn resolve_member_types(
     Ok(())
 }
 
-fn resolve_integer_constant_expression(
-    symtab: &SymbolTable,
-    expr: &ExpressionNode,
-) -> Result<Constant, ASTResolveError> {
-    let constant = integer_constant_eval(symtab, expr);
-    match constant {
-        Ok(c) => match c {
-            Constant::Int(_) => todo!(),
-            Constant::LongInt(_) => todo!(),
-            Constant::UInt(_) => todo!(),
-            Constant::ULongInt(_) => todo!(),
-            Constant::Float(_) => Err(ASTResolveError::IntegerConstantExprError),
-            Constant::Double(_) => Err(ASTResolveError::IntegerConstantExprError),
-        },
-        Err(e) => Err(ASTResolveError::IntegerConstantExprError),
-    }
-}
+pub(crate) fn resolve_function_definition(
+    symtab: &mut SymbolTable,
+    fn_declaration: &Declaration,
+) -> Result<Identifier, ASTResolveError> {
+    let scope = fn_declaration.name.scope;
+    assert!(
+        scope.scope_type == ScopeType::FileScope,
+        "grammar only allows function definitions at file scope"
+    );
 
-fn resolve_expr() {}
+    // check that storage class is extern, static, or none
+    if fn_declaration.is_typedef {
+        return Err(ASTResolveError::BadFunctionStorageClass);
+    }
+    let declared_static = match fn_declaration.storage_class {
+        StorageClass::Extern | StorageClass::None => false, // no storage class is equivalent to extern
+        StorageClass::Static => true,
+        _ => {
+            return Err(ASTResolveError::BadFunctionStorageClass);
+        }
+    };
+
+    // TODO
+    todo!("check that function parameters are not incomplete within definition");
+    /*
+    match symtab.direct_lookup_symbol_mut(scope, &fn_declaration.name.name) {
+        Some(sym) => {
+            match sym {
+                Symbol::Function {
+                    internal_linkage,
+                    defined,
+                } => {
+                    // function was previously defined
+                    if *defined {
+                        return Err(ASTResolveError::FunctionRedefinition);
+                    }
+
+                    // declared static -> declared extern or w/o storage class is ok (it will still only have internal linkage)
+                    // but declared extern (or w/o storage class) -> declared static is not ok
+                    if !*internal_linkage && declared_static {
+                        return Err(ASTResolveError::StaticFunctionAfterExternFunction);
+                    }
+
+                    // check that the two are compatible
+
+                    *defined = true;
+                }
+                _ => {
+                    // collides with other, non-function identifier
+                    return Err(ASTResolveError::SymbolRedeclaration);
+                }
+            }
+        }
+        None => {
+            // first declaration and definition of function
+            let fn_symbol = Symbol::Function {
+                internal_linkage: declared_static,
+                defined: true,
+            };
+            symtab.add_symbol(scope, fn_declaration.name.name.clone(), fn_symbol)?;
+        }
+    }
+
+    Ok(fn_declaration.name.clone())
+     */
+}
