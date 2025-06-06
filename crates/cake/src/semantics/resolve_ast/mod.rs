@@ -1,21 +1,20 @@
-use resolve_decls::{resolve_declaration, resolve_function_definition};
+use resolve_decls::{resolve_declaration, resolve_empty_declaration, resolve_function_definition};
 use resolve_exprs::resolve_integer_constant_expression;
 use std::mem::MaybeUninit;
 use thiserror::Error;
 
 use super::{
-    constexpr::integer_constant_eval,
     symtab::{Scope, SymbolTable, SymtabError},
-    types::{AggregateMember, BasicType, QualifiedType},
+    types::{BasicType, QualifiedType},
 };
 use crate::parser::ast::{
-    ContextRef, ExprRef, Identifier, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
+    ContextRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
 use crate::parser::hand_parser::ParserState;
 use crate::{
-    parser::ast::{ASTNode, Constant, Declaration, ExpressionNode},
+    parser::ast::{ASTNode, Constant, ExpressionNode},
     semantics::{
-        symtab::{CanonicalTypeIdx, ScopeType, StorageClass, Symbol},
+        symtab::ScopeType,
         types::{CType, CanonicalType, TypeQualifier},
     },
 };
@@ -363,13 +362,15 @@ fn resolve_ast_top(
             let mut children = Vec::new();
             for defn in definitions {
                 match defn {
-                    ASTNode::Declaration(_) => resolve_ast_declaration(
-                        node_ref,
-                        intermediate_ast,
-                        defn,
-                        parser_types,
-                        resolve_state,
-                    )?,
+                    ASTNode::Declaration(_) | ASTNode::EmptyDeclaration(_, _) => {
+                        resolve_ast_declaration(
+                            node_ref,
+                            intermediate_ast,
+                            defn,
+                            parser_types,
+                            resolve_state,
+                        )?
+                    }
                     _ => {
                         let child_ref = resolve_ast_inner(
                             node_ref,
@@ -453,6 +454,9 @@ fn resolve_ast_inner(
             Ok(node_ref)
         }
         ASTNode::Declaration(declaration_list) => unreachable!("call resolve_ast_declaration"),
+        ASTNode::EmptyDeclaration(declared_type, scope) => {
+            unreachable!("call resolve_ast_declaration")
+        }
         ASTNode::Label(labelee, ident) => {
             let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
 
@@ -577,13 +581,15 @@ fn resolve_ast_inner(
             let mut children = Vec::new();
             for stmt in inner_statements {
                 match stmt {
-                    ASTNode::Declaration(_) => resolve_ast_declaration(
-                        node_ref,
-                        intermediate_ast,
-                        stmt,
-                        parser_types,
-                        resolve_state,
-                    )?,
+                    ASTNode::Declaration(_) | ASTNode::EmptyDeclaration(_, _) => {
+                        resolve_ast_declaration(
+                            node_ref,
+                            intermediate_ast,
+                            stmt,
+                            parser_types,
+                            resolve_state,
+                        )?
+                    }
                     _ => {
                         let child_ref = resolve_ast_inner(
                             node_ref,
@@ -873,6 +879,13 @@ fn resolve_ast_declaration(
         for decl in declaration_list {
             resolve_declaration(&mut resolve_state.symtab, decl, parser_types)?;
         }
+    } else if let ASTNode::EmptyDeclaration(declared_type, scope) = ast {
+        resolve_empty_declaration(
+            &mut resolve_state.symtab,
+            declared_type,
+            *scope,
+            parser_types,
+        )?;
     } else {
         unreachable!("Must be called on ASTNode::Declaration")
     }
@@ -957,8 +970,7 @@ mod resolve_ast_tests {
 
         resolve_harness(input);
 
-        // this should not resolve, i believe - struct node_data doesn't exist and wouldn't be compatible
-        // with the one declared later (?)
+        // this should resolve, since they are both in the same file scope
         let file_scope_declarations = r#"
         struct node { 
             struct node_data *data_ptr;

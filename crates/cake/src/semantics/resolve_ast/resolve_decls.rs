@@ -78,6 +78,24 @@ pub(super) fn resolve_declaration(
     Ok(())
 }
 
+// Resolves empty declaration. This is generally only used for declaring a new type
+// (i.e. non-anonymous struct / union / enum)
+pub(super) fn resolve_empty_declaration(
+    symtab: &mut SymbolTable,
+    declared_type: &CType,
+    scope: Scope,
+    parser_types: &[CanonicalType],
+) -> Result<(), ASTResolveError> {
+    let declared_type_copy = declared_type.clone();
+    let mut qualified = QualifiedType {
+        base_type: declared_type_copy,
+        qualifier: TypeQualifier::empty(),
+    };
+    _ = resolve_declaration_type(symtab, &mut qualified, scope, parser_types)?;
+
+    Ok(())
+}
+
 enum TypeCategory {
     Object,
     Function,

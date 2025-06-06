@@ -244,6 +244,115 @@ fn test_parse_hello_world() {
 }
 
 #[test]
+fn test_parse_hello_world_unnamed_args() {
+    let hello_world = r#"
+    int main(int, char **) {
+        printf("Hello world!");
+        return 0;
+    }
+    "#;
+
+    let mut dummy_state = ParserState::new();
+    let translation_unit = {
+        let main = {
+            dummy_state.open_scope(ScopeType::FunctionScope);
+            let return_type = QualifiedType {
+                base_type: CType::BasicType {
+                    basic_type: BasicType::Int,
+                },
+                qualifier: TypeQualifier::empty(),
+            };
+
+            let argc_type = QualifiedType {
+                base_type: CType::BasicType {
+                    basic_type: BasicType::Int,
+                },
+                qualifier: TypeQualifier::empty(),
+            };
+
+            let argv_type = {
+                let char_type = QualifiedType {
+                    base_type: CType::BasicType {
+                        basic_type: BasicType::Char,
+                    },
+                    qualifier: TypeQualifier::empty(),
+                };
+
+                let pointer_to_char_type = QualifiedType {
+                    base_type: CType::PointerType {
+                        pointee_type: Box::new(char_type),
+                    },
+                    qualifier: TypeQualifier::empty(),
+                };
+
+                QualifiedType {
+                    base_type: CType::PointerType {
+                        pointee_type: Box::new(pointer_to_char_type),
+                    },
+                    qualifier: TypeQualifier::empty(),
+                }
+            };
+
+            let fn_type = FunctionTypeInner {
+                parameter_types: vec![(None, argc_type), (None, argv_type)],
+                return_type: Box::new(return_type),
+                function_specifier: FunctionSpecifier::None,
+                varargs: false,
+                prototype_scope: dummy_state.current_scope,
+            };
+
+            let fn_type = CanonicalType::FunctionType(fn_type);
+            let fn_type_idx = dummy_state.add_type(fn_type);
+
+            let body = {
+                dummy_state.open_scope(ScopeType::BlockScope);
+                let printf = {
+                    let printf_ident = make_identifier(&mut dummy_state, "printf");
+                    let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
+                    let printf_expr =
+                        ExpressionNode::FunctionCall(Box::new(printf_ident), vec![printf_arg]);
+                    ASTNode::ExpressionStatement(Box::new(printf_expr), dummy_state.current_scope)
+                };
+                let return_stmt = {
+                    let zero = ExpressionNode::Constant(Constant::Int(0));
+                    ASTNode::ReturnStatement(Some(Box::new(zero)))
+                };
+                dummy_state.close_scope().unwrap();
+                ASTNode::CompoundStatement(vec![printf, return_stmt], dummy_state.current_scope)
+            };
+
+            dummy_state.close_scope().unwrap();
+
+            let fn_type = QualifiedType {
+                base_type: CType::FunctionTypeRef {
+                    symtab_idx: fn_type_idx,
+                },
+                qualifier: TypeQualifier::empty(),
+            };
+
+            let fn_declaration = Declaration::new(
+                Identifier::new(dummy_state.current_scope, String::from("main")),
+                fn_type,
+                StorageClass::None,
+                false,
+                FunctionSpecifier::None,
+                None,
+            );
+
+            ASTNode::FunctionDefinition(Box::new(fn_declaration), Box::new(body))
+        };
+
+        ASTNode::TranslationUnit(vec![main], dummy_state.current_scope)
+    };
+
+    let (mut toks, mut state) = text_test_harness(hello_world);
+    let translation_unit_parsed =
+        parse_translation_unit(&mut toks, &mut state).expect("parse failed");
+    assert_eq!(translation_unit, translation_unit_parsed);
+    assert_eq!(dummy_state.canonical_types, state.canonical_types);
+}
+
+#[test]
 fn parse_function_definition_bad_1() {
     // no arguments
     let function_bad_1 = r#"
@@ -624,6 +733,42 @@ fn parse_struct_declaration_recursive() {
         FunctionSpecifier::None,
         None,
     )]);
+
+    assert_eq!(declaration_parsed, declaration_parsed_expected);
+    assert_eq!(state.canonical_types, dummy_state.canonical_types);
+}
+
+#[test]
+fn parse_declaration_without_declarators() {
+    let complete_struct = r#"
+    struct s {
+        int s;
+    };
+    "#;
+
+    let mut dummy_state = ParserState::new();
+    let struct_type = CanonicalType::StructureType {
+        tag: Some(String::from("s")),
+        members: vec![(
+            String::from("s"),
+            QualifiedType {
+                base_type: CType::BasicType {
+                    basic_type: BasicType::Int,
+                },
+                qualifier: TypeQualifier::empty(),
+            },
+        )],
+    };
+
+    let struct_type_idx = dummy_state.add_type(struct_type);
+    let struct_type = CType::StructureTypeRef {
+        symtab_idx: struct_type_idx,
+    };
+
+    let (mut toks, mut state) = text_test_harness(&complete_struct);
+    let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
+    let declaration_parsed_expected =
+        ASTNode::EmptyDeclaration(struct_type, dummy_state.current_scope);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
     assert_eq!(state.canonical_types, dummy_state.canonical_types);

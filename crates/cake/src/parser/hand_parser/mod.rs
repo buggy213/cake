@@ -949,6 +949,17 @@ fn parse_external_declaration(
         function_specifier,
         is_typedef,
     } = declaration_specifiers.clone();
+
+    // handle empty declaration case
+    if matches!(toks.peek(), Some((CLexemes::Semicolon, _, _))) {
+        // type qualifier, storage class, function_specifier, typedef all have 0 effect on
+        // empty declaration.
+        eat_or_error!(toks, CLexemes::Semicolon)?;
+        let empty_declaration =
+            ASTNode::EmptyDeclaration(qualified_type.base_type, state.current_scope);
+        return Ok(empty_declaration);
+    }
+
     // both will include a (concrete) declarator
     let (declaration_type, name) = parse_declarator(toks, state, qualified_type)?;
     if is_typedef {
@@ -1055,6 +1066,16 @@ fn parse_declaration(
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
     let declaration_specifiers = parse_declaration_specifiers(toks, state)?;
+    // handle empty declaration case, see parse_external_declaration
+    if matches!(toks.peek(), Some((CLexemes::Semicolon, _, _))) {
+        eat_or_error!(toks, CLexemes::Semicolon)?;
+        let empty_declaration = ASTNode::EmptyDeclaration(
+            declaration_specifiers.qualified_type.base_type,
+            state.current_scope,
+        );
+        return Ok(empty_declaration);
+    }
+
     let res = parse_init_declarators(toks, state, declaration_specifiers);
     eat_or_error!(toks, CLexemes::Semicolon)?;
 
