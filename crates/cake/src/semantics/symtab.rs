@@ -69,7 +69,7 @@ pub(crate) enum Symbol {
     // used only for enumeration constants
     Constant(Constant),
     Function {
-        function_type: TypeIdx,
+        function_type: CanonicalTypeIdx,
 
         // 2 types of linkage: internal and external
         // by default, functions have external linkage, i.e. the linker can see the function and use it to resolve function calls in other translation units
@@ -308,11 +308,15 @@ impl SymbolTable {
         Ok(())
     }
 
-    pub(crate) fn get_type(&self, idx: CanonicalTypeIdx) -> &CanonicalType {
+    pub(crate) fn get_qualified_type(&self, idx: TypeIdx) -> &QualifiedType {
+        &self.types[idx.0 as usize]
+    }
+
+    pub(crate) fn get_canonical_type(&self, idx: CanonicalTypeIdx) -> &CanonicalType {
         &self.canonical_types[idx]
     }
 
-    pub(crate) fn get_type_mut(&mut self, idx: CanonicalTypeIdx) -> &mut CanonicalType {
+    pub(crate) fn get_canonical_type_mut(&mut self, idx: CanonicalTypeIdx) -> &mut CanonicalType {
         &mut self.canonical_types[idx]
     }
 

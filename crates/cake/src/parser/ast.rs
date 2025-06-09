@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::semantics::{
     symtab::{Scope, StorageClass},
-    types::{CType, FunctionSpecifier, QualifiedType},
+    types::{BasicType, CType, FunctionSpecifier, QualifiedType},
 };
 
 #[derive(Debug, PartialEq)]
@@ -11,6 +11,7 @@ pub(crate) enum ASTNode {
 
     FunctionDefinition(Box<Declaration>, Box<ASTNode>),
     Declaration(Vec<Declaration>), // identifier + (optional) initializer
+    EmptyDeclaration(CType, Scope), // used for declaring new struct, but not creating an instance of it
 
     Label(Box<ASTNode>, Identifier), // both symbol table and label node will have reference to labeled stmt
     CaseLabel(Box<ASTNode>, Box<ExpressionNode>),
@@ -97,6 +98,19 @@ pub(crate) enum Constant {
     Float(f32),
     Double(f64),
     // enums have type int (6.4.4.3)
+}
+
+impl Constant {
+    pub(crate) fn basic_type(self) -> BasicType {
+        match self {
+            Constant::Int(_) => BasicType::Int,
+            Constant::LongInt(_) => BasicType::Long,
+            Constant::UInt(_) => BasicType::UInt,
+            Constant::ULongInt(_) => BasicType::ULong,
+            Constant::Float(_) => BasicType::Float,
+            Constant::Double(_) => BasicType::Double,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -336,4 +350,61 @@ pub(crate) enum TypedExpressionNode {
     Identifier(QualifiedType, Identifier),
     Constant(QualifiedType, Constant),
     StringLiteral(QualifiedType, String),
+}
+
+impl TypedExpressionNode {
+    pub(crate) fn expr_type(&self) -> &QualifiedType {
+        match self {
+            TypedExpressionNode::CommaExpr(qualified_type, _)
+            | TypedExpressionNode::SimpleAssign(qualified_type, _, _)
+            | TypedExpressionNode::MultiplyAssign(qualified_type, _, _)
+            | TypedExpressionNode::DivideAssign(qualified_type, _, _)
+            | TypedExpressionNode::ModuloAssign(qualified_type, _, _)
+            | TypedExpressionNode::AddAssign(qualified_type, _, _)
+            | TypedExpressionNode::SubAssign(qualified_type, _, _)
+            | TypedExpressionNode::LShiftAssign(qualified_type, _, _)
+            | TypedExpressionNode::RShiftAssign(qualified_type, _, _)
+            | TypedExpressionNode::AndAssign(qualified_type, _, _)
+            | TypedExpressionNode::XorAssign(qualified_type, _, _)
+            | TypedExpressionNode::OrAssign(qualified_type, _, _)
+            | TypedExpressionNode::Ternary(qualified_type, _, _, _)
+            | TypedExpressionNode::LogicalAnd(qualified_type, _, _)
+            | TypedExpressionNode::LogicalOr(qualified_type, _, _)
+            | TypedExpressionNode::BitwiseAnd(qualified_type, _, _)
+            | TypedExpressionNode::BitwiseOr(qualified_type, _, _)
+            | TypedExpressionNode::BitwiseXor(qualified_type, _, _)
+            | TypedExpressionNode::Equal(qualified_type, _, _)
+            | TypedExpressionNode::NotEqual(qualified_type, _, _)
+            | TypedExpressionNode::LessThan(qualified_type, _, _)
+            | TypedExpressionNode::GreaterThan(qualified_type, _, _)
+            | TypedExpressionNode::LessThanOrEqual(qualified_type, _, _)
+            | TypedExpressionNode::GreaterThanOrEqual(qualified_type, _, _)
+            | TypedExpressionNode::LShift(qualified_type, _, _)
+            | TypedExpressionNode::RShift(qualified_type, _, _)
+            | TypedExpressionNode::Multiply(qualified_type, _, _)
+            | TypedExpressionNode::Divide(qualified_type, _, _)
+            | TypedExpressionNode::Modulo(qualified_type, _, _)
+            | TypedExpressionNode::Add(qualified_type, _, _)
+            | TypedExpressionNode::Subtract(qualified_type, _, _)
+            | TypedExpressionNode::Cast(qualified_type, _, _)
+            | TypedExpressionNode::PreIncrement(qualified_type, _)
+            | TypedExpressionNode::PreDecrement(qualified_type, _)
+            | TypedExpressionNode::Sizeof(qualified_type, _)
+            | TypedExpressionNode::AddressOf(qualified_type, _)
+            | TypedExpressionNode::Dereference(qualified_type, _)
+            | TypedExpressionNode::UnaryPlus(qualified_type, _)
+            | TypedExpressionNode::UnaryMinus(qualified_type, _)
+            | TypedExpressionNode::BitwiseNot(qualified_type, _)
+            | TypedExpressionNode::Not(qualified_type, _)
+            | TypedExpressionNode::PostIncrement(qualified_type, _)
+            | TypedExpressionNode::PostDecrement(qualified_type, _)
+            | TypedExpressionNode::ArraySubscript(qualified_type, _, _)
+            | TypedExpressionNode::FunctionCall(qualified_type, _, _)
+            | TypedExpressionNode::DotAccess(qualified_type, _, _)
+            | TypedExpressionNode::ArrowAccess(qualified_type, _, _)
+            | TypedExpressionNode::Identifier(qualified_type, _)
+            | TypedExpressionNode::Constant(qualified_type, _)
+            | TypedExpressionNode::StringLiteral(qualified_type, _) => qualified_type,
+        }
+    }
 }

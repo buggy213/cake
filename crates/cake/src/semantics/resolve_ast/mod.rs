@@ -1,10 +1,10 @@
 use resolve_decls::{resolve_declaration, resolve_empty_declaration, resolve_function_definition};
-use resolve_exprs::resolve_integer_constant_expression;
+use resolve_exprs::{resolve_expr, resolve_integer_constant_expression, ResolveExprError};
 use std::mem::MaybeUninit;
 use thiserror::Error;
 
 use super::{
-    symtab::{Scope, SymbolTable, SymtabError},
+    symtab::{CanonicalTypeIdx, Scope, SymbolTable, SymtabError},
     types::{BasicType, QualifiedType},
 };
 use crate::parser::ast::{
@@ -20,15 +20,15 @@ use crate::{
 };
 
 #[derive(Debug, Error)]
-enum ASTResolveError {
+pub(crate) enum ASTResolveError {
     #[error("function declaration must have storage class of extern or static")]
     BadFunctionStorageClass,
     #[error("symbol redeclaration error")]
     SymbolRedeclaration,
     #[error("function redefinition error")]
     FunctionRedefinition,
-    #[error("function declared static after being declared extern")]
-    StaticFunctionAfterExternFunction,
+    #[error("function has internal / external linkage in different declarations")]
+    InconsistentFunctionLinkage,
     #[error("symtab error")]
     SymtabError(#[from] SymtabError),
     #[error("declaration cannot have incomplete type")]
@@ -61,6 +61,18 @@ enum ASTResolveError {
     BadContinue,
     #[error("break statement not within switch/for/while/do-while")]
     BadBreak,
+    #[error("declaration conflicts with existing declaration")]
+    ConflictingDeclaration,
+    #[error("function definition contains parameter with incomplete type")]
+    IncompleteParameter,
+    #[error("function declarations are incompatible")]
+    IncompatibleFunctionDeclarations,
+    #[error("error while resolving expression")]
+    ExprResolveError(#[from] ResolveExprError),
+    #[error("controlling expression expr type (if/switch/while/for)")]
+    BadControllingExprType,
+    #[error("bad return value")]
+    BadReturnValue,
 }
 
 #[derive(Debug, PartialEq)]
@@ -77,7 +89,7 @@ pub(crate) struct ResolvedAST {
 struct IntermediateAST {
     nodes: Vec<MaybeUninit<ResolvedASTNode>>,
     ast_indices: Vec<NodeRef>,
-    exprs: Vec<MaybeUninit<TypedExpressionNode>>,
+    exprs: Vec<TypedExpressionNode>,
 }
 
 impl ResolvedAST {
@@ -95,7 +107,6 @@ impl ResolvedAST {
         // relies on "in-place collect" optimization for efficiency
         // MaybeUninit<T> is guaranteed to have same size and alignment as T
         let nodes: Vec<_> = nodes.into_iter().map(|n| n.assume_init()).collect();
-        let exprs: Vec<_> = exprs.into_iter().map(|e| e.assume_init()).collect();
 
         ResolvedAST {
             nodes,
@@ -122,9 +133,32 @@ struct IterationStatementContext {
     enclosing_context: Option<usize>,
 }
 
+// Needed for typechecking return statements
+struct FunctionDefinitionContext {
+    node: NodeRef,
+
+    func_type: CanonicalTypeIdx,
+}
+
 enum ResolverContext {
     Switch(SwitchStatementContext),
     Iteration(IterationStatementContext),
+    Function(FunctionDefinitionContext),
+}
+
+impl ResolverContext {
+    fn enclosing_context(&self) -> Option<usize> {
+        match self {
+            ResolverContext::Switch(switch_statement_context) => {
+                switch_statement_context.enclosing_context
+            }
+            ResolverContext::Iteration(iteration_statement_context) => {
+                iteration_statement_context.enclosing_context
+            }
+            // functions cannot have enclosing context (maybe TODO - support nested functions?)
+            ResolverContext::Function(_) => None,
+        }
+    }
 }
 
 struct ResolverState {
@@ -171,10 +205,8 @@ impl ResolverState {
         while let Some(current_idx) = idx {
             match &self.context_stack[current_idx] {
                 ResolverContext::Switch(_) => return Some(current_idx),
-                ResolverContext::Iteration(iteration_stmt) => {
-                    // continue searching in the enclosing context
-                    idx = iteration_stmt.enclosing_context;
-                }
+                // continue searching in enclosing context
+                ctx => idx = ctx.enclosing_context(),
             }
         }
 
@@ -231,11 +263,8 @@ impl ResolverState {
         let mut idx = self.current_context;
         while let Some(current_idx) = idx {
             match &self.context_stack[current_idx] {
-                ResolverContext::Switch(switch_stmt) => {
-                    // continue searching in the enclosing context
-                    idx = switch_stmt.enclosing_context;
-                }
                 ResolverContext::Iteration(_) => return Some(current_idx),
+                ctx => idx = ctx.enclosing_context(),
             }
         }
 
@@ -247,7 +276,9 @@ impl ResolverState {
         self.current_iterstmt_idx()
             .and_then(|idx| match self.context_stack.get(idx) {
                 Some(ResolverContext::Iteration(iterstmt)) => Some(iterstmt),
-                Some(_) => unreachable!("current_iterstmt_idx should only return switch contexts"),
+                Some(_) => {
+                    unreachable!("current_iterstmt_idx should only return iterstmt contexts")
+                }
                 None => None,
             })
     }
@@ -257,7 +288,9 @@ impl ResolverState {
         self.current_iterstmt_idx()
             .and_then(|idx| match self.context_stack.get_mut(idx) {
                 Some(ResolverContext::Iteration(iterstmt)) => Some(iterstmt),
-                Some(_) => unreachable!("current_iterstmt_idx should only return switch contexts"),
+                Some(_) => {
+                    unreachable!("current_iterstmt_idx should only return iterstmt contexts")
+                }
                 None => None,
             })
     }
@@ -266,12 +299,59 @@ impl ResolverState {
     fn close_iterstmt(&mut self) {
         match self.current_context() {
             Some(ResolverContext::Iteration(iterstmt)) => {
-                // pop switch context
+                // pop context
                 self.current_context = iterstmt.enclosing_context
             }
             _ => {
                 // Internal compiler error
-                panic!("Cannot close switch statement when current context is not a switch");
+                panic!("Cannot close iteration statement when current context is not an iteration statement");
+            }
+        }
+    }
+
+    fn add_function_defn(&mut self, node: NodeRef, func_type: CanonicalTypeIdx) {
+        let new_function_definition_ctx = FunctionDefinitionContext { node, func_type };
+        let idx = self.context_stack.len();
+        self.context_stack
+            .push(ResolverContext::Function(new_function_definition_ctx));
+        self.current_context = Some(idx);
+    }
+
+    fn current_function_defn_idx(&self) -> Option<usize> {
+        let mut idx = self.current_context;
+        while let Some(current_idx) = idx {
+            match &self.context_stack[current_idx] {
+                ResolverContext::Function(_) => return Some(current_idx),
+                ctx => idx = ctx.enclosing_context(),
+            }
+        }
+
+        None
+    }
+
+    // Get reference to lexically closest switch statement context
+    fn current_function_defn(&self) -> Option<&FunctionDefinitionContext> {
+        self.current_function_defn_idx()
+            .and_then(|idx| match self.context_stack.get(idx) {
+                Some(ResolverContext::Function(iterstmt)) => Some(iterstmt),
+                Some(_) => unreachable!(
+                    "current_function_defn_idx should only return function defn contexts"
+                ),
+                None => None,
+            })
+    }
+
+    fn close_function_defn(&mut self) {
+        match self.current_context() {
+            Some(ResolverContext::Function(_)) => {
+                // pop context (function has no surrounding context, for now)
+                self.current_context = None
+            }
+            _ => {
+                // Internal compiler error
+                panic!(
+                    "Cannot close function definition when top of stack is not function definition"
+                );
             }
         }
     }
@@ -284,7 +364,7 @@ impl ResolverState {
 /// 4. evaluate compile time constants
 /// goal: by the end of `resolve_ast`, the code is guaranteed to be free of compilation (though maybe not link-time) errors
 /// resolve_ast also checks internal compiler invariants
-pub fn resolve_ast(
+pub(crate) fn resolve_ast(
     ast_root: ASTNode,
     parser_state: ParserState,
 ) -> Result<ResolvedAST, ASTResolveError> {
@@ -412,12 +492,15 @@ fn resolve_ast_inner(
     match ast {
         ASTNode::TranslationUnit(_, _) => unreachable!("Must call resolve_ast_top"),
         ASTNode::FunctionDefinition(fn_declaration, body) => {
-            todo!("goal is to get top level (global) declarations working first");
-
-            let ident = resolve_function_definition(&mut resolve_state.symtab, &fn_declaration)?;
+            let func_type_idx = resolve_function_definition(
+                &mut resolve_state.symtab,
+                &fn_declaration,
+                parser_types,
+            )?;
 
             let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
 
+            resolve_state.add_function_defn(node_ref, func_type_idx);
             let body_ref = resolve_ast_inner(
                 node_ref,
                 intermediate_ast,
@@ -425,6 +508,7 @@ fn resolve_ast_inner(
                 parser_types,
                 resolve_state,
             )?;
+            resolve_state.close_function_defn();
 
             // check that all goto statements in this function have a proper target
             for goto_node_ref in resolve_state.deferred_goto_resolve.iter().copied() {
@@ -444,6 +528,7 @@ fn resolve_ast_inner(
             }
             resolve_state.deferred_goto_resolve.clear();
 
+            let ident = fn_declaration.name.clone();
             let fn_definition_node = ResolvedASTNode::FunctionDefinition {
                 parent,
                 ident,
@@ -513,7 +598,7 @@ fn resolve_ast_inner(
                 value,
             );
 
-            intermediate_ast.exprs.push(MaybeUninit::new(case_expr));
+            intermediate_ast.exprs.push(case_expr);
             let expr_ref = intermediate_ast.exprs.len() - 1;
             let expr_ref = ExprRef(expr_ref as u32);
 
@@ -615,8 +700,16 @@ fn resolve_ast_inner(
 
             Ok(node_ref)
         }
-        ASTNode::ExpressionStatement(expr, _scope) => {
-            todo!("resolve expr")
+        ASTNode::ExpressionStatement(expr, scope) => {
+            let expr_ref = resolve_expr(expr, &mut intermediate_ast.exprs, &resolve_state.symtab)?;
+            let expr_node = ResolvedASTNode::ExpressionStatement {
+                parent,
+                expr: expr_ref,
+                scope: *scope,
+            };
+            let expr_node_ref = NodeRef(intermediate_ast.nodes.len() as u32);
+            intermediate_ast.nodes.push(MaybeUninit::new(expr_node));
+            Ok(expr_node_ref)
         }
         ASTNode::NullStatement => {
             let null_statement_node = ResolvedASTNode::NullStatement { parent };
@@ -629,8 +722,18 @@ fn resolve_ast_inner(
             Ok(node_ref)
         }
         ASTNode::IfStatement(controlling_expr, body, else_body, scope) => {
-            // resolve_expr(controlling_expr)
-            todo!("resolve expr");
+            let controlling_expr_ref = resolve_expr(
+                controlling_expr,
+                &mut intermediate_ast.exprs,
+                &resolve_state.symtab,
+            )?;
+
+            let controlling_expr_type =
+                intermediate_ast.exprs[controlling_expr_ref.0 as usize].expr_type();
+
+            if !controlling_expr_type.base_type.scalar_type() {
+                return Err(ASTResolveError::BadControllingExprType);
+            }
 
             let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
 
@@ -643,7 +746,7 @@ fn resolve_ast_inner(
             )?;
 
             let not_taken_ref = else_body
-                .as_mut()
+                .as_ref()
                 .map(|else_body| {
                     resolve_ast_inner(
                         node_ref,
@@ -657,7 +760,7 @@ fn resolve_ast_inner(
 
             let if_statement_node = ResolvedASTNode::IfStatement {
                 parent,
-                condition: todo!(),
+                condition: controlling_expr_ref,
                 taken: taken_ref,
                 not_taken: not_taken_ref,
                 scope: *scope,
@@ -667,7 +770,18 @@ fn resolve_ast_inner(
             Ok(node_ref)
         }
         ASTNode::SwitchStatement(controlling_expr, body, scope) => {
-            todo!("resolve expr");
+            let controlling_expr_ref = resolve_expr(
+                &controlling_expr,
+                &mut intermediate_ast.exprs,
+                &resolve_state.symtab,
+            )?;
+
+            let controlling_expr_type =
+                intermediate_ast.exprs[controlling_expr_ref.0 as usize].expr_type();
+
+            if !matches!(controlling_expr_type.base_type, CType::BasicType { .. }) {
+                return Err(ASTResolveError::BadControllingExprType);
+            }
 
             let value_type = todo!();
             let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
@@ -690,7 +804,7 @@ fn resolve_ast_inner(
 
             let switch_statement_node = ResolvedASTNode::SwitchStatement {
                 parent,
-                controlling_expr: todo!(),
+                controlling_expr: controlling_expr_ref,
                 body: body_ref,
                 context: context_ref,
                 scope: *scope,
@@ -701,8 +815,17 @@ fn resolve_ast_inner(
         }
         ASTNode::WhileStatement(controlling_expr, body, scope)
         | ASTNode::DoWhileStatement(controlling_expr, body, scope) => {
-            // resolve_expr(controlling_expr);
-            todo!("resolve expr");
+            let controlling_expr_ref = resolve_expr(
+                &controlling_expr,
+                &mut intermediate_ast.exprs,
+                &resolve_state.symtab,
+            )?;
+
+            let controlling_expr_type =
+                intermediate_ast.exprs[controlling_expr_ref.0 as usize].expr_type();
+            if !controlling_expr_type.base_type.scalar_type() {
+                return Err(ASTResolveError::BadControllingExprType);
+            }
 
             let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
 
@@ -716,11 +839,20 @@ fn resolve_ast_inner(
             )?;
             resolve_state.close_iterstmt();
 
-            let while_statement_node = ResolvedASTNode::WhileStatement {
-                parent,
-                condition: todo!(),
-                body: body_ref,
-                scope: *scope,
+            let while_statement_node = if matches!(ast, ASTNode::WhileStatement(_, _, _)) {
+                ResolvedASTNode::WhileStatement {
+                    parent,
+                    condition: todo!(),
+                    body: body_ref,
+                    scope: *scope,
+                }
+            } else {
+                ResolvedASTNode::DoWhileStatement {
+                    parent,
+                    condition: todo!(),
+                    body: body_ref,
+                    scope: *scope,
+                }
             };
             intermediate_ast.nodes[node_idx].write(while_statement_node);
 
@@ -836,6 +968,7 @@ fn resolve_ast_inner(
                 ResolverContext::Iteration(iteration_statement_context) => {
                     iteration_statement_context.node
                 }
+                ResolverContext::Function(_) => return Err(ASTResolveError::BadBreak),
             };
 
             let break_statement_node = ResolvedASTNode::BreakStatement {
@@ -851,11 +984,48 @@ fn resolve_ast_inner(
             Ok(node_ref)
         }
         ASTNode::ReturnStatement(expr) => {
-            todo!("resolve expr, if it exists");
+            // type check if it matches function signature
+            let current_fn = resolve_state.current_function_defn()
+                .expect("internal compiler error: grammar requires return can only be in function definition");
+
+            let current_fn_type = resolve_state
+                .symtab
+                .get_canonical_type(current_fn.func_type);
+
+            let current_fn_type = match current_fn_type {
+                CanonicalType::FunctionType(function_type_inner) => function_type_inner,
+                _ => panic!("corrupted symtab type table"),
+            };
+
+            let current_fn_return_type = current_fn_type.return_type.as_ref();
+
+            // do type-check
+            let return_value = match expr {
+                Some(expr) => {
+                    let expr_ref =
+                        resolve_expr(expr, &mut intermediate_ast.exprs, &resolve_state.symtab)?;
+                    let expr_type = intermediate_ast.exprs[expr_ref.0 as usize].expr_type();
+
+                    // qualifiers don't matter here, i think
+                    // technically, this is not compliant to standard i think
+                    if current_fn_return_type.base_type != expr_type.base_type {
+                        return Err(ASTResolveError::BadReturnValue);
+                    }
+
+                    Some(expr_ref)
+                }
+                None => {
+                    if !current_fn_return_type.base_type.is_void() {
+                        return Err(ASTResolveError::BadReturnValue);
+                    }
+
+                    None
+                }
+            };
 
             let return_statement_node = ResolvedASTNode::ReturnStatement {
                 parent,
-                return_value: todo!(),
+                return_value,
             };
             intermediate_ast
                 .nodes
@@ -896,20 +1066,14 @@ fn resolve_ast_declaration(
 mod resolve_decls;
 mod resolve_exprs;
 
+#[cfg(test)]
 mod resolve_ast_tests {
     use crate::{
-        parser::{
-            ast::{NodeRangeRef, ResolvedASTNode},
-            hand_parser::{parse_translation_unit, CTokenStream, ParserState},
-        },
+        parser::hand_parser::{parse_translation_unit, CTokenStream, ParserState},
         scanner::{lexeme_sets::c_lexemes::CLexemes, table_scanner::DFAScanner},
-        semantics::{
-            symtab::{CanonicalTypeIdx, Scope, ScopeType, SymbolTable},
-            types::{CType, CanonicalType, QualifiedType, TypeQualifier},
-        },
     };
 
-    use super::{resolve_ast, ResolvedAST};
+    use super::resolve_ast;
 
     struct ResolveHarnessInput {
         code: &'static str,
@@ -984,6 +1148,50 @@ mod resolve_ast_tests {
         let input = ResolveHarnessInput {
             code: file_scope_declarations,
         };
+
+        resolve_harness(input);
+    }
+
+    #[test]
+    fn resolve_adjust_function_params_test() {
+        let function_declaration = r#"
+        void f(char *argv[], int q(char));
+        "#;
+
+        let input = ResolveHarnessInput {
+            code: function_declaration,
+        };
+
+        resolve_harness(input);
+    }
+
+    #[test]
+    fn resolve_arithmetic_exprs() {
+        let arithmetic_exprs = r#"
+        int main(int argc, char *argv[]) {
+            7 + 15;
+            7.0f + 12;
+            3.0 + 1.0f;
+        }
+        "#;
+
+        let input = ResolveHarnessInput {
+            code: arithmetic_exprs,
+        };
+        resolve_harness(input);
+    }
+
+    #[test]
+    fn resolve_hello() {
+        let hello = r#"
+        int printf(const char *restrict format, ...);
+        
+        int main(int argc, char *argv[]) {
+            printf("Hello world!");
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code: hello };
 
         resolve_harness(input);
     }

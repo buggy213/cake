@@ -1,17 +1,20 @@
 use bitflags::bitflags;
 
-use super::symtab::{Scope, CanonicalTypeIdx};
+use super::symtab::{CanonicalTypeIdx, Scope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BasicType {
-    UChar,
     Char,
-    UShort,
+    UChar,
+
     Short,
-    UInt,
+    UShort,
+
     Int,
-    ULong,
+    UInt,
+
     Long,
+    ULong,
 
     Float,
     Double,
@@ -133,4 +136,18 @@ pub(crate) enum CType {
     FunctionTypeRef {
         symtab_idx: CanonicalTypeIdx,
     },
+}
+
+impl CType {
+    pub(crate) fn scalar_type(&self) -> bool {
+        match self {
+            CType::BasicType { .. } => true,
+            CType::PointerType { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_void(&self) -> bool {
+        matches!(self, CType::Void)
+    }
 }

@@ -28,28 +28,44 @@ pub(super) fn resolve_declaration(
     let declaration_type_category =
         resolve_declaration_type(symtab, &mut type_copy, declaration.name.scope, parser_types)?;
 
-    // place resolved type into symbol table
-    let resolved_type_idx = symtab.add_qualified_type(type_copy);
+    // functions are always resolved at file scope
+    let scope = if declaration_type_category == TypeCategory::Function {
+        Scope::new_file_scope()
+    } else {
+        declaration.name.scope
+    };
 
     // then, place identifier into symbol table
-    match symtab.direct_lookup_symbol(declaration.name.scope, &declaration.name.name) {
+    match symtab.direct_lookup_symbol(scope, &declaration.name.name) {
         Some(_) => {
-            // symbol is already declared
+            // Technically, this is allowed by standard
+            // most code should not need this (barring forward declaration of function prototypes
+            // which is handled by resolve_function_definition).
+            // revisit it if it's an issue
             return Err(ASTResolveError::SymbolRedeclaration);
         }
         None => {
             let symbol = match declaration_type_category {
                 TypeCategory::Object => {
                     // resolve linkage rules here for declarations
-                    // TODO: how to extend this to
+                    // i don't think this is fully standards compliant
                     let linkage = match declaration.storage_class {
                         StorageClass::Extern => Linkage::External,
                         StorageClass::Static => Linkage::Internal,
                         StorageClass::Auto | StorageClass::Register => {
-                            todo!("only dealing with top-level declarations right now, neither of these should be allowed")
+                            todo!("support auto, register storage class");
                         }
-                        StorageClass::None => Linkage::External,
+                        StorageClass::None => {
+                            if declaration.name.scope.scope_type == ScopeType::FileScope {
+                                Linkage::External
+                            } else {
+                                Linkage::None
+                            }
+                        }
                     };
+
+                    // place resolved type into symbol table
+                    let resolved_type_idx = symtab.add_qualified_type(type_copy);
 
                     Symbol::Object {
                         object_type: resolved_type_idx,
@@ -57,21 +73,35 @@ pub(super) fn resolve_declaration(
                     }
                 }
                 TypeCategory::Function => {
-                    // within block scope, declaration of function can only have storage class extern
+                    // this is definitely not standards compliant
+                    let linkage = match declaration.storage_class {
+                        StorageClass::Static => Linkage::Internal,
+                        StorageClass::Extern | StorageClass::None => Linkage::External,
+                        StorageClass::Auto | StorageClass::Register => {
+                            return Err(ASTResolveError::BadFunctionStorageClass);
+                        }
+                    };
 
-                    // declaration.name.scope.scope_type
-                    todo!()
+                    let fn_type_idx = match type_copy.base_type {
+                        CType::FunctionTypeRef { symtab_idx } => symtab_idx,
+                        _ => {
+                            return Err(ASTResolveError::CorruptedSymtabTypeTable);
+                        }
+                    };
+
+                    Symbol::Function {
+                        function_type: fn_type_idx,
+                        internal_linkage: linkage == Linkage::Internal,
+                        defined: false,
+                    }
                 }
                 TypeCategory::Incomplete => {
                     // cannot declare an incomplete object
                     return Err(ASTResolveError::IncompleteDeclaration);
                 }
             };
-            symtab.add_symbol(
-                declaration.name.scope,
-                declaration.name.name.clone(),
-                symbol,
-            )?;
+
+            symtab.add_symbol(scope, declaration.name.name.clone(), symbol)?;
         }
     }
 
@@ -96,6 +126,7 @@ pub(super) fn resolve_empty_declaration(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum TypeCategory {
     Object,
     Function,
@@ -112,6 +143,24 @@ impl CanonicalType {
             CanonicalType::StructureType { .. } => TypeCategory::Object,
             CanonicalType::EnumerationType { .. } => TypeCategory::Object,
             CanonicalType::FunctionType { .. } => TypeCategory::Function,
+        }
+    }
+}
+
+impl CType {
+    fn type_category(&self, symtab: &SymbolTable) -> TypeCategory {
+        match self {
+            CType::BasicType { .. } => TypeCategory::Object,
+            CType::IncompleteArrayType { .. } => TypeCategory::Incomplete,
+            CType::ArrayType { .. } => TypeCategory::Object,
+            CType::PointerType { .. } => TypeCategory::Object,
+            CType::Void => TypeCategory::Incomplete,
+            CType::StructureTypeRef { symtab_idx }
+            | CType::UnionTypeRef { symtab_idx }
+            | CType::EnumTypeRef { symtab_idx }
+            | CType::FunctionTypeRef { symtab_idx } => {
+                symtab.get_canonical_type(*symtab_idx).type_category()
+            }
         }
     }
 }
@@ -165,89 +214,7 @@ fn resolve_declaration_type(
         CType::FunctionTypeRef {
             symtab_idx: ast_idx,
         } => {
-            let mut function_type = parser_types[ast_idx.0].clone();
-
-            match &mut function_type {
-                CanonicalType::FunctionType(FunctionTypeInner {
-                    parameter_types,
-                    return_type,
-                    prototype_scope,
-                    varargs,
-                    ..
-                }) => {
-                    // Note: gcc / clang seem to disallow defining a new type (struct / enum / union)
-                    // inside the return type for C++ but not in C (I'm not totally sure why?)
-                    let return_type_category = resolve_declaration_type(
-                        symtab,
-                        return_type,
-                        *prototype_scope,
-                        parser_types,
-                    )?;
-
-                    // return type cannot be function type or array type
-                    let return_type_is_array = matches!(
-                        return_type.base_type,
-                        CType::ArrayType { .. } | CType::IncompleteArrayType { .. }
-                    );
-                    let return_type_is_fn = matches!(return_type_category, TypeCategory::Function);
-                    if return_type_is_fn || return_type_is_array {
-                        return Err(ASTResolveError::IncompleteReturnType);
-                    }
-
-                    // handle special case of f(void) by removing it
-                    let void_only = (
-                        None,
-                        QualifiedType {
-                            base_type: CType::Void,
-                            qualifier: TypeQualifier::empty(),
-                        },
-                    );
-                    if parameter_types.len() == 1 && parameter_types[0] == void_only && !(*varargs)
-                    {
-                        parameter_types.clear();
-                    }
-
-                    for (_, param_type) in parameter_types {
-                        resolve_declaration_type(symtab, param_type, scope, parser_types)?;
-
-                        // adjust types - array / function decay (array / function parameters converted to
-                        // pointers to array / function types instead)
-                        match &mut param_type.base_type {
-                            CType::IncompleteArrayType { element_type }
-                            | CType::ArrayType {
-                                size: _,
-                                element_type,
-                            } => {
-                                let pointee_type = std::mem::replace(
-                                    element_type,
-                                    Box::new(QualifiedType {
-                                        base_type: CType::Void,
-                                        qualifier: TypeQualifier::empty(),
-                                    }),
-                                );
-                                param_type.base_type = CType::PointerType { pointee_type };
-                            }
-                            CType::FunctionTypeRef { symtab_idx } => {
-                                param_type.base_type = CType::PointerType {
-                                    pointee_type: Box::new(QualifiedType {
-                                        base_type: CType::FunctionTypeRef {
-                                            symtab_idx: *symtab_idx,
-                                        },
-                                        qualifier: TypeQualifier::empty(),
-                                    }),
-                                };
-                            }
-                            _ => (),
-                        };
-
-                        // incomplete types allowed in function prototypes, but not function definitions
-                        // we check this within resolve_function_definition
-                    }
-                }
-                _ => {
-                    return Err(ASTResolveError::CorruptedParserTypeTable);
-                }
-            }
+            let function_type = adjust_function_type(symtab, *ast_idx, parser_types)?;
             let fn_type_idx = symtab.add_canonical_type(function_type);
             // now a index into symtab's type table, rather than parser type table
             *ast_idx = fn_type_idx;
@@ -456,7 +423,7 @@ fn resolve_incomplete_type(
     // union node m;
     // even though they have the same tag, you definitely cannot resolve one to the other
     if let Some(type_idx) = symtab.lookup_tag_type_idx(scope, tag) {
-        let symtab_type = symtab.get_type(type_idx);
+        let symtab_type = symtab.get_canonical_type(type_idx);
         if predicate(symtab_type) {
             *ast_idx = type_idx;
             return Ok(symtab_type.type_category());
@@ -477,7 +444,7 @@ fn complete_type(
     predicate: fn(&CanonicalType) -> bool,
     completed: CanonicalType,
 ) -> Result<(), ASTResolveError> {
-    match symtab.get_type_mut(type_idx) {
+    match symtab.get_canonical_type_mut(type_idx) {
         CanonicalType::FunctionType { .. } => {
             return Err(ASTResolveError::CorruptedSymtabTypeTable);
         }
@@ -491,6 +458,93 @@ fn complete_type(
         }
         _ => {
             return Err(ASTResolveError::TagRedefinition);
+        }
+    }
+}
+
+fn adjust_function_type(
+    symtab: &mut SymbolTable,
+    parser_type_idx: CanonicalTypeIdx,
+    parser_types: &[CanonicalType],
+) -> Result<CanonicalType, ASTResolveError> {
+    let mut function_type = parser_types[parser_type_idx.0].clone();
+
+    match &mut function_type {
+        CanonicalType::FunctionType(FunctionTypeInner {
+            parameter_types,
+            return_type,
+            prototype_scope,
+            varargs,
+            ..
+        }) => {
+            // Note: gcc / clang seem to disallow defining a new type (struct / enum / union)
+            // inside the return type for C++ but not in C (I'm not totally sure why?)
+            let return_type_category =
+                resolve_declaration_type(symtab, return_type, *prototype_scope, parser_types)?;
+
+            // return type cannot be function type or array type
+            let return_type_is_array = matches!(
+                return_type.base_type,
+                CType::ArrayType { .. } | CType::IncompleteArrayType { .. }
+            );
+            let return_type_is_fn = matches!(return_type_category, TypeCategory::Function);
+            if return_type_is_fn || return_type_is_array {
+                return Err(ASTResolveError::IncompleteReturnType);
+            }
+
+            // handle special case of f(void) by removing it
+            let void_only = (
+                None,
+                QualifiedType {
+                    base_type: CType::Void,
+                    qualifier: TypeQualifier::empty(),
+                },
+            );
+            if parameter_types.len() == 1 && parameter_types[0] == void_only && !(*varargs) {
+                parameter_types.clear();
+            }
+
+            for (_, param_type) in parameter_types {
+                resolve_declaration_type(symtab, param_type, *prototype_scope, parser_types)?;
+
+                // adjust types - array / function decay (array / function parameters converted to
+                // pointers to array / function types instead)
+                match &mut param_type.base_type {
+                    CType::IncompleteArrayType { element_type }
+                    | CType::ArrayType {
+                        size: _,
+                        element_type,
+                    } => {
+                        let pointee_type = std::mem::replace(
+                            element_type,
+                            Box::new(QualifiedType {
+                                base_type: CType::Void,
+                                qualifier: TypeQualifier::empty(),
+                            }),
+                        );
+                        param_type.base_type = CType::PointerType { pointee_type };
+                    }
+                    CType::FunctionTypeRef { symtab_idx } => {
+                        param_type.base_type = CType::PointerType {
+                            pointee_type: Box::new(QualifiedType {
+                                base_type: CType::FunctionTypeRef {
+                                    symtab_idx: *symtab_idx,
+                                },
+                                qualifier: TypeQualifier::empty(),
+                            }),
+                        };
+                    }
+                    _ => (),
+                };
+
+                // incomplete types allowed in function prototypes, but not function definitions
+                // we check this within `resolve_function_definition`
+            }
+
+            Ok(function_type)
+        }
+        _ => {
+            return Err(ASTResolveError::CorruptedParserTypeTable);
         }
     }
 }
@@ -517,66 +571,110 @@ fn resolve_member_types(
 pub(crate) fn resolve_function_definition(
     symtab: &mut SymbolTable,
     fn_declaration: &Declaration,
-) -> Result<Identifier, ASTResolveError> {
+    parser_types: &[CanonicalType],
+) -> Result<CanonicalTypeIdx, ASTResolveError> {
     let scope = fn_declaration.name.scope;
     assert!(
         scope.scope_type == ScopeType::FileScope,
         "grammar only allows function definitions at file scope"
     );
 
-    // check that storage class is extern, static, or none
-    if fn_declaration.is_typedef {
-        return Err(ASTResolveError::BadFunctionStorageClass);
-    }
-    let declared_static = match fn_declaration.storage_class {
-        StorageClass::Extern | StorageClass::None => false, // no storage class is equivalent to extern
-        StorageClass::Static => true,
+    // adjust function type
+    let parser_type_idx = match fn_declaration.qualified_type.base_type {
+        CType::FunctionTypeRef { symtab_idx } => symtab_idx,
         _ => {
-            return Err(ASTResolveError::BadFunctionStorageClass);
+            return Err(ASTResolveError::CorruptedParserTypeTable);
         }
     };
 
-    // TODO
-    todo!("check that function parameters are not incomplete within definition");
-    /*
-    match symtab.direct_lookup_symbol_mut(scope, &fn_declaration.name.name) {
-        Some(sym) => {
-            match sym {
-                Symbol::Function {
-                    internal_linkage,
-                    defined,
-                } => {
-                    // function was previously defined
-                    if *defined {
-                        return Err(ASTResolveError::FunctionRedefinition);
-                    }
+    let adjusted_type = adjust_function_type(symtab, parser_type_idx, parser_types)?;
+    let adjusted_type_inner = match &adjusted_type {
+        CanonicalType::FunctionType(inner) => inner,
+        _ => return Err(ASTResolveError::CorruptedSymtabTypeTable),
+    };
 
-                    // declared static -> declared extern or w/o storage class is ok (it will still only have internal linkage)
-                    // but declared extern (or w/o storage class) -> declared static is not ok
-                    if !*internal_linkage && declared_static {
-                        return Err(ASTResolveError::StaticFunctionAfterExternFunction);
-                    }
-
-                    // check that the two are compatible
-
-                    *defined = true;
-                }
-                _ => {
-                    // collides with other, non-function identifier
-                    return Err(ASTResolveError::SymbolRedeclaration);
-                }
-            }
-        }
-        None => {
-            // first declaration and definition of function
-            let fn_symbol = Symbol::Function {
-                internal_linkage: declared_static,
-                defined: true,
-            };
-            symtab.add_symbol(scope, fn_declaration.name.name.clone(), fn_symbol)?;
+    // parameter types must not be incomplete at definition time
+    for (_, ty) in &adjusted_type_inner.parameter_types {
+        if ty.base_type.type_category(symtab) == TypeCategory::Incomplete {
+            return Err(ASTResolveError::IncompleteParameter);
         }
     }
 
-    Ok(fn_declaration.name.clone())
-     */
+    // see resolve_declaration function path, same issue
+    let definition_internal_linkage = match fn_declaration.storage_class {
+        StorageClass::Extern | StorageClass::None => false,
+        StorageClass::Static => true,
+        StorageClass::Auto | StorageClass::Register => {
+            return Err(ASTResolveError::BadFunctionStorageClass)
+        }
+    };
+
+    match symtab.direct_lookup_symbol_mut(scope, &fn_declaration.name.name) {
+        Some(sym) => {
+            if let Symbol::Function {
+                function_type,
+                internal_linkage,
+                defined,
+            } = sym
+            {
+                // no redefinition
+                if *defined {
+                    return Err(ASTResolveError::FunctionRedefinition);
+                }
+                *defined = true;
+
+                // ensure linkage is consistent
+                if definition_internal_linkage != *internal_linkage {
+                    return Err(ASTResolveError::InconsistentFunctionLinkage);
+                }
+
+                // check that definitions are compatible
+                let idx = *function_type;
+                let symtab_inner = match symtab.get_canonical_type(idx) {
+                    CanonicalType::FunctionType(inner) => inner,
+                    _ => {
+                        return Err(ASTResolveError::CorruptedSymtabTypeTable);
+                    }
+                };
+
+                // whether they are varargs must be equal
+                if symtab_inner.varargs != adjusted_type_inner.varargs {
+                    return Err(ASTResolveError::IncompatibleFunctionDeclarations);
+                }
+
+                // return types must be compatible
+                if symtab_inner.return_type != adjusted_type_inner.return_type {
+                    return Err(ASTResolveError::IncompatibleFunctionDeclarations);
+                }
+
+                for (left, right) in std::iter::zip(
+                    symtab_inner.parameter_types.iter(),
+                    adjusted_type_inner.parameter_types.iter(),
+                ) {
+                    if left.1 != right.1 {
+                        return Err(ASTResolveError::IncompatibleFunctionDeclarations);
+                    }
+                }
+
+                // replace canonical type in symtab
+                let symtab_record = symtab.get_canonical_type_mut(idx);
+                *symtab_record = adjusted_type;
+                return Ok(idx);
+            } else {
+                return Err(ASTResolveError::SymbolRedeclaration);
+            }
+        }
+        None => {
+            // first declaration and definition
+            let fn_type_idx = symtab.add_canonical_type(adjusted_type);
+            let fn_symbol = Symbol::Function {
+                function_type: fn_type_idx,
+                internal_linkage: definition_internal_linkage,
+                defined: true,
+            };
+
+            symtab.add_symbol(scope, fn_declaration.name.name.clone(), fn_symbol)?;
+            return Ok(fn_type_idx);
+        }
+    }
 }
