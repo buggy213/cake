@@ -342,7 +342,7 @@ pub(crate) enum TypedExpressionNode {
     PostIncrement(QualifiedType, ExprRef),
     PostDecrement(QualifiedType, ExprRef),
     ArraySubscript(QualifiedType, ExprRef, ExprRef),
-    FunctionCall(QualifiedType, ExprRef, Vec<ExpressionNode>),
+    FunctionCall(QualifiedType, ExprRef, ExprRangeRef),
     DotAccess(QualifiedType, ExprRef, Identifier),
     ArrowAccess(QualifiedType, ExprRef, Identifier),
     // TODO: add support for compound initializers

@@ -80,6 +80,7 @@ pub(crate) struct ResolvedAST {
     pub(crate) nodes: Vec<ResolvedASTNode>,
     pub(crate) ast_indices: Vec<NodeRef>,
     pub(crate) exprs: Vec<TypedExpressionNode>,
+    pub(crate) expr_indices: Vec<ExprRef>,
     pub(crate) symtab: SymbolTable,
 }
 
@@ -90,6 +91,7 @@ struct IntermediateAST {
     nodes: Vec<MaybeUninit<ResolvedASTNode>>,
     ast_indices: Vec<NodeRef>,
     exprs: Vec<TypedExpressionNode>,
+    expr_indices: Vec<ExprRef>,
 }
 
 impl ResolvedAST {
@@ -102,6 +104,7 @@ impl ResolvedAST {
             nodes,
             ast_indices,
             exprs,
+            expr_indices,
         } = intermediate;
 
         // relies on "in-place collect" optimization for efficiency
@@ -112,6 +115,7 @@ impl ResolvedAST {
             nodes,
             ast_indices,
             exprs,
+            expr_indices,
             symtab,
         }
     }
@@ -378,6 +382,7 @@ pub(crate) fn resolve_ast(
         nodes: Vec::new(),
         ast_indices: Vec::new(),
         exprs: Vec::new(),
+        expr_indices: Vec::new(),
     };
 
     let mut resolver_state = ResolverState::new(scopes);
@@ -701,7 +706,12 @@ fn resolve_ast_inner(
             Ok(node_ref)
         }
         ASTNode::ExpressionStatement(expr, scope) => {
-            let expr_ref = resolve_expr(expr, &mut intermediate_ast.exprs, &resolve_state.symtab)?;
+            let expr_ref = resolve_expr(
+                expr,
+                &mut intermediate_ast.exprs,
+                &mut intermediate_ast.expr_indices,
+                &resolve_state.symtab,
+            )?;
             let expr_node = ResolvedASTNode::ExpressionStatement {
                 parent,
                 expr: expr_ref,
@@ -725,6 +735,7 @@ fn resolve_ast_inner(
             let controlling_expr_ref = resolve_expr(
                 controlling_expr,
                 &mut intermediate_ast.exprs,
+                &mut intermediate_ast.expr_indices,
                 &resolve_state.symtab,
             )?;
 
@@ -773,6 +784,7 @@ fn resolve_ast_inner(
             let controlling_expr_ref = resolve_expr(
                 &controlling_expr,
                 &mut intermediate_ast.exprs,
+                &mut intermediate_ast.expr_indices,
                 &resolve_state.symtab,
             )?;
 
@@ -818,6 +830,7 @@ fn resolve_ast_inner(
             let controlling_expr_ref = resolve_expr(
                 &controlling_expr,
                 &mut intermediate_ast.exprs,
+                &mut intermediate_ast.expr_indices,
                 &resolve_state.symtab,
             )?;
 
@@ -1002,8 +1015,12 @@ fn resolve_ast_inner(
             // do type-check
             let return_value = match expr {
                 Some(expr) => {
-                    let expr_ref =
-                        resolve_expr(expr, &mut intermediate_ast.exprs, &resolve_state.symtab)?;
+                    let expr_ref = resolve_expr(
+                        expr,
+                        &mut intermediate_ast.exprs,
+                        &mut intermediate_ast.expr_indices,
+                        &resolve_state.symtab,
+                    )?;
                     let expr_type = intermediate_ast.exprs[expr_ref.0 as usize].expr_type();
 
                     // qualifiers don't matter here, i think

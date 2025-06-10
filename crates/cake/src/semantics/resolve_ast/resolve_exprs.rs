@@ -1,8 +1,8 @@
 use thiserror::Error;
 
-use crate::parser::ast::{Constant, ExprRef, ExpressionNode, TypedExpressionNode};
+use crate::parser::ast::{Constant, ExprRangeRef, ExprRef, ExpressionNode, TypedExpressionNode};
 use crate::semantics::symtab::Symbol;
-use crate::semantics::types::{BasicType, CType, QualifiedType, TypeQualifier};
+use crate::semantics::types::{BasicType, CType, CanonicalType, QualifiedType, TypeQualifier};
 use crate::semantics::{constexpr::integer_constant_eval, symtab::SymbolTable};
 
 use super::ASTResolveError;
@@ -13,6 +13,8 @@ pub(super) enum ResolveExprError {
     ArithmeticExprBadOperandType,
     #[error("identifier not found")]
     IdentifierNotFound,
+    #[error("unable to resolve function expression")]
+    BadFunctionExpr,
 }
 
 pub(super) fn resolve_integer_constant_expression(
@@ -37,6 +39,7 @@ pub(super) fn resolve_integer_constant_expression(
 pub(super) fn resolve_expr(
     expr: &ExpressionNode,
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
+    expr_indices: &mut Vec<ExprRef>,
     symtab: &SymbolTable,
 ) -> Result<ExprRef, ResolveExprError> {
     match expr {
@@ -61,6 +64,7 @@ pub(super) fn resolve_expr(
                 b,
                 TypedExpressionNode::BitwiseAnd,
                 resolved_expr_vec,
+                expr_indices,
                 symtab,
             )?;
             Ok(bit_and_ref)
@@ -71,6 +75,7 @@ pub(super) fn resolve_expr(
                 b,
                 TypedExpressionNode::BitwiseOr,
                 resolved_expr_vec,
+                expr_indices,
                 symtab,
             )?;
             Ok(bitor_ref)
@@ -81,6 +86,7 @@ pub(super) fn resolve_expr(
                 b,
                 TypedExpressionNode::BitwiseXor,
                 resolved_expr_vec,
+                expr_indices,
                 symtab,
             )?;
             Ok(bitxor_ref)
@@ -99,23 +105,42 @@ pub(super) fn resolve_expr(
                 b,
                 TypedExpressionNode::Multiply,
                 resolved_expr_vec,
+                expr_indices,
                 symtab,
             )?;
             Ok(multiply_ref)
         }
         ExpressionNode::Divide(a, b) => {
-            let divide_ref =
-                basic_binary_op(a, b, TypedExpressionNode::Divide, resolved_expr_vec, symtab)?;
+            let divide_ref = basic_binary_op(
+                a,
+                b,
+                TypedExpressionNode::Divide,
+                resolved_expr_vec,
+                expr_indices,
+                symtab,
+            )?;
             Ok(divide_ref)
         }
         ExpressionNode::Modulo(a, b) => {
-            let modulo_ref =
-                basic_binary_op(a, b, TypedExpressionNode::Modulo, resolved_expr_vec, symtab)?;
+            let modulo_ref = basic_binary_op(
+                a,
+                b,
+                TypedExpressionNode::Modulo,
+                resolved_expr_vec,
+                expr_indices,
+                symtab,
+            )?;
             Ok(modulo_ref)
         }
         ExpressionNode::Add(a, b) => {
-            let add_ref =
-                basic_binary_op(a, b, TypedExpressionNode::Add, resolved_expr_vec, symtab)?;
+            let add_ref = basic_binary_op(
+                a,
+                b,
+                TypedExpressionNode::Add,
+                resolved_expr_vec,
+                expr_indices,
+                symtab,
+            )?;
 
             return Ok(add_ref);
 
@@ -128,6 +153,7 @@ pub(super) fn resolve_expr(
                 b,
                 TypedExpressionNode::Subtract,
                 resolved_expr_vec,
+                expr_indices,
                 symtab,
             )?;
 
@@ -149,7 +175,58 @@ pub(super) fn resolve_expr(
         ExpressionNode::PostIncrement(expression_node) => todo!(),
         ExpressionNode::PostDecrement(expression_node) => todo!(),
         ExpressionNode::ArraySubscript(expression_node, expression_node1) => todo!(),
-        ExpressionNode::FunctionCall(expression_node, expression_nodes) => todo!(),
+        ExpressionNode::FunctionCall(fn_expr, argument_exprs) => {
+            // either a pointer to a function, or a "function designator" directly
+            let fn_expr_ref = resolve_expr(&fn_expr, resolved_expr_vec, expr_indices, symtab)?;
+            let mut argument_expr_refs = Vec::new();
+            for argument in argument_exprs {
+                let fn_arg_ref = resolve_expr(argument, resolved_expr_vec, expr_indices, symtab)?;
+                argument_expr_refs.push(fn_arg_ref);
+            }
+
+            let fn_expr_type = resolved_expr_vec[fn_expr_ref.0 as usize].expr_type();
+            let fn_expr_type_idx = match fn_expr_type {
+                QualifiedType {
+                    base_type: CType::FunctionTypeRef { symtab_idx },
+                    qualifier,
+                } => *symtab_idx,
+                QualifiedType {
+                    base_type: CType::PointerType { pointee_type },
+                    qualifier,
+                } => match pointee_type.as_ref() {
+                    QualifiedType {
+                        base_type: CType::FunctionTypeRef { symtab_idx },
+                        qualifier,
+                    } => *symtab_idx,
+                    _ => return Err(ResolveExprError::BadFunctionExpr),
+                },
+                _ => {
+                    return Err(ResolveExprError::BadFunctionExpr);
+                }
+            };
+
+            // get return type
+            let fn_canonical_type = symtab.get_canonical_type(fn_expr_type_idx);
+            let fn_canonical_type = match fn_canonical_type {
+                CanonicalType::FunctionType(fn_type_inner) => fn_type_inner,
+                _ => panic!("corrupted symtab type table"),
+            };
+
+            let return_type = fn_canonical_type.return_type.as_ref().clone();
+
+            // TODO: type check arguments (and insert appropriate casts if needed)
+
+            let arg_range_start = expr_indices.len();
+            expr_indices.extend(argument_expr_refs);
+            let arg_range_end = expr_indices.len();
+
+            let fn_args_ref = ExprRangeRef(arg_range_start as u32, arg_range_end as u32);
+            let fn_call = TypedExpressionNode::FunctionCall(return_type, fn_expr_ref, fn_args_ref);
+            let fn_call_ref = ExprRef(resolved_expr_vec.len() as u32);
+            resolved_expr_vec.push(fn_call);
+
+            Ok(fn_call_ref)
+        }
         ExpressionNode::DotAccess(expression_node, identifier) => todo!(),
         ExpressionNode::ArrowAccess(expression_node, identifier) => todo!(),
         ExpressionNode::Identifier(identifier) => {
@@ -159,7 +236,7 @@ pub(super) fn resolve_expr(
 
                 Some(Symbol::Constant(c)) => {
                     let dummy = ExpressionNode::Constant(*c);
-                    return resolve_expr(&dummy, resolved_expr_vec, symtab);
+                    return resolve_expr(&dummy, resolved_expr_vec, expr_indices, symtab);
                 }
 
                 Some(Symbol::Function { function_type, .. }) => {
@@ -276,11 +353,13 @@ fn basic_binary_op(
     a: &ExpressionNode,
     b: &ExpressionNode,
     op_ctor: fn(QualifiedType, ExprRef, ExprRef) -> TypedExpressionNode,
+
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
+    expr_indices: &mut Vec<ExprRef>,
     symtab: &SymbolTable,
 ) -> Result<ExprRef, ResolveExprError> {
-    let a_ref = resolve_expr(a, resolved_expr_vec, symtab)?;
-    let b_ref = resolve_expr(b, resolved_expr_vec, symtab)?;
+    let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+    let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
     let (result_type, a_ref, b_ref) =
         usual_arithmetic_conversions(a_ref, b_ref, resolved_expr_vec)?;
 
