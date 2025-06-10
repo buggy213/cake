@@ -1084,18 +1084,19 @@ mod resolve_decls;
 mod resolve_exprs;
 
 #[cfg(test)]
-mod resolve_ast_tests {
+pub(crate) mod resolve_ast_tests {
     use crate::{
         parser::hand_parser::{parse_translation_unit, CTokenStream, ParserState},
         scanner::{lexeme_sets::c_lexemes::CLexemes, table_scanner::DFAScanner},
     };
 
-    use super::resolve_ast;
+    use super::{resolve_ast, ResolvedAST};
 
-    struct ResolveHarnessInput {
-        code: &'static str,
+    pub(crate) struct ResolveHarnessInput {
+        pub(crate) code: &'static str,
     }
-    fn resolve_harness(input: ResolveHarnessInput /* expected: ResolvedAST */) {
+
+    pub(crate) fn resolve_harness(input: ResolveHarnessInput) -> ResolvedAST {
         // parse code
         let scanner = DFAScanner::load_lexeme_set_scanner::<CLexemes>();
         let mut toks = CTokenStream::new(scanner, input.code.as_bytes());
@@ -1107,7 +1108,13 @@ mod resolve_ast_tests {
         let resolve_result = resolve_ast(parse_result, state).expect("resolve unsuccessful");
 
         // compare
-        dbg!(resolve_result);
+        dbg!(&resolve_result);
+
+        resolve_result
+    }
+
+    fn resolve_test(input: ResolveHarnessInput /* expected: ??? */) {
+        let resolved = resolve_harness(input);
     }
 
     #[test]

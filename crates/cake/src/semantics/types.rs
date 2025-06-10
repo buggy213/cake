@@ -20,6 +20,41 @@ pub(crate) enum BasicType {
     Double,
 }
 
+impl BasicType {
+    pub(crate) fn is_integral(self) -> bool {
+        match self {
+            BasicType::Char
+            | BasicType::UChar
+            | BasicType::Short
+            | BasicType::UShort
+            | BasicType::Int
+            | BasicType::UInt
+            | BasicType::Long
+            | BasicType::ULong => true,
+            BasicType::Float | BasicType::Double => false,
+        }
+    }
+
+    pub(crate) fn is_signed(self) -> bool {
+        match self {
+            BasicType::Char
+            | BasicType::Short
+            | BasicType::Int
+            | BasicType::Long
+            | BasicType::Float
+            | BasicType::Double => true,
+            BasicType::UChar | BasicType::UShort | BasicType::UInt | BasicType::ULong => false,
+        }
+    }
+
+    pub(crate) fn is_fp(self) -> bool {
+        match self {
+            BasicType::Float | BasicType::Double => true,
+            _ => false,
+        }
+    }
+}
+
 // for now, all enums will be 4 bytes
 pub(crate) type EnumVariant = (String, i32);
 

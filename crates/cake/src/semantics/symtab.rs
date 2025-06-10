@@ -235,8 +235,11 @@ impl SymbolTable {
         fn_scope.get(name).copied()
     }
 
-    pub(crate) fn all_symbols_at_scope(&self, scope: Scope) -> impl Iterator<Item = &Symbol> {
-        self.symbols[scope.index].values()
+    pub(crate) fn all_symbols_at_scope(
+        &self,
+        scope: Scope,
+    ) -> impl Iterator<Item = (&String, &Symbol)> {
+        self.symbols[scope.index].iter()
     }
 
     pub(crate) fn add_qualified_type(&mut self, qualified_type: QualifiedType) -> TypeIdx {
