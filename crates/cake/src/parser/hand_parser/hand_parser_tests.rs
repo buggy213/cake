@@ -9,6 +9,13 @@ fn text_test_harness<'text>(text: &'text str) -> (CTokenStream<'text>, ParserSta
     (toks, state)
 }
 
+fn assert_types_eq(actual: &ParserState, expected: &ParserState) {
+    assert_eq!(actual.enum_types, expected.enum_types);
+    assert_eq!(actual.structure_types, expected.structure_types);
+    assert_eq!(actual.union_types, expected.union_types);
+    assert_eq!(actual.function_types, expected.function_types);
+}
+
 fn make_identifier(state: &mut ParserState, name: &str) -> ExpressionNode {
     let ident = Identifier::new(state.current_scope, name.to_string());
     ExpressionNode::Identifier(ident)
@@ -181,7 +188,7 @@ fn test_parse_hello_world() {
                 }
             };
 
-            let fn_type = FunctionTypeInner {
+            let fn_type = FunctionType {
                 parameter_types: vec![
                     (Some(String::from("argc")), argc_type),
                     (Some(String::from("argv")), argv_type),
@@ -192,8 +199,7 @@ fn test_parse_hello_world() {
                 prototype_scope: dummy_state.current_scope,
             };
 
-            let fn_type = CanonicalType::FunctionType(fn_type);
-            let fn_type_idx = dummy_state.add_type(fn_type);
+            let fn_type_idx = dummy_state.add_function_type(fn_type);
 
             let body = {
                 dummy_state.open_scope(ScopeType::BlockScope);
@@ -239,8 +245,9 @@ fn test_parse_hello_world() {
     let (mut toks, mut state) = text_test_harness(hello_world);
     let translation_unit_parsed =
         parse_translation_unit(&mut toks, &mut state).expect("parse failed");
+
     assert_eq!(translation_unit, translation_unit_parsed);
-    assert_eq!(dummy_state.canonical_types, state.canonical_types);
+    assert_types_eq(&state, &dummy_state);
 }
 
 #[test]
@@ -293,7 +300,7 @@ fn test_parse_hello_world_unnamed_args() {
                 }
             };
 
-            let fn_type = FunctionTypeInner {
+            let fn_type = FunctionType {
                 parameter_types: vec![(None, argc_type), (None, argv_type)],
                 return_type: Box::new(return_type),
                 function_specifier: FunctionSpecifier::None,
@@ -301,8 +308,7 @@ fn test_parse_hello_world_unnamed_args() {
                 prototype_scope: dummy_state.current_scope,
             };
 
-            let fn_type = CanonicalType::FunctionType(fn_type);
-            let fn_type_idx = dummy_state.add_type(fn_type);
+            let fn_type_idx = dummy_state.add_function_type(fn_type);
 
             let body = {
                 dummy_state.open_scope(ScopeType::BlockScope);
@@ -348,8 +354,9 @@ fn test_parse_hello_world_unnamed_args() {
     let (mut toks, mut state) = text_test_harness(hello_world);
     let translation_unit_parsed =
         parse_translation_unit(&mut toks, &mut state).expect("parse failed");
+
     assert_eq!(translation_unit, translation_unit_parsed);
-    assert_eq!(dummy_state.canonical_types, state.canonical_types);
+    assert_types_eq(&state, &dummy_state);
 }
 
 #[test]
@@ -444,16 +451,16 @@ fn parse_abstract_type_test_2() {
     let abstract_type = {
         let fn_type_idx = {
             dummy_state.open_scope(ScopeType::FunctionScope);
-            let fn_type = FunctionTypeInner {
+            let fn_type = FunctionType {
                 parameter_types: vec![],
                 return_type: Box::new(base_type),
                 function_specifier: FunctionSpecifier::None,
                 varargs: false,
                 prototype_scope: dummy_state.current_scope,
             };
-            let fn_type = CanonicalType::FunctionType(fn_type);
+
             dummy_state.close_scope().unwrap();
-            dummy_state.add_type(fn_type)
+            dummy_state.add_function_type(fn_type)
         };
         QualifiedType {
             base_type: CType::FunctionTypeRef {
@@ -465,8 +472,9 @@ fn parse_abstract_type_test_2() {
 
     let (mut toks, mut state) = text_test_harness(&fn_abstract_type_str);
     let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
+
     assert_eq!(abstract_type, abstract_type_parsed);
-    assert_eq!(state.canonical_types, dummy_state.canonical_types);
+    assert_types_eq(&state, &dummy_state);
 }
 
 #[test]
@@ -495,16 +503,16 @@ fn parse_abstract_type_test_3() {
                     }
                 };
                 dummy_state.open_scope(ScopeType::FunctionScope);
-                let anon_fn_type = FunctionTypeInner {
+                let anon_fn_type = FunctionType {
                     parameter_types: vec![(None, uint_type)],
                     return_type: Box::new(base_type),
                     function_specifier: FunctionSpecifier::None,
                     varargs: true,
                     prototype_scope: dummy_state.current_scope,
                 };
-                let anon_fn_type = CanonicalType::FunctionType(anon_fn_type);
+
                 dummy_state.close_scope().unwrap();
-                let anon_fn_type_idx = dummy_state.add_type(anon_fn_type);
+                let anon_fn_type_idx = dummy_state.add_function_type(anon_fn_type);
 
                 QualifiedType {
                     base_type: CType::FunctionTypeRef {
@@ -532,18 +540,17 @@ fn parse_abstract_type_test_3() {
 
     let (mut toks, mut state) = text_test_harness(&abstract_type_str);
     let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
+
     assert_eq!(abstract_type, abstract_type_parsed);
-    assert_eq!(state.canonical_types, dummy_state.canonical_types);
+    assert_types_eq(&state, &dummy_state);
 }
 
 #[test]
 fn parse_struct_declaration_incomplete() {
     let incomplete_struct_str = r#"struct test s;"#;
     let mut dummy_state = ParserState::new();
-    let struct_type = CanonicalType::IncompleteStructureType {
-        tag: String::from("test"),
-    };
-    let struct_type_idx = dummy_state.add_type(struct_type);
+    let struct_type = StructureType::new_incomplete_structure_type(String::from("test"));
+    let struct_type_idx = dummy_state.add_structure_type(struct_type);
     let struct_type = QualifiedType {
         base_type: CType::StructureTypeRef {
             symtab_idx: struct_type_idx,
@@ -563,7 +570,7 @@ fn parse_struct_declaration_incomplete() {
     )]);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
-    assert_eq!(state.canonical_types, dummy_state.canonical_types);
+    assert_types_eq(&state, &dummy_state);
 }
 
 #[test]
@@ -575,20 +582,19 @@ fn parse_struct_declaration_anonymous() {
     "#;
 
     let mut dummy_state = ParserState::new();
-    let struct_type = CanonicalType::StructureType {
-        tag: None,
-        members: vec![(
-            String::from("k"),
-            QualifiedType {
-                base_type: CType::BasicType {
-                    basic_type: BasicType::Int,
-                },
-                qualifier: TypeQualifier::empty(),
+    let tag = None;
+    let members = vec![(
+        String::from("k"),
+        QualifiedType {
+            base_type: CType::BasicType {
+                basic_type: BasicType::Int,
             },
-        )],
-    };
+            qualifier: TypeQualifier::empty(),
+        },
+    )];
+    let struct_type = StructureType::new_complete_structure_type(tag, members);
 
-    let struct_type_idx = dummy_state.add_type(struct_type);
+    let struct_type_idx = dummy_state.add_structure_type(struct_type);
     let struct_type = QualifiedType {
         base_type: CType::StructureTypeRef {
             symtab_idx: struct_type_idx,
@@ -608,7 +614,7 @@ fn parse_struct_declaration_anonymous() {
     )]);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
-    assert_eq!(state.canonical_types, dummy_state.canonical_types);
+    assert_types_eq(&state, &dummy_state);
 }
 
 #[test]
@@ -620,20 +626,19 @@ fn parse_struct_declaration() {
     "#;
 
     let mut dummy_state = ParserState::new();
-    let struct_type = CanonicalType::StructureType {
-        tag: Some(String::from("complete")),
-        members: vec![(
-            String::from("k"),
-            QualifiedType {
-                base_type: CType::BasicType {
-                    basic_type: BasicType::Int,
-                },
-                qualifier: TypeQualifier::empty(),
+    let tag = Some(String::from("complete"));
+    let members = vec![(
+        String::from("k"),
+        QualifiedType {
+            base_type: CType::BasicType {
+                basic_type: BasicType::Int,
             },
-        )],
-    };
+            qualifier: TypeQualifier::empty(),
+        },
+    )];
+    let struct_type = StructureType::new_complete_structure_type(tag, members);
 
-    let struct_type_idx = dummy_state.add_type(struct_type);
+    let struct_type_idx = dummy_state.add_structure_type(struct_type);
     let struct_type = QualifiedType {
         base_type: CType::StructureTypeRef {
             symtab_idx: struct_type_idx,
@@ -653,7 +658,7 @@ fn parse_struct_declaration() {
     )]);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
-    assert_eq!(state.canonical_types, dummy_state.canonical_types);
+    assert_types_eq(&state, &dummy_state);
 }
 
 // parser does not check for directly / indirectly recursive struct (which would have infinite size)
@@ -679,11 +684,11 @@ fn parse_struct_declaration_recursive() {
                 qualifier: TypeQualifier::empty(),
             },
         );
-        let inner_struct_type = CanonicalType::StructureType {
-            tag: Some(String::from("inner")),
-            members: vec![k],
-        };
-        let inner_struct_type_idx = dummy_state.add_type(inner_struct_type);
+
+        let tag = Some(String::from("inner"));
+        let members = vec![k];
+        let inner_struct_type = StructureType::new_complete_structure_type(tag, members);
+        let inner_struct_type_idx = dummy_state.add_structure_type(inner_struct_type);
         let inner = QualifiedType {
             base_type: CType::StructureTypeRef {
                 symtab_idx: inner_struct_type_idx,
@@ -691,10 +696,9 @@ fn parse_struct_declaration_recursive() {
             qualifier: TypeQualifier::empty(),
         };
         let next = {
-            let recursive_struct_type = CanonicalType::IncompleteStructureType {
-                tag: String::from("recursive"),
-            };
-            let recursive_struct_type_idx = dummy_state.add_type(recursive_struct_type);
+            let recursive_struct_type =
+                StructureType::new_incomplete_structure_type(String::from("recursive"));
+            let recursive_struct_type_idx = dummy_state.add_structure_type(recursive_struct_type);
             let ptr = QualifiedType {
                 base_type: CType::StructureTypeRef {
                     symtab_idx: recursive_struct_type_idx,
@@ -709,13 +713,12 @@ fn parse_struct_declaration_recursive() {
             }
         };
 
-        CanonicalType::StructureType {
-            tag: Some(String::from("recursive")),
-            members: vec![(String::from("inner"), inner), (String::from("next"), next)],
-        }
+        let tag = Some(String::from("recursive"));
+        let members = vec![(String::from("inner"), inner), (String::from("next"), next)];
+        StructureType::new_complete_structure_type(tag, members)
     };
 
-    let outer_struct_type_idx = dummy_state.add_type(outer_struct_type);
+    let outer_struct_type_idx = dummy_state.add_structure_type(outer_struct_type);
     let outer_struct_type = QualifiedType {
         base_type: CType::StructureTypeRef {
             symtab_idx: outer_struct_type_idx,
@@ -735,7 +738,7 @@ fn parse_struct_declaration_recursive() {
     )]);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
-    assert_eq!(state.canonical_types, dummy_state.canonical_types);
+    assert_types_eq(&state, &dummy_state);
 }
 
 #[test]
@@ -747,20 +750,19 @@ fn parse_declaration_without_declarators() {
     "#;
 
     let mut dummy_state = ParserState::new();
-    let struct_type = CanonicalType::StructureType {
-        tag: Some(String::from("s")),
-        members: vec![(
-            String::from("s"),
-            QualifiedType {
-                base_type: CType::BasicType {
-                    basic_type: BasicType::Int,
-                },
-                qualifier: TypeQualifier::empty(),
+    let tag = Some(String::from("s"));
+    let members = vec![(
+        String::from("s"),
+        QualifiedType {
+            base_type: CType::BasicType {
+                basic_type: BasicType::Int,
             },
-        )],
-    };
+            qualifier: TypeQualifier::empty(),
+        },
+    )];
+    let struct_type = StructureType::new_complete_structure_type(tag, members);
 
-    let struct_type_idx = dummy_state.add_type(struct_type);
+    let struct_type_idx = dummy_state.add_structure_type(struct_type);
     let struct_type = CType::StructureTypeRef {
         symtab_idx: struct_type_idx,
     };
@@ -771,7 +773,7 @@ fn parse_declaration_without_declarators() {
         ASTNode::EmptyDeclaration(struct_type, dummy_state.current_scope);
 
     assert_eq!(declaration_parsed, declaration_parsed_expected);
-    assert_eq!(state.canonical_types, dummy_state.canonical_types);
+    assert_types_eq(&state, &dummy_state);
 }
 
 #[test]

@@ -5,9 +5,15 @@ use std::{
 
 use thiserror::Error;
 
-use crate::parser::ast::{Constant, NodeRef};
+use crate::{
+    parser::ast::{Constant, NodeRef},
+    types::{
+        EnumType, EnumTypeIdx, FunctionType, FunctionTypeIdx, StructureType, StructureTypeIdx,
+        UnionType, UnionTypeIdx,
+    },
+};
 
-use crate::types::{CanonicalType, QualifiedType};
+use crate::types::QualifiedType;
 
 // "function prototype scope" not included,
 // just ignore symbol table when processing a function prototype
@@ -68,7 +74,7 @@ pub(crate) enum Symbol {
     // used only for enumeration constants
     Constant(Constant),
     Function {
-        function_type: CanonicalTypeIdx,
+        function_type: FunctionTypeIdx,
 
         // 2 types of linkage: internal and external
         // by default, functions have external linkage, i.e. the linker can see the function and use it to resolve function calls in other translation units
@@ -80,22 +86,14 @@ pub(crate) enum Symbol {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CanonicalTypeIdx(pub(crate) usize);
-impl Index<CanonicalTypeIdx> for Vec<CanonicalType> {
-    type Output = CanonicalType;
-
-    fn index(&self, index: CanonicalTypeIdx) -> &Self::Output {
-        return &self[index.0];
-    }
-}
-impl IndexMut<CanonicalTypeIdx> for Vec<CanonicalType> {
-    fn index_mut(&mut self, index: CanonicalTypeIdx) -> &mut Self::Output {
-        return &mut self[index.0];
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TypeIdx(pub(crate) usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaggedTypeIdx {
+    EnumTypeIdx(EnumTypeIdx),
+    StructureTypeIdx(StructureTypeIdx),
+    UnionTypeIdx(UnionTypeIdx),
+}
 
 // monolithic symbol table contains all symbols in program
 // in particular, every symbol has an associated identifier and type
@@ -108,10 +106,15 @@ pub(crate) struct SymbolTable {
     // these are built during resolve phase
     symbols: Vec<HashMap<String, Symbol>>,
     labels: Vec<HashMap<String, NodeRef>>,
-    tags: Vec<HashMap<String, CanonicalTypeIdx>>,
+    tags: Vec<HashMap<String, TaggedTypeIdx>>,
 
     types: Vec<QualifiedType>,
-    canonical_types: Vec<CanonicalType>,
+
+    enum_types: Vec<EnumType>,
+    structure_types: Vec<StructureType>,
+    union_types: Vec<UnionType>,
+
+    function_types: Vec<FunctionType>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -149,21 +152,7 @@ impl SymbolTable {
     }
 
     // look in current scope and all parent scopes
-    pub(crate) fn lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CanonicalType> {
-        self.lookup_tag_type_idx(scope, tag)
-            .map(|idx| &self.canonical_types[idx])
-    }
-
-    pub(crate) fn lookup_tag_type_mut(
-        &mut self,
-        scope: Scope,
-        tag: &str,
-    ) -> Option<&mut CanonicalType> {
-        self.lookup_tag_type_idx(scope, tag)
-            .map(|idx| &mut self.canonical_types[idx])
-    }
-
-    pub(crate) fn lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<CanonicalTypeIdx> {
+    pub(crate) fn lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<TaggedTypeIdx> {
         let mut current_scope = scope;
         loop {
             match self.direct_lookup_tag_type_idx(current_scope, tag) {
@@ -177,25 +166,11 @@ impl SymbolTable {
     }
 
     // only look in current scope
-    pub(crate) fn direct_lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CanonicalType> {
-        self.direct_lookup_tag_type_idx(scope, tag)
-            .map(|idx| &self.canonical_types[idx])
-    }
-
-    pub(crate) fn direct_lookup_tag_type_mut(
-        &mut self,
-        scope: Scope,
-        tag: &str,
-    ) -> Option<&mut CanonicalType> {
-        self.direct_lookup_tag_type_idx(scope, tag)
-            .map(|idx| &mut self.canonical_types[idx])
-    }
-
     pub(crate) fn direct_lookup_tag_type_idx(
         &self,
         scope: Scope,
         tag: &str,
-    ) -> Option<CanonicalTypeIdx> {
+    ) -> Option<TaggedTypeIdx> {
         let direct_lookup = self.tags[scope.index].get(tag);
         direct_lookup.copied()
     }
@@ -259,17 +234,27 @@ impl SymbolTable {
         type_idx
     }
 
-    pub(crate) fn add_canonical_type(&mut self, canonical_type: CanonicalType) -> CanonicalTypeIdx {
-        let type_idx = CanonicalTypeIdx(self.canonical_types.len());
-        self.canonical_types.push(canonical_type);
-        type_idx
+    pub(crate) fn add_enum_type(&mut self, enum_type: EnumType) -> EnumTypeIdx {
+        EnumTypeIdx::from_push(&mut self.enum_types, enum_type)
+    }
+
+    pub(crate) fn add_structure_type(&mut self, structure_type: StructureType) -> StructureTypeIdx {
+        StructureTypeIdx::from_push(&mut self.structure_types, structure_type)
+    }
+
+    pub(crate) fn add_union_type(&mut self, union_type: UnionType) -> UnionTypeIdx {
+        UnionTypeIdx::from_push(&mut self.union_types, union_type)
+    }
+
+    pub(crate) fn add_function_type(&mut self, function_type: FunctionType) -> FunctionTypeIdx {
+        FunctionTypeIdx::from_push(&mut self.function_types, function_type)
     }
 
     pub(crate) fn add_tag(
         &mut self,
         scope: Scope,
         name: String,
-        tag: CanonicalTypeIdx,
+        tag: TaggedTypeIdx,
     ) -> Result<(), SymtabError> {
         if self.tags[scope.index].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
@@ -326,12 +311,36 @@ impl SymbolTable {
         &self.types[idx.0 as usize]
     }
 
-    pub(crate) fn get_canonical_type(&self, idx: CanonicalTypeIdx) -> &CanonicalType {
-        &self.canonical_types[idx]
+    pub(crate) fn get_enum_type(&self, idx: EnumTypeIdx) -> &EnumType {
+        &self.enum_types[idx]
     }
 
-    pub(crate) fn get_canonical_type_mut(&mut self, idx: CanonicalTypeIdx) -> &mut CanonicalType {
-        &mut self.canonical_types[idx]
+    pub(crate) fn get_enum_type_mut(&mut self, idx: EnumTypeIdx) -> &mut EnumType {
+        &mut self.enum_types[idx]
+    }
+
+    pub(crate) fn get_structure_type(&self, idx: StructureTypeIdx) -> &StructureType {
+        &self.structure_types[idx]
+    }
+
+    pub(crate) fn get_structure_type_mut(&mut self, idx: StructureTypeIdx) -> &mut StructureType {
+        &mut self.structure_types[idx]
+    }
+
+    pub(crate) fn get_union_type(&self, idx: UnionTypeIdx) -> &UnionType {
+        &self.union_types[idx]
+    }
+
+    pub(crate) fn get_union_type_mut(&mut self, idx: UnionTypeIdx) -> &mut UnionType {
+        &mut self.union_types[idx]
+    }
+
+    pub(crate) fn get_function_type(&self, idx: FunctionTypeIdx) -> &FunctionType {
+        &self.function_types[idx]
+    }
+
+    pub(crate) fn get_function_type_mut(&mut self, idx: FunctionTypeIdx) -> &mut FunctionType {
+        &mut self.function_types[idx]
     }
 
     pub(crate) fn new_scope(&mut self, parent: Option<Scope>, scope_type: ScopeType) -> Scope {

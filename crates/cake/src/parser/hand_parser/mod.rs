@@ -9,12 +9,16 @@ use thiserror::Error;
 use crate::{
     parser::ast::Constant,
     scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream},
-    semantics::symtab::{CanonicalTypeIdx, Scope, ScopeType, StorageClass, SymtabError},
+    semantics::symtab::{Scope, ScopeType, StorageClass, SymtabError},
+    types::{
+        EnumType, EnumTypeIdx, FunctionTypeIdx, StructureType, StructureTypeIdx, UnionType,
+        UnionTypeIdx,
+    },
 };
 
 use crate::types::{
-    AggregateMember, BasicType, CType, CanonicalType, FunctionArgument, FunctionSpecifier,
-    FunctionTypeInner, QualifiedType, TypeQualifier,
+    AggregateMember, BasicType, CType, FunctionArgument, FunctionSpecifier, FunctionType,
+    QualifiedType, TypeQualifier,
 };
 
 use super::ast::{ASTNode, Declaration, ExpressionNode, Identifier};
@@ -123,7 +127,11 @@ pub(crate) struct ParserState {
     // struct node b;
     // a and b should be recognized as the same type,
     // and next recognized as a pointer to that type.
-    pub(crate) canonical_types: Vec<CanonicalType>,
+    pub(crate) enum_types: Vec<EnumType>,
+    pub(crate) structure_types: Vec<StructureType>,
+    pub(crate) union_types: Vec<UnionType>,
+    pub(crate) function_types: Vec<FunctionType>,
+
     typedefs: Vec<HashMap<String, QualifiedType>>,
 }
 
@@ -133,7 +141,12 @@ impl ParserState {
         Self {
             scopes: vec![file_scope],
             current_scope: file_scope,
-            canonical_types: Vec::new(),
+
+            enum_types: Vec::new(),
+            structure_types: Vec::new(),
+            union_types: Vec::new(),
+            function_types: Vec::new(),
+
             typedefs: vec![Default::default()],
         }
     }
@@ -155,10 +168,20 @@ impl ParserState {
         Ok(())
     }
 
-    fn add_type(&mut self, canonical_type: CanonicalType) -> CanonicalTypeIdx {
-        let idx = self.canonical_types.len();
-        self.canonical_types.push(canonical_type);
-        CanonicalTypeIdx(idx)
+    fn add_enum_type(&mut self, enum_type: EnumType) -> EnumTypeIdx {
+        EnumTypeIdx::from_push(&mut self.enum_types, enum_type)
+    }
+
+    fn add_structure_type(&mut self, structure_type: StructureType) -> StructureTypeIdx {
+        StructureTypeIdx::from_push(&mut self.structure_types, structure_type)
+    }
+
+    fn add_union_type(&mut self, union_type: UnionType) -> UnionTypeIdx {
+        UnionTypeIdx::from_push(&mut self.union_types, union_type)
+    }
+
+    fn add_function_type(&mut self, function_type: FunctionType) -> FunctionTypeIdx {
+        FunctionTypeIdx::from_push(&mut self.function_types, function_type)
     }
 
     fn add_typedef(&mut self, name: String, typedef: QualifiedType) -> Result<(), ParseError> {
@@ -973,15 +996,8 @@ fn parse_external_declaration(
             match declaration_type.base_type {
                 CType::FunctionTypeRef { symtab_idx } => {
                     // set scope to function prototype scope so that we inherit parameter names
-                    let fn_type = &state.canonical_types[symtab_idx];
-                    if let CanonicalType::FunctionType(FunctionTypeInner {
-                        prototype_scope, ..
-                    }) = fn_type
-                    {
-                        state.current_scope = *prototype_scope;
-                    } else {
-                        panic!("type table is corrupted");
-                    }
+                    let fn_type = &state.function_types[symtab_idx];
+                    state.current_scope = fn_type.prototype_scope;
                 }
                 _ => return Err(ParseError::BadFunctionDefinition),
             }
@@ -1386,7 +1402,7 @@ fn parse_declaration_specifiers_base(
                         && primitive_type_specifiers.is_empty()
                         && typedef.is_none() =>
                 {
-                    let struct_type = parse_struct_or_union_specifier(toks, state)?;
+                    let struct_type = parse_struct_specifier(toks, state)?;
                     struct_or_union_or_enum = Some(CType::StructureTypeRef {
                         symtab_idx: struct_type,
                     });
@@ -1396,7 +1412,7 @@ fn parse_declaration_specifiers_base(
                         && primitive_type_specifiers.is_empty()
                         && typedef.is_none() =>
                 {
-                    let union_type = parse_struct_or_union_specifier(toks, state)?;
+                    let union_type = parse_union_specifier(toks, state)?;
                     struct_or_union_or_enum = Some(CType::UnionTypeRef {
                         symtab_idx: union_type,
                     });
@@ -1544,25 +1560,13 @@ fn parse_struct_declarator_list(
     }
 }
 
-fn parse_struct_or_union_specifier(
+fn parse_struct_specifier(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-) -> Result<CanonicalTypeIdx, ParseError> {
-    #[derive(PartialEq, Eq)]
-    enum StructOrUnion {
-        Struct,
-        Union,
-    }
-
-    let specifier_type: StructOrUnion;
+) -> Result<StructureTypeIdx, ParseError> {
     match toks.peek() {
         Some((CLexemes::Struct, _, _)) => {
             toks.eat(CLexemes::Struct);
-            specifier_type = StructOrUnion::Struct;
-        }
-        Some((CLexemes::Union, _, _)) => {
-            toks.eat(CLexemes::Union);
-            specifier_type = StructOrUnion::Union;
         }
         Some((other, _, _)) => {
             return Err(ParseError::UnexpectedToken(other));
@@ -1572,66 +1576,17 @@ fn parse_struct_or_union_specifier(
         }
     }
 
-    let struct_or_union_tag = match toks.peek() {
-        Some((CLexemes::LBrace, _, _)) => {
-            // untagged, won't conflict and always declares a new type (6.7.2.3 5)
-            None
-        }
+    let struct_tag = match toks.peek() {
+        Some((CLexemes::LBrace, _, _)) => None,
         Some((CLexemes::Identifier, tag, _)) => {
-            // do lookup, insert incomplete type if not present
             let tag = String::from(tag);
             toks.eat(CLexemes::Identifier);
 
             match toks.peek() {
                 Some((CLexemes::LBrace, _, _)) => Some(tag),
                 Some((_, _, _)) => {
-                    /* RESOLVE LOGIC
-                    let lookup = state.symbol_table.lookup_tag_type_idx(state.current_scope, struct_or_union_tag.as_ref().unwrap());
-                    match lookup {
-                        Some(tag_type) => {
-                            match state.symbol_table.get_type(tag_type) {
-                                CanonicalType::UnionType { .. } if specifier_type == StructOrUnion::Union => {
-                                    return Ok(tag_type);
-                                },
-                                CanonicalType::StructureType { .. } if specifier_type == StructOrUnion::Struct => {
-                                    return Ok(tag_type);
-                                }
-                                _ => {
-                                    // <...> declared as wrong type of tag
-                                    return Err(ParseError::StructOrEnumDeclarationMustMatch);
-                                }
-                            }
-                        },
-                        // incomplete struct or union is allowed
-                        None => {
-                            let incomplete_type = match specifier_type {
-                                StructOrUnion::Struct => {
-                                    CanonicalType::IncompleteStructureType { tag: struct_or_union_tag.clone().unwrap() }
-                                },
-                                StructOrUnion::Union => {
-                                    CanonicalType::IncompleteUnionType { tag: struct_or_union_tag.clone().unwrap() }
-                                },
-                            };
-                            let incomplete_type = state.symbol_table.add_type(incomplete_type);
-                            state.symbol_table.add_tag(state.current_scope, struct_or_union_tag.unwrap(), incomplete_type)?;
-
-                            let end = toks.get_location();
-                            #[cfg(debug_assertions)]
-                            match specifier_type {
-                                StructOrUnion::Struct => state.parse_tree_stack.push_back(DebugParseNode::StructSpecifier(start, end)),
-                                StructOrUnion::Union => state.parse_tree_stack.push_back(DebugParseNode::UnionSpecifier(start, end)),
-                            }
-                            return Ok(incomplete_type);
-                        }
-                    }
-                    */
-
-                    let incomplete_type = match specifier_type {
-                        StructOrUnion::Struct => CanonicalType::IncompleteStructureType { tag },
-                        StructOrUnion::Union => CanonicalType::IncompleteUnionType { tag },
-                    };
-
-                    let incomplete_type_idx = state.add_type(incomplete_type);
+                    let incomplete_struct = StructureType::new_incomplete_structure_type(tag);
+                    let incomplete_type_idx = state.add_structure_type(incomplete_struct);
                     return Ok(incomplete_type_idx);
                 }
                 None => {
@@ -1650,40 +1605,65 @@ fn parse_struct_or_union_specifier(
     // declaring a new struct / union
     toks.eat(CLexemes::LBrace);
 
-    // 1. not allowed to redeclare enum
-    /* RESOLVE LOGIC
-    if let Some(struct_or_union_tag) = &struct_or_union_tag {
-        let direct_lookup = state.symbol_table.direct_lookup_tag_type(state.current_scope, &struct_or_union_tag);
-        if direct_lookup.is_some() {
-            let err = match specifier_type {
-                StructOrUnion::Struct => ParseError::RedeclaredStruct(struct_or_union_tag.to_string()),
-                StructOrUnion::Union => ParseError::RedeclaredUnion(struct_or_union_tag.to_string()),
-            };
-            return Err(err);
+    let members: Vec<AggregateMember> = parse_struct_declaration_list(toks, state)?;
+    eat_or_error!(toks, CLexemes::RBrace)?;
+
+    let complete_struct_type = StructureType::new_complete_structure_type(struct_tag, members);
+    let type_idx = state.add_structure_type(complete_struct_type);
+
+    Ok(type_idx)
+}
+
+fn parse_union_specifier(
+    toks: &mut impl TokenStream<CLexemes>,
+    state: &mut ParserState,
+) -> Result<UnionTypeIdx, ParseError> {
+    match toks.peek() {
+        Some((CLexemes::Union, _, _)) => {
+            toks.eat(CLexemes::Union);
+        }
+        Some((other, _, _)) => {
+            return Err(ParseError::UnexpectedToken(other));
+        }
+        None => {
+            return Err(ParseError::UnexpectedEOF);
         }
     }
-     */
+
+    let union_tag = match toks.peek() {
+        Some((CLexemes::LBrace, _, _)) => None,
+        Some((CLexemes::Identifier, tag, _)) => {
+            let tag = String::from(tag);
+            toks.eat(CLexemes::Identifier);
+
+            match toks.peek() {
+                Some((CLexemes::LBrace, _, _)) => Some(tag),
+                Some((_, _, _)) => {
+                    let incomplete_union = UnionType::new_incomplete_union_type(tag);
+                    let incomplete_type_idx = state.add_union_type(incomplete_union);
+                    return Ok(incomplete_type_idx);
+                }
+                None => {
+                    return Err(ParseError::UnexpectedEOF);
+                }
+            }
+        }
+        Some((other, _, _)) => {
+            return Err(ParseError::UnexpectedToken(other));
+        }
+        None => {
+            return Err(ParseError::UnexpectedEOF);
+        }
+    };
+
+    // declaring a new struct / union
+    toks.eat(CLexemes::LBrace);
 
     let members: Vec<AggregateMember> = parse_struct_declaration_list(toks, state)?;
     eat_or_error!(toks, CLexemes::RBrace)?;
 
-    let struct_or_union_type = match specifier_type {
-        StructOrUnion::Struct => CanonicalType::StructureType {
-            tag: struct_or_union_tag,
-            members,
-        },
-        StructOrUnion::Union => CanonicalType::UnionType {
-            tag: struct_or_union_tag,
-            members,
-        },
-    };
-
-    let type_idx = state.add_type(struct_or_union_type);
-    /* RESOLVE LOGIC
-    if let Some(name) = struct_or_union_tag {
-        state.symbol_table.add_tag(state.current_scope, name, type_idx)?;
-    }
-    */
+    let complete_union_type = UnionType::new_complete_union_type(union_tag, members);
+    let type_idx = state.add_union_type(complete_union_type);
 
     Ok(type_idx)
 }
@@ -1691,8 +1671,7 @@ fn parse_struct_or_union_specifier(
 fn parse_enum_specifier(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-) -> Result<CanonicalTypeIdx, ParseError> {
-    let start = toks.get_location();
+) -> Result<EnumTypeIdx, ParseError> {
     match toks.peek() {
         Some((CLexemes::Enum, _, _)) => {
             toks.eat(CLexemes::Enum);
@@ -1719,31 +1698,8 @@ fn parse_enum_specifier(
             match next_tok {
                 Some((CLexemes::LBrace, _, _)) => Some(tag),
                 Some(_) => {
-                    /* RESOLVE LOGIC
-                    // incomplete enum, need to do lookup (6.7.2.3 3)
-                    // GCC / Clang both support extension which allows enum to be incomplete type
-                    // (only complains if using -Wpedantic)
-                    let lookup = state.symbol_table.lookup_tag_type_idx(state.current_scope, enum_tag.as_ref().unwrap());
-                    match lookup {
-                        Some(tag_type) => {
-                            if let CanonicalType::EnumerationType { .. } = state.symbol_table.get_type(tag_type) {
-                                let end = toks.get_location();
-                                #[cfg(debug_assertions)]
-                                state.parse_tree_stack.push_back(DebugParseNode::EnumSpecifier(start, end));
-                                return Ok(tag_type);
-                            }
-                            else {
-                                // other type is not an enum, so lookup fails
-                                return Err(ParseError::EnumDeclarationMustMatch);
-                            }
-                        },
-                        // incomplete enum not allowed
-                        None => return Err(ParseError::LookupError(enum_tag.unwrap()))
-                    }
-                    */
-
-                    let incomplete_type = CanonicalType::IncompleteEnumType { tag };
-                    let incomplete_type_idx = state.add_type(incomplete_type);
+                    let incomplete_type = EnumType::new_incomplete_enum_type(tag);
+                    let incomplete_type_idx = state.add_enum_type(incomplete_type);
                     return Ok(incomplete_type_idx);
                 }
                 None => return Err(ParseError::UnexpectedEOF),
@@ -1755,19 +1711,6 @@ fn parse_enum_specifier(
 
     toks.eat(CLexemes::LBrace);
 
-    /* RESOLVE LOGIC
-    // 6.7.2.3 1, not allowed to redeclare enum (or struct or union) contents
-    if let Some(enum_tag) = &enum_tag {
-        let direct_lookup = state.symbol_table.direct_lookup_tag_type(state.current_scope, &enum_tag);
-        // shares namespace with struct / unions, so a struct / union named the same thing is also not ok
-        if direct_lookup.is_some() {
-            return Err(ParseError::RedeclaredEnum(enum_tag.to_string()))
-        }
-    }
-    */
-    // RESOLVE LOGIC
-    // footnote 109 - enum constants share namespace with eachother and with "ordinary" identifiers
-    // so, just put them into symbol table with everything else
     let mut counter: i32 = 0;
     let mut enum_members: Vec<(String, i32)> = Vec::new();
     loop {
@@ -1793,15 +1736,6 @@ fn parse_enum_specifier(
         match toks.peek() {
             Some((CLexemes::Comma, _, _)) => {
                 enum_members.push((enum_constant_name.clone(), counter));
-
-                // ensure enum constants don't conflict with existing symbols
-                /* RESOLVE LOGIC
-                let enum_constant_value = Symbol::Constant(Constant::Int(counter));
-                match state.symbol_table.add_symbol(state.current_scope, enum_constant_name, enum_constant_value) {
-                    Err(e) => { return Err(ParseError::RedeclaredEnumConstant(e)); }
-                    Ok(_) => {}
-                }
-                 */
 
                 toks.eat(CLexemes::Comma);
                 counter += 1;
@@ -1838,14 +1772,6 @@ fn parse_enum_specifier(
 
                 enum_members.push((enum_constant_name.clone(), enum_value));
 
-                /* RESOLVE LOGIC
-                let enum_constant_value = Symbol::Constant(Constant::Int(enum_value));
-                match state.symbol_table.add_symbol(state.current_scope, enum_constant_name, enum_constant_value) {
-                    Err(e) => { return Err(ParseError::RedeclaredEnumConstant(e)); }
-                    Ok(_) => {}
-                }
-                */
-
                 counter = enum_value + 1;
                 toks.eat(CLexemes::IntegerConst);
             }
@@ -1880,18 +1806,8 @@ fn parse_enum_specifier(
         }
     }
 
-    let enum_type = CanonicalType::EnumerationType {
-        tag: enum_tag.clone(),
-        members: enum_members,
-    };
-
-    let enum_type_idx = state.add_type(enum_type);
-
-    /* RESOLVE LOGIC
-    if enum_tag.is_some() {
-        state.symbol_table.add_tag(state.current_scope, enum_tag.unwrap(), enum_type_idx)?;
-    }
-    */
+    let enum_type = EnumType::new_complete_enum_type(enum_tag, enum_members);
+    let enum_type_idx = state.add_enum_type(enum_type);
 
     let end = toks.get_location();
     Ok(enum_type_idx)
@@ -2148,26 +2064,15 @@ fn parse_declarator_base(
                         }
                     }
                     ArrayOrFunctionDeclarator::FunctionDeclarator(func) => {
-                        /* RESOLVE LOGIC
-                        match current_type.base_type {
-                            CType::IncompleteArrayType { .. }
-                            | CType::ArrayType { .. }
-                            | CType::FunctionType { .. } => {
-                                return Err(ParseError::BadFunctionReturnType);
-                            }
-                            _ => {}
-                        }
-                        */
-                        let fn_type = FunctionTypeInner {
+                        let fn_type = FunctionType {
                             parameter_types: func.argument_types,
                             return_type: Box::new(current_type),
                             function_specifier: FunctionSpecifier::None, // TODO: figure out inline
                             varargs: func.varargs,
                             prototype_scope: func.prototype_scope,
                         };
-                        let fn_type = CanonicalType::FunctionType(fn_type);
 
-                        let fn_type_idx = state.add_type(fn_type);
+                        let fn_type_idx = state.add_function_type(fn_type);
                         let new_type = CType::FunctionTypeRef {
                             symtab_idx: fn_type_idx,
                         };
