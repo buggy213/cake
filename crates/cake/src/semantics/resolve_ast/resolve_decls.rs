@@ -1,17 +1,14 @@
 use crate::{
     parser::ast::Identifier,
-    semantics::{
-        symtab::{Linkage, Scope, ScopeType, StorageClass, SymbolTable},
-        types::{AggregateMember, FunctionTypeInner, QualifiedType},
-    },
+    semantics::symtab::{Linkage, Scope, ScopeType, StorageClass, SymbolTable},
 };
 use crate::{
     parser::ast::{Constant, Declaration},
-    semantics::{
-        symtab::{CanonicalTypeIdx, Symbol},
-        types::{CType, CanonicalType, TypeQualifier},
-    },
+    semantics::symtab::{CanonicalTypeIdx, Symbol},
 };
+
+use crate::types::{AggregateMember, FunctionTypeInner, QualifiedType};
+use crate::types::{CType, CanonicalType, TypeQualifier};
 
 use super::ASTResolveError;
 

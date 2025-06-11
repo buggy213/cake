@@ -1,14 +1,13 @@
 use std::{
     collections::HashMap,
     ops::{Index, IndexMut},
-    rc::Rc,
 };
 
 use thiserror::Error;
 
-use crate::parser::ast::{ASTNode, Constant, NodeRef};
+use crate::parser::ast::{Constant, NodeRef};
 
-use super::types::{CType, CanonicalType, QualifiedType};
+use crate::types::{CanonicalType, QualifiedType};
 
 // "function prototype scope" not included,
 // just ignore symbol table when processing a function prototype
@@ -141,6 +140,14 @@ impl SymbolTable {
         }
     }
 
+    pub(crate) fn num_scopes(&self) -> usize {
+        self.scopes.len()
+    }
+
+    pub(crate) fn get_scopes(&self) -> &[Scope] {
+        &self.scopes
+    }
+
     // look in current scope and all parent scopes
     pub(crate) fn lookup_tag_type(&self, scope: Scope, tag: &str) -> Option<&CanonicalType> {
         self.lookup_tag_type_idx(scope, tag)
@@ -196,7 +203,7 @@ impl SymbolTable {
     pub(crate) fn lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
         let mut current_scope = scope;
         loop {
-            match self.direct_lookup_symbol(scope, name) {
+            match self.direct_lookup_symbol(current_scope, name) {
                 Some(sym) => return Some(sym),
                 None => match current_scope.parent_scope {
                     Some(parent) => current_scope = self.scopes[parent],
@@ -240,6 +247,10 @@ impl SymbolTable {
         scope: Scope,
     ) -> impl Iterator<Item = (&String, &Symbol)> {
         self.symbols[scope.index].iter()
+    }
+
+    pub(crate) fn scope_from_idx(&self, idx: usize) -> Scope {
+        self.scopes[idx]
     }
 
     pub(crate) fn add_qualified_type(&mut self, qualified_type: QualifiedType) -> TypeIdx {

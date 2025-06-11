@@ -9,13 +9,12 @@ use thiserror::Error;
 use crate::{
     parser::ast::Constant,
     scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream},
-    semantics::{
-        symtab::{CanonicalTypeIdx, Scope, ScopeType, StorageClass, SymtabError},
-        types::{
-            AggregateMember, BasicType, CType, CanonicalType, FunctionArgument, FunctionSpecifier,
-            FunctionTypeInner, QualifiedType, TypeQualifier,
-        },
-    },
+    semantics::symtab::{CanonicalTypeIdx, Scope, ScopeType, StorageClass, SymtabError},
+};
+
+use crate::types::{
+    AggregateMember, BasicType, CType, CanonicalType, FunctionArgument, FunctionSpecifier,
+    FunctionTypeInner, QualifiedType, TypeQualifier,
 };
 
 use super::ast::{ASTNode, Declaration, ExpressionNode, Identifier};
@@ -2781,14 +2780,14 @@ fn parse_jump_statement(
             match toks.peek() {
                 Some((CLexemes::Semicolon, _, _)) => {
                     toks.eat(CLexemes::Semicolon);
-                    Ok(ASTNode::ReturnStatement(None))
+                    Ok(ASTNode::ReturnStatement(None, state.current_scope))
                 }
                 Some((_, _, _)) => {
                     let expr = parse_expr(toks, state)?;
                     eat_or_error!(toks, CLexemes::Semicolon)?;
 
                     let expr = Box::new(expr);
-                    Ok(ASTNode::ReturnStatement(Some(expr)))
+                    Ok(ASTNode::ReturnStatement(Some(expr), state.current_scope))
                 }
                 None => Err(ParseError::UnexpectedEOF),
             }

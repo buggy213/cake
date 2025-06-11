@@ -206,7 +206,7 @@ fn test_parse_hello_world() {
                 };
                 let return_stmt = {
                     let zero = ExpressionNode::Constant(Constant::Int(0));
-                    ASTNode::ReturnStatement(Some(Box::new(zero)))
+                    ASTNode::ReturnStatement(Some(Box::new(zero)), dummy_state.current_scope)
                 };
                 dummy_state.close_scope().unwrap();
                 ASTNode::CompoundStatement(vec![printf, return_stmt], dummy_state.current_scope)
@@ -315,7 +315,7 @@ fn test_parse_hello_world_unnamed_args() {
                 };
                 let return_stmt = {
                     let zero = ExpressionNode::Constant(Constant::Int(0));
-                    ASTNode::ReturnStatement(Some(Box::new(zero)))
+                    ASTNode::ReturnStatement(Some(Box::new(zero)), dummy_state.current_scope)
                 };
                 dummy_state.close_scope().unwrap();
                 ASTNode::CompoundStatement(vec![printf, return_stmt], dummy_state.current_scope)

@@ -3,20 +3,15 @@ use resolve_exprs::{resolve_expr, resolve_integer_constant_expression, ResolveEx
 use std::mem::MaybeUninit;
 use thiserror::Error;
 
-use super::{
-    symtab::{CanonicalTypeIdx, Scope, SymbolTable, SymtabError},
-    types::{BasicType, QualifiedType},
-};
+use super::symtab::{CanonicalTypeIdx, Scope, SymbolTable, SymtabError};
 use crate::parser::ast::{
     ContextRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
 use crate::parser::hand_parser::ParserState;
 use crate::{
     parser::ast::{ASTNode, Constant, ExpressionNode},
-    semantics::{
-        symtab::ScopeType,
-        types::{CType, CanonicalType, TypeQualifier},
-    },
+    semantics::symtab::ScopeType,
+    types::{BasicType, CType, CanonicalType, QualifiedType, TypeQualifier},
 };
 
 #[derive(Debug, Error)]
@@ -996,7 +991,7 @@ fn resolve_ast_inner(
 
             Ok(node_ref)
         }
-        ASTNode::ReturnStatement(expr) => {
+        ASTNode::ReturnStatement(expr, scope) => {
             // type check if it matches function signature
             let current_fn = resolve_state.current_function_defn()
                 .expect("internal compiler error: grammar requires return can only be in function definition");
@@ -1043,6 +1038,7 @@ fn resolve_ast_inner(
             let return_statement_node = ResolvedASTNode::ReturnStatement {
                 parent,
                 return_value,
+                scope: *scope,
             };
             intermediate_ast
                 .nodes

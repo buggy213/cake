@@ -1,9 +1,8 @@
 use std::rc::Rc;
 
-use crate::semantics::{
-    symtab::{Scope, StorageClass},
-    types::{BasicType, CType, FunctionSpecifier, QualifiedType},
-};
+use crate::semantics::symtab::{Scope, StorageClass};
+
+use crate::types::{BasicType, CType, FunctionSpecifier, QualifiedType};
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum ASTNode {
@@ -40,7 +39,7 @@ pub(crate) enum ASTNode {
     GotoStatement(Identifier),
     ContinueStatement,
     BreakStatement,
-    ReturnStatement(Option<Box<ExpressionNode>>),
+    ReturnStatement(Option<Box<ExpressionNode>>, Scope),
 }
 
 #[derive(Debug, PartialEq)]
@@ -285,6 +284,7 @@ pub(crate) enum ResolvedASTNode {
     ReturnStatement {
         parent: NodeRef,
         return_value: Option<ExprRef>,
+        scope: Scope,
     },
 }
 

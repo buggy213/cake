@@ -2,8 +2,8 @@ use thiserror::Error;
 
 use crate::parser::ast::{Constant, ExprRangeRef, ExprRef, ExpressionNode, TypedExpressionNode};
 use crate::semantics::symtab::Symbol;
-use crate::semantics::types::{BasicType, CType, CanonicalType, QualifiedType, TypeQualifier};
 use crate::semantics::{constexpr::integer_constant_eval, symtab::SymbolTable};
+use crate::types::{BasicType, CType, CanonicalType, QualifiedType, TypeQualifier};
 
 use super::ASTResolveError;
 

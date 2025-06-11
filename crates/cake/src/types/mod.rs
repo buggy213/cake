@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use super::symtab::{CanonicalTypeIdx, Scope};
+use crate::semantics::symtab::{CanonicalTypeIdx, Scope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BasicType {
@@ -52,6 +52,25 @@ impl BasicType {
             BasicType::Float | BasicType::Double => true,
             _ => false,
         }
+    }
+
+    pub(crate) fn bytes(&self) -> u32 {
+        match self {
+            BasicType::Char => 1,
+            BasicType::UChar => 1,
+            BasicType::Short => 2,
+            BasicType::UShort => 2,
+            BasicType::Int => 4,
+            BasicType::UInt => 4,
+            BasicType::Long => 8,
+            BasicType::ULong => 8,
+            BasicType::Float => 4,
+            BasicType::Double => 8,
+        }
+    }
+
+    pub(crate) fn align_log2(&self) -> u8 {
+        self.bytes().ilog2() as u8
     }
 }
 
