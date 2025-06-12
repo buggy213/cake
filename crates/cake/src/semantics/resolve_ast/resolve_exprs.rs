@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::parser::ast::{Constant, ExprRangeRef, ExprRef, ExpressionNode, TypedExpressionNode};
 use crate::semantics::symtab::Symbol;
 use crate::semantics::{constexpr::integer_constant_eval, symtab::SymbolTable};
-use crate::types::{BasicType, CType, QualifiedType, TypeQualifier};
+use crate::types::{BasicType, CType, TypeQualifier};
 
 use super::ASTResolveError;
 
@@ -186,18 +186,9 @@ pub(super) fn resolve_expr(
 
             let fn_expr_type = resolved_expr_vec[fn_expr_ref.0 as usize].expr_type();
             let fn_expr_type_idx = match fn_expr_type {
-                QualifiedType {
-                    base_type: CType::FunctionTypeRef { symtab_idx },
-                    qualifier,
-                } => *symtab_idx,
-                QualifiedType {
-                    base_type: CType::PointerType { pointee_type },
-                    qualifier,
-                } => match pointee_type.as_ref() {
-                    QualifiedType {
-                        base_type: CType::FunctionTypeRef { symtab_idx },
-                        qualifier,
-                    } => *symtab_idx,
+                CType::FunctionTypeRef { symtab_idx } => *symtab_idx,
+                CType::PointerType { pointee_type, .. } => match pointee_type.as_ref() {
+                    CType::FunctionTypeRef { symtab_idx } => *symtab_idx,
                     _ => return Err(ResolveExprError::BadFunctionExpr),
                 },
                 _ => {
@@ -252,11 +243,9 @@ pub(super) fn resolve_expr(
             todo!()
         }
         ExpressionNode::Constant(constant) => {
-            let constant_type = QualifiedType {
-                base_type: CType::BasicType {
-                    basic_type: constant.basic_type(),
-                },
+            let constant_type = CType::BasicType {
                 qualifier: TypeQualifier::empty(),
+                basic_type: constant.basic_type(),
             };
 
             let constant = TypedExpressionNode::Constant(constant_type, *constant);
@@ -273,24 +262,27 @@ fn usual_arithmetic_conversions(
     mut a_ref: ExprRef,
     mut b_ref: ExprRef,
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
-) -> Result<(QualifiedType, ExprRef, ExprRef), ResolveExprError> {
-    let a_type = &resolved_expr_vec[a_ref.0 as usize].expr_type().base_type;
-    let b_type = &resolved_expr_vec[b_ref.0 as usize].expr_type().base_type;
+) -> Result<(CType, ExprRef, ExprRef), ResolveExprError> {
+    let a_type = resolved_expr_vec[a_ref.0 as usize].expr_type();
+    let b_type = resolved_expr_vec[b_ref.0 as usize].expr_type();
 
     let (mut a_type, mut b_type) = match (a_type, b_type) {
-        (CType::BasicType { basic_type: a_type }, CType::BasicType { basic_type: b_type }) => {
-            (a_type, b_type)
-        }
+        (
+            CType::BasicType {
+                basic_type: a_type, ..
+            },
+            CType::BasicType {
+                basic_type: b_type, ..
+            },
+        ) => (a_type, b_type),
         _ => return Err(ResolveExprError::ArithmeticExprBadOperandType),
     };
 
     // no conversion needed
     if a_type == b_type {
-        let common_type = QualifiedType {
-            base_type: CType::BasicType {
-                basic_type: *a_type,
-            },
+        let common_type = CType::BasicType {
             qualifier: TypeQualifier::empty(),
+            basic_type: *a_type,
         };
         return Ok((common_type, a_ref, b_ref));
     }
@@ -319,18 +311,14 @@ fn usual_arithmetic_conversions(
     }
 
     // type qualifier only meaningful for lvalues, which this will not be
-    let higher_type = QualifiedType {
-        base_type: CType::BasicType {
-            basic_type: *a_type,
-        },
+    let higher_type = CType::BasicType {
         qualifier: TypeQualifier::empty(),
+        basic_type: *a_type,
     };
 
-    let lower_type = QualifiedType {
-        base_type: CType::BasicType {
-            basic_type: *b_type,
-        },
+    let lower_type = CType::BasicType {
         qualifier: TypeQualifier::empty(),
+        basic_type: *b_type,
     };
 
     let cast = TypedExpressionNode::Cast(higher_type.clone(), b_ref, lower_type);
@@ -347,7 +335,7 @@ fn usual_arithmetic_conversions(
 fn basic_binary_op(
     a: &ExpressionNode,
     b: &ExpressionNode,
-    op_ctor: fn(QualifiedType, ExprRef, ExprRef) -> TypedExpressionNode,
+    op_ctor: fn(CType, ExprRef, ExprRef) -> TypedExpressionNode,
 
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
     expr_indices: &mut Vec<ExprRef>,

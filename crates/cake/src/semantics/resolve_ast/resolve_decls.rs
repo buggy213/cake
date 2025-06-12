@@ -7,8 +7,8 @@ use crate::{
 };
 
 use crate::types::{
-    AggregateMember, EnumType, EnumTypeIdx, FunctionType, FunctionTypeIdx, QualifiedType,
-    StructureType, StructureTypeIdx, UnionType, UnionTypeIdx,
+    AggregateMember, EnumType, EnumTypeIdx, FunctionType, FunctionTypeIdx, StructureType,
+    StructureTypeIdx, UnionType, UnionTypeIdx,
 };
 use crate::types::{CType, TypeQualifier};
 
@@ -67,14 +67,16 @@ impl CType {
             CType::IncompleteArrayType { .. } => TypeCategory::Incomplete,
             CType::ArrayType { .. } => TypeCategory::Object,
             CType::PointerType { .. } => TypeCategory::Object,
-            CType::Void => TypeCategory::Incomplete,
-            CType::StructureTypeRef { symtab_idx } => {
+            CType::Void { .. } => TypeCategory::Incomplete,
+            CType::StructureTypeRef { symtab_idx, .. } => {
                 symtab.get_structure_type(*symtab_idx).type_category()
             }
-            CType::UnionTypeRef { symtab_idx } => {
+            CType::UnionTypeRef { symtab_idx, .. } => {
                 symtab.get_union_type(*symtab_idx).type_category()
             }
-            CType::EnumTypeRef { symtab_idx } => symtab.get_enum_type(*symtab_idx).type_category(),
+            CType::EnumTypeRef { symtab_idx, .. } => {
+                symtab.get_enum_type(*symtab_idx).type_category()
+            }
             CType::FunctionTypeRef { symtab_idx } => {
                 symtab.get_function_type(*symtab_idx).type_category()
             }
@@ -149,7 +151,7 @@ pub(super) fn resolve_declaration(
                         }
                     };
 
-                    let fn_type_idx = match type_copy.base_type {
+                    let fn_type_idx = match type_copy {
                         CType::FunctionTypeRef { symtab_idx } => symtab_idx,
                         _ => {
                             return Err(ASTResolveError::CorruptedSymtabTypeTable);
@@ -183,12 +185,8 @@ pub(super) fn resolve_empty_declaration(
     scope: Scope,
     parser_types: ParserTypes,
 ) -> Result<(), ASTResolveError> {
-    let declared_type_copy = declared_type.clone();
-    let mut qualified = QualifiedType {
-        base_type: declared_type_copy,
-        qualifier: TypeQualifier::empty(),
-    };
-    _ = resolve_declaration_type(symtab, &mut qualified, scope, parser_types)?;
+    let mut declared_type_copy = declared_type.clone();
+    _ = resolve_declaration_type(symtab, &mut declared_type_copy, scope, parser_types)?;
 
     Ok(())
 }
@@ -198,33 +196,33 @@ pub(super) fn resolve_empty_declaration(
 /// then places it into symbol table's types list; symbols will reference it through a TypeIdx
 fn resolve_declaration_type(
     symtab: &mut SymbolTable,
-    qualified_type: &mut QualifiedType,
+    qualified_type: &mut CType,
     scope: Scope,
     parser_types: ParserTypes,
 ) -> Result<TypeCategory, ASTResolveError> {
     // check type qualifiers
     // restrict can only be applied to pointers
-    if qualified_type.qualifier.contains(TypeQualifier::Restrict) {
-        if !matches!(qualified_type.base_type, CType::PointerType { .. }) {
+    if qualified_type.qualifier().contains(TypeQualifier::Restrict) {
+        if !matches!(qualified_type, CType::PointerType { .. }) {
             return Err(ASTResolveError::BadRestrictQualifier);
         }
     }
     // function types should be unqualified (their return value + parameters can be qualified)
-    if !qualified_type.qualifier.is_empty() {
-        if matches!(qualified_type.base_type, CType::FunctionTypeRef { .. }) {
-            assert!(false, "warning: function types should not be qualified");
+    if !qualified_type.qualifier().is_empty() {
+        if matches!(qualified_type, CType::FunctionTypeRef { .. }) {
+            assert!(false, "function types should not be qualified");
         }
     }
 
     // check base type
-    match &mut qualified_type.base_type {
+    match qualified_type {
         // basic type is always ok
         CType::BasicType { .. } => return Ok(TypeCategory::Object),
         // void type is incomplete, i.e.
         // `void x;` is not a valid declaration
-        CType::Void => return Ok(TypeCategory::Incomplete),
+        CType::Void { .. } => return Ok(TypeCategory::Incomplete),
 
-        CType::IncompleteArrayType { element_type } | CType::ArrayType { element_type, .. } => {
+        CType::IncompleteArrayType { element_type, .. } | CType::ArrayType { element_type, .. } => {
             let element_type_category =
                 resolve_declaration_type(symtab, element_type, scope, parser_types)?;
 
@@ -235,7 +233,7 @@ fn resolve_declaration_type(
 
             return Ok(TypeCategory::Incomplete);
         }
-        CType::PointerType { pointee_type } => {
+        CType::PointerType { pointee_type, .. } => {
             resolve_declaration_type(symtab, pointee_type, scope, parser_types)?;
             return Ok(TypeCategory::Object);
         }
@@ -251,6 +249,7 @@ fn resolve_declaration_type(
 
         CType::EnumTypeRef {
             symtab_idx: ast_idx,
+            ..
         } => {
             let enum_type = &parser_types.enum_types[*ast_idx];
             let tag = enum_type.tag();
@@ -297,6 +296,7 @@ fn resolve_declaration_type(
 
         CType::StructureTypeRef {
             symtab_idx: ast_idx,
+            ..
         } => {
             let structure_type = &parser_types.structure_types[*ast_idx];
             let tag = structure_type.tag();
@@ -346,6 +346,7 @@ fn resolve_declaration_type(
 
         CType::UnionTypeRef {
             symtab_idx: ast_idx,
+            ..
         } => {
             let union_type = &parser_types.union_types[*ast_idx];
             let tag = union_type.tag();
@@ -551,7 +552,7 @@ fn adjust_function_type(
 
     // return type cannot be function type or array type
     let return_type_is_array = matches!(
-        return_type.base_type,
+        return_type.as_ref(),
         CType::ArrayType { .. } | CType::IncompleteArrayType { .. }
     );
     let return_type_is_fn = matches!(return_type_category, TypeCategory::Function);
@@ -562,8 +563,7 @@ fn adjust_function_type(
     // handle special case of f(void) by removing it
     let void_only = (
         None,
-        QualifiedType {
-            base_type: CType::Void,
+        CType::Void {
             qualifier: TypeQualifier::empty(),
         },
     );
@@ -576,28 +576,29 @@ fn adjust_function_type(
 
         // adjust types - array / function decay (array / function parameters converted to
         // pointers to array / function types instead)
-        match &mut param_type.base_type {
-            CType::IncompleteArrayType { element_type }
+        match param_type {
+            CType::IncompleteArrayType { element_type, .. }
             | CType::ArrayType {
                 size: _,
                 element_type,
+                ..
             } => {
                 let pointee_type = std::mem::replace(
                     element_type,
-                    Box::new(QualifiedType {
-                        base_type: CType::Void,
+                    Box::new(CType::Void {
                         qualifier: TypeQualifier::empty(),
                     }),
                 );
-                param_type.base_type = CType::PointerType { pointee_type };
+                *param_type = CType::PointerType {
+                    qualifier: param_type.qualifier(),
+                    pointee_type,
+                };
             }
             CType::FunctionTypeRef { symtab_idx } => {
-                param_type.base_type = CType::PointerType {
-                    pointee_type: Box::new(QualifiedType {
-                        base_type: CType::FunctionTypeRef {
-                            symtab_idx: *symtab_idx,
-                        },
-                        qualifier: TypeQualifier::empty(),
+                *param_type = CType::PointerType {
+                    qualifier: TypeQualifier::empty(),
+                    pointee_type: Box::new(CType::FunctionTypeRef {
+                        symtab_idx: *symtab_idx,
                     }),
                 };
             }
@@ -642,7 +643,7 @@ pub(crate) fn resolve_function_definition(
     );
 
     // adjust function type
-    let parser_type_idx = match fn_declaration.qualified_type.base_type {
+    let parser_type_idx = match fn_declaration.qualified_type {
         CType::FunctionTypeRef { symtab_idx } => symtab_idx,
         _ => {
             return Err(ASTResolveError::CorruptedParserTypeTable);
@@ -653,7 +654,7 @@ pub(crate) fn resolve_function_definition(
 
     // parameter types must not be incomplete at definition time
     for (_, ty) in &adjusted_type.parameter_types {
-        if ty.base_type.type_category(symtab) == TypeCategory::Incomplete {
+        if ty.type_category(symtab) == TypeCategory::Incomplete {
             return Err(ASTResolveError::IncompleteParameter);
         }
     }

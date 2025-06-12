@@ -12,7 +12,7 @@ use crate::types::{EnumType, FunctionType, FunctionTypeIdx, StructureType, Union
 use crate::{
     parser::ast::{ASTNode, Constant, ExpressionNode},
     semantics::symtab::ScopeType,
-    types::{BasicType, CType, QualifiedType, TypeQualifier},
+    types::{BasicType, CType, TypeQualifier},
 };
 
 #[derive(Debug, Error)]
@@ -372,7 +372,7 @@ struct ParserTypes<'p> {
 /// 4. evaluate compile time constants
 /// goal: by the end of `resolve_ast`, the code is guaranteed to be free of compilation (though maybe not link-time) errors
 /// resolve_ast also checks internal compiler invariants
-pub(crate) fn resolve_ast(
+pub fn resolve_ast(
     ast_root: ASTNode,
     parser_state: ParserState,
 ) -> Result<ResolvedAST, ASTResolveError> {
@@ -607,11 +607,9 @@ fn resolve_ast_inner(
             let value = resolve_integer_constant_expression(&mut resolve_state.symtab, value_expr)?;
 
             let case_expr = TypedExpressionNode::Constant(
-                QualifiedType {
-                    base_type: CType::BasicType {
-                        basic_type: value_type,
-                    },
+                CType::BasicType {
                     qualifier: TypeQualifier::empty(),
+                    basic_type: value_type,
                 },
                 value,
             );
@@ -755,7 +753,7 @@ fn resolve_ast_inner(
             let controlling_expr_type =
                 intermediate_ast.exprs[controlling_expr_ref.0 as usize].expr_type();
 
-            if !controlling_expr_type.base_type.scalar_type() {
+            if !controlling_expr_type.scalar_type() {
                 return Err(ASTResolveError::BadControllingExprType);
             }
 
@@ -804,7 +802,7 @@ fn resolve_ast_inner(
             let controlling_expr_type =
                 intermediate_ast.exprs[controlling_expr_ref.0 as usize].expr_type();
 
-            if !matches!(controlling_expr_type.base_type, CType::BasicType { .. }) {
+            if !matches!(controlling_expr_type, CType::BasicType { .. }) {
                 return Err(ASTResolveError::BadControllingExprType);
             }
 
@@ -849,7 +847,7 @@ fn resolve_ast_inner(
 
             let controlling_expr_type =
                 intermediate_ast.exprs[controlling_expr_ref.0 as usize].expr_type();
-            if !controlling_expr_type.base_type.scalar_type() {
+            if !controlling_expr_type.scalar_type() {
                 return Err(ASTResolveError::BadControllingExprType);
             }
 
@@ -1030,14 +1028,14 @@ fn resolve_ast_inner(
 
                     // qualifiers don't matter here, i think
                     // technically, this is not compliant to standard i think
-                    if current_fn_return_type.base_type != expr_type.base_type {
+                    if !CType::unqualified_equal(current_fn_return_type, expr_type) {
                         return Err(ASTResolveError::BadReturnValue);
                     }
 
                     Some(expr_ref)
                 }
                 None => {
-                    if !current_fn_return_type.base_type.is_void() {
+                    if !current_fn_return_type.is_void() {
                         return Err(ASTResolveError::BadReturnValue);
                     }
 
