@@ -95,6 +95,35 @@ pub(crate) enum TaggedTypeIdx {
     UnionTypeIdx(UnionTypeIdx),
 }
 
+impl From<EnumTypeIdx> for TaggedTypeIdx {
+    fn from(value: EnumTypeIdx) -> Self {
+        Self::EnumTypeIdx(value)
+    }
+}
+
+impl From<StructureTypeIdx> for TaggedTypeIdx {
+    fn from(value: StructureTypeIdx) -> Self {
+        Self::StructureTypeIdx(value)
+    }
+}
+
+impl From<UnionTypeIdx> for TaggedTypeIdx {
+    fn from(value: UnionTypeIdx) -> Self {
+        Self::UnionTypeIdx(value)
+    }
+}
+
+impl TaggedTypeIdx {
+    pub(crate) fn same_type(a: Self, b: Self) -> bool {
+        match (a, b) {
+            (TaggedTypeIdx::EnumTypeIdx(_), TaggedTypeIdx::EnumTypeIdx(_)) => true,
+            (TaggedTypeIdx::StructureTypeIdx(_), TaggedTypeIdx::StructureTypeIdx(_)) => true,
+            (TaggedTypeIdx::UnionTypeIdx(_), TaggedTypeIdx::UnionTypeIdx(_)) => true,
+            _ => false,
+        }
+    }
+}
+
 // monolithic symbol table contains all symbols in program
 // in particular, every symbol has an associated identifier and type
 // will likely need to add storage / linkage / layout information as well

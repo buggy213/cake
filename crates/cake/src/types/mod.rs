@@ -1,6 +1,8 @@
+use std::ops::{Index, IndexMut};
+
 use bitflags::bitflags;
 
-use crate::semantics::symtab::{CanonicalTypeIdx, Scope};
+use crate::semantics::symtab::Scope;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BasicType {
@@ -76,16 +78,59 @@ impl BasicType {
 }
 
 macro_rules! make_type_idx {
-    () => {};
+    ($type_idx_name:tt, $type_name:tt) => {
+        // TODO: consider newtyping Vec and adding push which returns type_idx
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(crate) struct $type_idx_name(u32);
+
+        impl $type_idx_name {
+            pub(crate) fn from_push(vec: &mut Vec<$type_name>, val: $type_name) -> $type_idx_name {
+                let idx = $type_idx_name(vec.len() as u32);
+                vec.push(val);
+                idx
+            }
+        }
+
+        impl Index<$type_idx_name> for [$type_name] {
+            type Output = $type_name;
+
+            fn index(&self, index: $type_idx_name) -> &Self::Output {
+                &self[index.0 as usize]
+            }
+        }
+
+        impl IndexMut<$type_idx_name> for [$type_name] {
+            fn index_mut(&mut self, index: $type_idx_name) -> &mut Self::Output {
+                &mut self[index.0 as usize]
+            }
+        }
+
+        impl Index<$type_idx_name> for Vec<$type_name> {
+            type Output = $type_name;
+
+            fn index(&self, index: $type_idx_name) -> &Self::Output {
+                self.as_slice().index(index)
+            }
+        }
+
+        impl IndexMut<$type_idx_name> for Vec<$type_name> {
+            fn index_mut(&mut self, index: $type_idx_name) -> &mut Self::Output {
+                self.as_mut_slice().index_mut(index)
+            }
+        }
+    };
 }
 
 // for now, all enums will be 4 bytes
 pub(crate) type EnumVariant = (String, i32);
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EnumType {
     complete: bool,
     tag: Option<String>,
     members: Vec<EnumVariant>,
 }
+
+make_type_idx!(EnumTypeIdx, EnumType);
 
 impl EnumType {
     pub(crate) fn new_complete_enum_type(
@@ -111,6 +156,10 @@ impl EnumType {
         self.complete
     }
 
+    pub(crate) fn tag(&self) -> Option<&str> {
+        (&self.tag).as_deref()
+    }
+
     pub(crate) fn members(&self) -> &[EnumVariant] {
         &self.members
     }
@@ -118,12 +167,14 @@ impl EnumType {
 
 pub(crate) type AggregateMember = (String, QualifiedType);
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StructureType {
     complete: bool,
     tag: Option<String>,
     members: Vec<AggregateMember>,
 }
+
+make_type_idx!(StructureTypeIdx, StructureType);
 
 impl StructureType {
     pub(crate) fn new_complete_structure_type(
@@ -149,16 +200,23 @@ impl StructureType {
         self.complete
     }
 
+    pub(crate) fn tag(&self) -> Option<&str> {
+        (&self.tag).as_deref()
+    }
+
     pub(crate) fn members(&self) -> &[AggregateMember] {
         &self.members
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UnionType {
     complete: bool,
     tag: Option<String>,
     members: Vec<AggregateMember>,
 }
+
+make_type_idx!(UnionTypeIdx, UnionType);
 
 impl UnionType {
     pub(crate) fn new_complete_union_type(
@@ -182,6 +240,10 @@ impl UnionType {
 
     pub(crate) fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    pub(crate) fn tag(&self) -> Option<&str> {
+        (&self.tag).as_deref()
     }
 
     pub(crate) fn members(&self) -> &[AggregateMember] {
@@ -210,33 +272,7 @@ pub(crate) struct FunctionType {
     pub(crate) prototype_scope: Scope,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum CanonicalType {
-    // "Canonical" types go into type table, should try to only keep 1 around
-    // if possible. in addition, they do not specify type qualifiers (though their members might)
-    IncompleteUnionType {
-        tag: String,
-    },
-    UnionType {
-        tag: Option<String>,
-        members: Vec<AggregateMember>,
-    },
-    IncompleteStructureType {
-        tag: String, // having an anonymous incomplete struct/union type seems meaningless...
-    },
-    StructureType {
-        tag: Option<String>,
-        members: Vec<AggregateMember>,
-    },
-    IncompleteEnumType {
-        tag: String,
-    },
-    EnumerationType {
-        tag: Option<String>,
-        members: Vec<EnumVariant>,
-    },
-    FunctionType(FunctionType),
-}
+make_type_idx!(FunctionTypeIdx, FunctionType);
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -275,16 +311,16 @@ pub(crate) enum CType {
     // Pointers into symbol table to avoid having deep copies of highly-nested structs / unions
     // need to be careful to avoid circular / recursive structs (infinite size!)
     StructureTypeRef {
-        symtab_idx: CanonicalTypeIdx,
+        symtab_idx: StructureTypeIdx,
     },
     UnionTypeRef {
-        symtab_idx: CanonicalTypeIdx,
+        symtab_idx: UnionTypeIdx,
     },
     EnumTypeRef {
-        symtab_idx: CanonicalTypeIdx,
+        symtab_idx: EnumTypeIdx,
     },
     FunctionTypeRef {
-        symtab_idx: CanonicalTypeIdx,
+        symtab_idx: FunctionTypeIdx,
     },
 }
 

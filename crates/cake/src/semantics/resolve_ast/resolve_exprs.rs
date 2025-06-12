@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::parser::ast::{Constant, ExprRangeRef, ExprRef, ExpressionNode, TypedExpressionNode};
 use crate::semantics::symtab::Symbol;
 use crate::semantics::{constexpr::integer_constant_eval, symtab::SymbolTable};
-use crate::types::{BasicType, CType, CanonicalType, QualifiedType, TypeQualifier};
+use crate::types::{BasicType, CType, QualifiedType, TypeQualifier};
 
 use super::ASTResolveError;
 
@@ -206,12 +206,7 @@ pub(super) fn resolve_expr(
             };
 
             // get return type
-            let fn_canonical_type = symtab.get_canonical_type(fn_expr_type_idx);
-            let fn_canonical_type = match fn_canonical_type {
-                CanonicalType::FunctionType(fn_type_inner) => fn_type_inner,
-                _ => panic!("corrupted symtab type table"),
-            };
-
+            let fn_canonical_type = symtab.get_function_type(fn_expr_type_idx);
             let return_type = fn_canonical_type.return_type.as_ref().clone();
 
             // TODO: type check arguments (and insert appropriate casts if needed)

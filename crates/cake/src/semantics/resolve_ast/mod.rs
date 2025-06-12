@@ -3,15 +3,16 @@ use resolve_exprs::{resolve_expr, resolve_integer_constant_expression, ResolveEx
 use std::mem::MaybeUninit;
 use thiserror::Error;
 
-use super::symtab::{CanonicalTypeIdx, Scope, SymbolTable, SymtabError};
+use super::symtab::{Scope, SymbolTable, SymtabError};
 use crate::parser::ast::{
     ContextRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
 use crate::parser::hand_parser::ParserState;
+use crate::types::{EnumType, FunctionType, FunctionTypeIdx, StructureType, UnionType};
 use crate::{
     parser::ast::{ASTNode, Constant, ExpressionNode},
     semantics::symtab::ScopeType,
-    types::{BasicType, CType, CanonicalType, QualifiedType, TypeQualifier},
+    types::{BasicType, CType, QualifiedType, TypeQualifier},
 };
 
 #[derive(Debug, Error)]
@@ -136,7 +137,7 @@ struct IterationStatementContext {
 struct FunctionDefinitionContext {
     node: NodeRef,
 
-    func_type: CanonicalTypeIdx,
+    func_type: FunctionTypeIdx,
 }
 
 enum ResolverContext {
@@ -308,7 +309,7 @@ impl ResolverState {
         }
     }
 
-    fn add_function_defn(&mut self, node: NodeRef, func_type: CanonicalTypeIdx) {
+    fn add_function_defn(&mut self, node: NodeRef, func_type: FunctionTypeIdx) {
         let new_function_definition_ctx = FunctionDefinitionContext { node, func_type };
         let idx = self.context_stack.len();
         self.context_stack
@@ -356,6 +357,14 @@ impl ResolverState {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ParserTypes<'p> {
+    enum_types: &'p [EnumType],
+    structure_types: &'p [StructureType],
+    union_types: &'p [UnionType],
+    function_types: &'p [FunctionType],
+}
+
 /// 1. resolve declarations (place values into symbol table and enforce rules about redeclaration)
 /// 2. resolve identifiers (i.e. check that there is a corresponding definition) within expressions
 ///    - TODO: consider using numeric indices rather than string-based hashtable lookup for everything
@@ -369,7 +378,10 @@ pub(crate) fn resolve_ast(
 ) -> Result<ResolvedAST, ASTResolveError> {
     let ParserState {
         scopes,
-        canonical_types: types,
+        enum_types,
+        structure_types,
+        union_types,
+        function_types,
         ..
     } = parser_state;
 
@@ -381,11 +393,17 @@ pub(crate) fn resolve_ast(
     };
 
     let mut resolver_state = ResolverState::new(scopes);
+    let parser_types = ParserTypes {
+        enum_types: &enum_types,
+        structure_types: &structure_types,
+        union_types: &union_types,
+        function_types: &function_types,
+    };
 
     resolve_ast_top(
         &mut intermediate_ast,
         &ast_root,
-        &types,
+        parser_types,
         &mut resolver_state,
     )?;
 
@@ -422,7 +440,7 @@ fn add_indices(
 fn resolve_ast_top(
     intermediate_ast: &mut IntermediateAST,
     ast: &ASTNode,
-    parser_types: &[CanonicalType],
+    parser_types: ParserTypes,
     resolve_state: &mut ResolverState,
 ) -> Result<NodeRef, ASTResolveError> {
     match ast {
@@ -486,7 +504,7 @@ fn resolve_ast_inner(
     parent: NodeRef,
     intermediate_ast: &mut IntermediateAST,
     ast: &ASTNode,
-    parser_types: &[CanonicalType],
+    parser_types: ParserTypes,
     resolve_state: &mut ResolverState,
 ) -> Result<NodeRef, ASTResolveError> {
     match ast {
@@ -996,15 +1014,7 @@ fn resolve_ast_inner(
             let current_fn = resolve_state.current_function_defn()
                 .expect("internal compiler error: grammar requires return can only be in function definition");
 
-            let current_fn_type = resolve_state
-                .symtab
-                .get_canonical_type(current_fn.func_type);
-
-            let current_fn_type = match current_fn_type {
-                CanonicalType::FunctionType(function_type_inner) => function_type_inner,
-                _ => panic!("corrupted symtab type table"),
-            };
-
+            let current_fn_type = resolve_state.symtab.get_function_type(current_fn.func_type);
             let current_fn_return_type = current_fn_type.return_type.as_ref();
 
             // do type-check
@@ -1055,7 +1065,7 @@ fn resolve_ast_declaration(
     parent: NodeRef,
     intermediate_ast: &mut IntermediateAST,
     ast: &ASTNode,
-    parser_types: &[CanonicalType],
+    parser_types: ParserTypes,
     resolve_state: &mut ResolverState,
 ) -> Result<(), ASTResolveError> {
     if let ASTNode::Declaration(declaration_list) = ast {
