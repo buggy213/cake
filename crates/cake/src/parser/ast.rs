@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::semantics::symtab::{Scope, StorageClass};
 
-use crate::types::{BasicType, CType, FunctionSpecifier, QualifiedType};
+use crate::types::{BasicType, CType, FunctionSpecifier};
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum ASTNode {
@@ -45,7 +45,7 @@ pub(crate) enum ASTNode {
 #[derive(Debug, PartialEq)]
 pub(crate) struct Declaration {
     pub(crate) name: Identifier,
-    pub(crate) qualified_type: QualifiedType,
+    pub(crate) qualified_type: CType,
     pub(crate) storage_class: StorageClass,
     pub(crate) is_typedef: bool,
     pub(crate) function_specifier: FunctionSpecifier,
@@ -55,7 +55,7 @@ pub(crate) struct Declaration {
 impl Declaration {
     pub fn new(
         name: Identifier,
-        qualified_type: QualifiedType,
+        qualified_type: CType,
         storage_class: StorageClass,
         is_typedef: bool,
         function_specifier: FunctionSpecifier,
@@ -155,7 +155,7 @@ pub(crate) enum ExpressionNode {
     Modulo(Box<ExpressionNode>, Box<ExpressionNode>),
     Add(Box<ExpressionNode>, Box<ExpressionNode>),
     Subtract(Box<ExpressionNode>, Box<ExpressionNode>),
-    Cast(Box<ExpressionNode>, QualifiedType),
+    Cast(Box<ExpressionNode>, CType),
 
     PreIncrement(Box<ExpressionNode>),
     PreDecrement(Box<ExpressionNode>),
@@ -290,70 +290,70 @@ pub(crate) enum ResolvedASTNode {
 
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) enum TypedExpressionNode {
-    CommaExpr(QualifiedType, ExprRangeRef),
+    CommaExpr(CType, ExprRangeRef),
 
-    SimpleAssign(QualifiedType, ExprRef, ExprRef),
-    MultiplyAssign(QualifiedType, ExprRef, ExprRef),
-    DivideAssign(QualifiedType, ExprRef, ExprRef),
-    ModuloAssign(QualifiedType, ExprRef, ExprRef),
-    AddAssign(QualifiedType, ExprRef, ExprRef),
-    SubAssign(QualifiedType, ExprRef, ExprRef),
-    LShiftAssign(QualifiedType, ExprRef, ExprRef),
-    RShiftAssign(QualifiedType, ExprRef, ExprRef),
-    AndAssign(QualifiedType, ExprRef, ExprRef),
-    XorAssign(QualifiedType, ExprRef, ExprRef),
-    OrAssign(QualifiedType, ExprRef, ExprRef),
+    SimpleAssign(CType, ExprRef, ExprRef),
+    MultiplyAssign(CType, ExprRef, ExprRef),
+    DivideAssign(CType, ExprRef, ExprRef),
+    ModuloAssign(CType, ExprRef, ExprRef),
+    AddAssign(CType, ExprRef, ExprRef),
+    SubAssign(CType, ExprRef, ExprRef),
+    LShiftAssign(CType, ExprRef, ExprRef),
+    RShiftAssign(CType, ExprRef, ExprRef),
+    AndAssign(CType, ExprRef, ExprRef),
+    XorAssign(CType, ExprRef, ExprRef),
+    OrAssign(CType, ExprRef, ExprRef),
 
-    Ternary(QualifiedType, ExprRef, ExprRef, ExprRef),
+    Ternary(CType, ExprRef, ExprRef, ExprRef),
 
-    LogicalAnd(QualifiedType, ExprRef, ExprRef),
-    LogicalOr(QualifiedType, ExprRef, ExprRef),
-    BitwiseAnd(QualifiedType, ExprRef, ExprRef),
-    BitwiseOr(QualifiedType, ExprRef, ExprRef),
-    BitwiseXor(QualifiedType, ExprRef, ExprRef),
+    LogicalAnd(CType, ExprRef, ExprRef),
+    LogicalOr(CType, ExprRef, ExprRef),
+    BitwiseAnd(CType, ExprRef, ExprRef),
+    BitwiseOr(CType, ExprRef, ExprRef),
+    BitwiseXor(CType, ExprRef, ExprRef),
 
-    Equal(QualifiedType, ExprRef, ExprRef),
-    NotEqual(QualifiedType, ExprRef, ExprRef),
+    Equal(CType, ExprRef, ExprRef),
+    NotEqual(CType, ExprRef, ExprRef),
 
-    LessThan(QualifiedType, ExprRef, ExprRef),
-    GreaterThan(QualifiedType, ExprRef, ExprRef),
-    LessThanOrEqual(QualifiedType, ExprRef, ExprRef),
-    GreaterThanOrEqual(QualifiedType, ExprRef, ExprRef),
+    LessThan(CType, ExprRef, ExprRef),
+    GreaterThan(CType, ExprRef, ExprRef),
+    LessThanOrEqual(CType, ExprRef, ExprRef),
+    GreaterThanOrEqual(CType, ExprRef, ExprRef),
 
-    LShift(QualifiedType, ExprRef, ExprRef),
-    RShift(QualifiedType, ExprRef, ExprRef),
-    Multiply(QualifiedType, ExprRef, ExprRef),
-    Divide(QualifiedType, ExprRef, ExprRef),
-    Modulo(QualifiedType, ExprRef, ExprRef),
-    Add(QualifiedType, ExprRef, ExprRef),
-    Subtract(QualifiedType, ExprRef, ExprRef),
-    Cast(QualifiedType, ExprRef, QualifiedType),
+    LShift(CType, ExprRef, ExprRef),
+    RShift(CType, ExprRef, ExprRef),
+    Multiply(CType, ExprRef, ExprRef),
+    Divide(CType, ExprRef, ExprRef),
+    Modulo(CType, ExprRef, ExprRef),
+    Add(CType, ExprRef, ExprRef),
+    Subtract(CType, ExprRef, ExprRef),
+    Cast(CType, ExprRef, CType),
 
-    PreIncrement(QualifiedType, ExprRef),
-    PreDecrement(QualifiedType, ExprRef),
-    Sizeof(QualifiedType, ExprRef),
-    AddressOf(QualifiedType, ExprRef),
-    Dereference(QualifiedType, ExprRef),
-    UnaryPlus(QualifiedType, ExprRef),
-    UnaryMinus(QualifiedType, ExprRef),
-    BitwiseNot(QualifiedType, ExprRef),
-    Not(QualifiedType, ExprRef),
+    PreIncrement(CType, ExprRef),
+    PreDecrement(CType, ExprRef),
+    Sizeof(CType, ExprRef),
+    AddressOf(CType, ExprRef),
+    Dereference(CType, ExprRef),
+    UnaryPlus(CType, ExprRef),
+    UnaryMinus(CType, ExprRef),
+    BitwiseNot(CType, ExprRef),
+    Not(CType, ExprRef),
 
-    PostIncrement(QualifiedType, ExprRef),
-    PostDecrement(QualifiedType, ExprRef),
-    ArraySubscript(QualifiedType, ExprRef, ExprRef),
-    FunctionCall(QualifiedType, ExprRef, ExprRangeRef),
-    DotAccess(QualifiedType, ExprRef, Identifier),
-    ArrowAccess(QualifiedType, ExprRef, Identifier),
+    PostIncrement(CType, ExprRef),
+    PostDecrement(CType, ExprRef),
+    ArraySubscript(CType, ExprRef, ExprRef),
+    FunctionCall(CType, ExprRef, ExprRangeRef),
+    DotAccess(CType, ExprRef, Identifier),
+    ArrowAccess(CType, ExprRef, Identifier),
     // TODO: add support for compound initializers
     // CompoundInitializer
-    Identifier(QualifiedType, Identifier),
-    Constant(QualifiedType, Constant),
-    StringLiteral(QualifiedType, String),
+    Identifier(CType, Identifier),
+    Constant(CType, Constant),
+    StringLiteral(CType, String),
 }
 
 impl TypedExpressionNode {
-    pub(crate) fn expr_type(&self) -> &QualifiedType {
+    pub(crate) fn expr_type(&self) -> &CType {
         match self {
             TypedExpressionNode::CommaExpr(qualified_type, _)
             | TypedExpressionNode::SimpleAssign(qualified_type, _, _)

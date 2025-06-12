@@ -8,12 +8,10 @@ use thiserror::Error;
 use crate::{
     parser::ast::{Constant, NodeRef},
     types::{
-        EnumType, EnumTypeIdx, FunctionType, FunctionTypeIdx, StructureType, StructureTypeIdx,
-        UnionType, UnionTypeIdx,
+        CType, EnumType, EnumTypeIdx, FunctionType, FunctionTypeIdx, StructureType,
+        StructureTypeIdx, UnionType, UnionTypeIdx,
     },
 };
-
-use crate::types::QualifiedType;
 
 // "function prototype scope" not included,
 // just ignore symbol table when processing a function prototype
@@ -137,7 +135,7 @@ pub(crate) struct SymbolTable {
     labels: Vec<HashMap<String, NodeRef>>,
     tags: Vec<HashMap<String, TaggedTypeIdx>>,
 
-    types: Vec<QualifiedType>,
+    types: Vec<CType>,
 
     enum_types: Vec<EnumType>,
     structure_types: Vec<StructureType>,
@@ -257,9 +255,9 @@ impl SymbolTable {
         self.scopes[idx]
     }
 
-    pub(crate) fn add_qualified_type(&mut self, qualified_type: QualifiedType) -> TypeIdx {
+    pub(crate) fn add_qualified_type(&mut self, ctype: CType) -> TypeIdx {
         let type_idx = TypeIdx(self.types.len());
-        self.types.push(qualified_type);
+        self.types.push(ctype);
         type_idx
     }
 
@@ -336,7 +334,7 @@ impl SymbolTable {
         Ok(())
     }
 
-    pub(crate) fn get_qualified_type(&self, idx: TypeIdx) -> &QualifiedType {
+    pub(crate) fn get_qualified_type(&self, idx: TypeIdx) -> &CType {
         &self.types[idx.0 as usize]
     }
 

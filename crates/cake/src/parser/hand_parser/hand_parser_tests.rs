@@ -114,14 +114,11 @@ fn test_parse_expr_cast() {
 
     let expr = {
         let cast_target_type = {
-            let const_void = QualifiedType {
-                base_type: CType::Void,
+            let const_void = CType::Void {
                 qualifier: TypeQualifier::Const,
             };
-            QualifiedType {
-                base_type: CType::PointerType {
-                    pointee_type: Box::new(const_void),
-                },
+            CType::PointerType {
+                pointee_type: Box::new(const_void),
                 qualifier: TypeQualifier::empty(),
             }
         };
@@ -151,40 +148,30 @@ fn test_parse_hello_world() {
     let translation_unit = {
         let main = {
             dummy_state.open_scope(ScopeType::FunctionScope);
-            let return_type = QualifiedType {
-                base_type: CType::BasicType {
-                    basic_type: BasicType::Int,
-                },
+            let return_type = CType::BasicType {
                 qualifier: TypeQualifier::empty(),
+                basic_type: BasicType::Int,
             };
 
-            let argc_type = QualifiedType {
-                base_type: CType::BasicType {
-                    basic_type: BasicType::Int,
-                },
+            let argc_type = CType::BasicType {
                 qualifier: TypeQualifier::empty(),
+                basic_type: BasicType::Int,
             };
 
             let argv_type = {
-                let char_type = QualifiedType {
-                    base_type: CType::BasicType {
-                        basic_type: BasicType::Char,
-                    },
+                let char_type = CType::BasicType {
                     qualifier: TypeQualifier::empty(),
+                    basic_type: BasicType::Char,
                 };
 
-                let pointer_to_char_type = QualifiedType {
-                    base_type: CType::PointerType {
-                        pointee_type: Box::new(char_type),
-                    },
+                let pointer_to_char_type = CType::PointerType {
                     qualifier: TypeQualifier::empty(),
+                    pointee_type: Box::new(char_type),
                 };
 
-                QualifiedType {
-                    base_type: CType::PointerType {
-                        pointee_type: Box::new(pointer_to_char_type),
-                    },
+                CType::PointerType {
                     qualifier: TypeQualifier::empty(),
+                    pointee_type: Box::new(pointer_to_char_type),
                 }
             };
 
@@ -220,11 +207,8 @@ fn test_parse_hello_world() {
 
             dummy_state.close_scope().unwrap();
 
-            let fn_type = QualifiedType {
-                base_type: CType::FunctionTypeRef {
-                    symtab_idx: fn_type_idx,
-                },
-                qualifier: TypeQualifier::empty(),
+            let fn_type = CType::FunctionTypeRef {
+                symtab_idx: fn_type_idx,
             };
 
             let fn_declaration = Declaration::new(
@@ -263,40 +247,30 @@ fn test_parse_hello_world_unnamed_args() {
     let translation_unit = {
         let main = {
             dummy_state.open_scope(ScopeType::FunctionScope);
-            let return_type = QualifiedType {
-                base_type: CType::BasicType {
-                    basic_type: BasicType::Int,
-                },
+            let return_type = CType::BasicType {
                 qualifier: TypeQualifier::empty(),
+                basic_type: BasicType::Int,
             };
 
-            let argc_type = QualifiedType {
-                base_type: CType::BasicType {
-                    basic_type: BasicType::Int,
-                },
+            let argc_type = CType::BasicType {
                 qualifier: TypeQualifier::empty(),
+                basic_type: BasicType::Int,
             };
 
             let argv_type = {
-                let char_type = QualifiedType {
-                    base_type: CType::BasicType {
-                        basic_type: BasicType::Char,
-                    },
+                let char_type = CType::BasicType {
                     qualifier: TypeQualifier::empty(),
+                    basic_type: BasicType::Char,
                 };
 
-                let pointer_to_char_type = QualifiedType {
-                    base_type: CType::PointerType {
-                        pointee_type: Box::new(char_type),
-                    },
+                let pointer_to_char_type = CType::PointerType {
                     qualifier: TypeQualifier::empty(),
+                    pointee_type: Box::new(char_type),
                 };
 
-                QualifiedType {
-                    base_type: CType::PointerType {
-                        pointee_type: Box::new(pointer_to_char_type),
-                    },
+                CType::PointerType {
                     qualifier: TypeQualifier::empty(),
+                    pointee_type: Box::new(pointer_to_char_type),
                 }
             };
 
@@ -329,11 +303,8 @@ fn test_parse_hello_world_unnamed_args() {
 
             dummy_state.close_scope().unwrap();
 
-            let fn_type = QualifiedType {
-                base_type: CType::FunctionTypeRef {
-                    symtab_idx: fn_type_idx,
-                },
-                qualifier: TypeQualifier::empty(),
+            let fn_type = CType::FunctionTypeRef {
+                symtab_idx: fn_type_idx,
             };
 
             let fn_declaration = Declaration::new(
@@ -393,11 +364,9 @@ fn parse_abstract_type_test_basic() {
     int
     "#;
 
-    let abstract_type = QualifiedType {
-        base_type: CType::BasicType {
-            basic_type: BasicType::Int,
-        },
+    let abstract_type = CType::BasicType {
         qualifier: TypeQualifier::empty(),
+        basic_type: BasicType::Int,
     };
 
     let (mut toks, mut state) = text_test_harness(&abstract_type_str);
@@ -412,20 +381,14 @@ fn parse_abstract_type_test_1() {
     int (*)
     "#;
 
-    let base_type = QualifiedType {
-        base_type: CType::BasicType {
-            basic_type: BasicType::Int,
-        },
+    let base_type = CType::BasicType {
         qualifier: TypeQualifier::empty(),
+        basic_type: BasicType::Int,
     };
 
-    let abstract_type = {
-        QualifiedType {
-            base_type: CType::PointerType {
-                pointee_type: Box::new(base_type),
-            },
-            qualifier: TypeQualifier::empty(),
-        }
+    let abstract_type = CType::PointerType {
+        qualifier: TypeQualifier::empty(),
+        pointee_type: Box::new(base_type),
     };
 
     let (mut toks, mut state) = text_test_harness(&ptr_abstract_type_str);
@@ -440,11 +403,9 @@ fn parse_abstract_type_test_2() {
     int ()
     "#;
 
-    let base_type = QualifiedType {
-        base_type: CType::BasicType {
-            basic_type: BasicType::Int,
-        },
+    let base_type = CType::BasicType {
         qualifier: TypeQualifier::empty(),
+        basic_type: BasicType::Int,
     };
 
     let mut dummy_state = ParserState::new();
@@ -462,11 +423,8 @@ fn parse_abstract_type_test_2() {
             dummy_state.close_scope().unwrap();
             dummy_state.add_function_type(fn_type)
         };
-        QualifiedType {
-            base_type: CType::FunctionTypeRef {
-                symtab_idx: fn_type_idx,
-            },
-            qualifier: TypeQualifier::empty(),
+        CType::FunctionTypeRef {
+            symtab_idx: fn_type_idx,
         }
     };
 
@@ -484,22 +442,18 @@ fn parse_abstract_type_test_3() {
     int (*const [])(unsigned int, ...)
     "#;
 
-    let base_type = QualifiedType {
-        base_type: CType::BasicType {
-            basic_type: BasicType::Int,
-        },
+    let base_type = CType::BasicType {
         qualifier: TypeQualifier::empty(),
+        basic_type: BasicType::Int,
     };
     let mut dummy_state = ParserState::new();
     let abstract_type = {
         let const_ptr = {
             let fn_type = {
                 let uint_type = {
-                    QualifiedType {
-                        base_type: CType::BasicType {
-                            basic_type: BasicType::UInt,
-                        },
+                    CType::BasicType {
                         qualifier: TypeQualifier::empty(),
+                        basic_type: BasicType::UInt,
                     }
                 };
                 dummy_state.open_scope(ScopeType::FunctionScope);
@@ -514,27 +468,20 @@ fn parse_abstract_type_test_3() {
                 dummy_state.close_scope().unwrap();
                 let anon_fn_type_idx = dummy_state.add_function_type(anon_fn_type);
 
-                QualifiedType {
-                    base_type: CType::FunctionTypeRef {
-                        symtab_idx: anon_fn_type_idx,
-                    },
-                    qualifier: TypeQualifier::empty(),
+                CType::FunctionTypeRef {
+                    symtab_idx: anon_fn_type_idx,
                 }
             };
 
-            QualifiedType {
-                base_type: CType::PointerType {
-                    pointee_type: Box::new(fn_type),
-                },
+            CType::PointerType {
                 qualifier: TypeQualifier::Const,
+                pointee_type: Box::new(fn_type),
             }
         };
 
-        QualifiedType {
-            base_type: CType::IncompleteArrayType {
-                element_type: Box::new(const_ptr),
-            },
+        CType::IncompleteArrayType {
             qualifier: TypeQualifier::empty(),
+            element_type: Box::new(const_ptr),
         }
     };
 
@@ -551,11 +498,9 @@ fn parse_struct_declaration_incomplete() {
     let mut dummy_state = ParserState::new();
     let struct_type = StructureType::new_incomplete_structure_type(String::from("test"));
     let struct_type_idx = dummy_state.add_structure_type(struct_type);
-    let struct_type = QualifiedType {
-        base_type: CType::StructureTypeRef {
-            symtab_idx: struct_type_idx,
-        },
+    let struct_type = CType::StructureTypeRef {
         qualifier: TypeQualifier::empty(),
+        symtab_idx: struct_type_idx,
     };
 
     let (mut toks, mut state) = text_test_harness(&incomplete_struct_str);
@@ -585,21 +530,17 @@ fn parse_struct_declaration_anonymous() {
     let tag = None;
     let members = vec![(
         String::from("k"),
-        QualifiedType {
-            base_type: CType::BasicType {
-                basic_type: BasicType::Int,
-            },
+        CType::BasicType {
             qualifier: TypeQualifier::empty(),
+            basic_type: BasicType::Int,
         },
     )];
     let struct_type = StructureType::new_complete_structure_type(tag, members);
 
     let struct_type_idx = dummy_state.add_structure_type(struct_type);
-    let struct_type = QualifiedType {
-        base_type: CType::StructureTypeRef {
-            symtab_idx: struct_type_idx,
-        },
+    let struct_type = CType::StructureTypeRef {
         qualifier: TypeQualifier::empty(),
+        symtab_idx: struct_type_idx,
     };
 
     let (mut toks, mut state) = text_test_harness(&anonymous_struct);
@@ -629,21 +570,17 @@ fn parse_struct_declaration() {
     let tag = Some(String::from("complete"));
     let members = vec![(
         String::from("k"),
-        QualifiedType {
-            base_type: CType::BasicType {
-                basic_type: BasicType::Int,
-            },
+        CType::BasicType {
             qualifier: TypeQualifier::empty(),
+            basic_type: BasicType::Int,
         },
     )];
     let struct_type = StructureType::new_complete_structure_type(tag, members);
 
     let struct_type_idx = dummy_state.add_structure_type(struct_type);
-    let struct_type = QualifiedType {
-        base_type: CType::StructureTypeRef {
-            symtab_idx: struct_type_idx,
-        },
+    let struct_type = CType::StructureTypeRef {
         qualifier: TypeQualifier::empty(),
+        symtab_idx: struct_type_idx,
     };
 
     let (mut toks, mut state) = text_test_harness(&complete_struct);
@@ -677,11 +614,9 @@ fn parse_struct_declaration_recursive() {
     let outer_struct_type = {
         let k = (
             String::from("k"),
-            QualifiedType {
-                base_type: CType::BasicType {
-                    basic_type: BasicType::Int,
-                },
+            CType::BasicType {
                 qualifier: TypeQualifier::empty(),
+                basic_type: BasicType::Int,
             },
         );
 
@@ -689,27 +624,21 @@ fn parse_struct_declaration_recursive() {
         let members = vec![k];
         let inner_struct_type = StructureType::new_complete_structure_type(tag, members);
         let inner_struct_type_idx = dummy_state.add_structure_type(inner_struct_type);
-        let inner = QualifiedType {
-            base_type: CType::StructureTypeRef {
-                symtab_idx: inner_struct_type_idx,
-            },
+        let inner = CType::StructureTypeRef {
             qualifier: TypeQualifier::empty(),
+            symtab_idx: inner_struct_type_idx,
         };
         let next = {
             let recursive_struct_type =
                 StructureType::new_incomplete_structure_type(String::from("recursive"));
             let recursive_struct_type_idx = dummy_state.add_structure_type(recursive_struct_type);
-            let ptr = QualifiedType {
-                base_type: CType::StructureTypeRef {
-                    symtab_idx: recursive_struct_type_idx,
-                },
+            let ptr = CType::StructureTypeRef {
                 qualifier: TypeQualifier::empty(),
+                symtab_idx: recursive_struct_type_idx,
             };
-            QualifiedType {
-                base_type: CType::PointerType {
-                    pointee_type: Box::new(ptr),
-                },
+            CType::PointerType {
                 qualifier: TypeQualifier::empty(),
+                pointee_type: Box::new(ptr),
             }
         };
 
@@ -719,11 +648,9 @@ fn parse_struct_declaration_recursive() {
     };
 
     let outer_struct_type_idx = dummy_state.add_structure_type(outer_struct_type);
-    let outer_struct_type = QualifiedType {
-        base_type: CType::StructureTypeRef {
-            symtab_idx: outer_struct_type_idx,
-        },
+    let outer_struct_type = CType::StructureTypeRef {
         qualifier: TypeQualifier::empty(),
+        symtab_idx: outer_struct_type_idx,
     };
 
     let (mut toks, mut state) = text_test_harness(&recursive_struct);
@@ -753,17 +680,16 @@ fn parse_declaration_without_declarators() {
     let tag = Some(String::from("s"));
     let members = vec![(
         String::from("s"),
-        QualifiedType {
-            base_type: CType::BasicType {
-                basic_type: BasicType::Int,
-            },
+        CType::BasicType {
             qualifier: TypeQualifier::empty(),
+            basic_type: BasicType::Int,
         },
     )];
     let struct_type = StructureType::new_complete_structure_type(tag, members);
 
     let struct_type_idx = dummy_state.add_structure_type(struct_type);
     let struct_type = CType::StructureTypeRef {
+        qualifier: TypeQualifier::empty(),
         symtab_idx: struct_type_idx,
     };
 
@@ -785,18 +711,14 @@ fn parse_typedef_basic() {
 
     let dummy_state = ParserState::new();
     let int_ptr_type = {
-        let int = QualifiedType {
-            base_type: CType::BasicType {
-                basic_type: BasicType::Int,
-            },
+        let int = CType::BasicType {
             qualifier: TypeQualifier::empty(),
+            basic_type: BasicType::Int,
         };
 
-        QualifiedType {
-            base_type: CType::PointerType {
-                pointee_type: Box::new(int),
-            },
+        CType::PointerType {
             qualifier: TypeQualifier::empty(),
+            pointee_type: Box::new(int),
         }
     };
 
@@ -840,7 +762,7 @@ fn parse_bad_switch() {
     }
     "#;
 
-    let dummy_state = ParserState::new();
+    let _dummy_state = ParserState::new();
     let (mut toks, mut state) = text_test_harness(&bad_switch);
     let res = parse_statement(&mut toks, &mut state);
 
@@ -852,7 +774,7 @@ fn parse_bad_switch() {
 #[test]
 //
 fn function_typedef_constraint() {
-    let fn_typedef_constraint = r#"
+    let _fn_typedef_constraint = r#"
     typedef int F(void);         // type F is function with no parameters returning int
     F f, g;                      // f and g both have type compatible with F
     F f { /* ... */ }            // WRONG: syntax/constraint error

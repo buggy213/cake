@@ -18,7 +18,7 @@ use crate::{
 
 use crate::types::{
     AggregateMember, BasicType, CType, FunctionArgument, FunctionSpecifier, FunctionType,
-    QualifiedType, TypeQualifier,
+    TypeQualifier,
 };
 
 use super::ast::{ASTNode, Declaration, ExpressionNode, Identifier};
@@ -132,7 +132,7 @@ pub(crate) struct ParserState {
     pub(crate) union_types: Vec<UnionType>,
     pub(crate) function_types: Vec<FunctionType>,
 
-    typedefs: Vec<HashMap<String, QualifiedType>>,
+    typedefs: Vec<HashMap<String, CType>>,
 }
 
 impl ParserState {
@@ -184,7 +184,7 @@ impl ParserState {
         FunctionTypeIdx::from_push(&mut self.function_types, function_type)
     }
 
-    fn add_typedef(&mut self, name: String, typedef: QualifiedType) -> Result<(), ParseError> {
+    fn add_typedef(&mut self, name: String, typedef: CType) -> Result<(), ParseError> {
         if self.is_typedef(&name).is_some() {
             return Err(ParseError::RedeclaredTypedef);
         }
@@ -195,7 +195,7 @@ impl ParserState {
 
     /// Looks up typedefs with a given name, starting from the current scope
     /// and working up to top lexical scope (i.e. file scope)
-    fn is_typedef(&mut self, name: &str) -> Option<&QualifiedType> {
+    fn is_typedef(&mut self, name: &str) -> Option<&CType> {
         let mut scope = self.current_scope;
         loop {
             if let Some(typedef) = self.typedefs[scope.index].get(name) {
@@ -977,8 +977,7 @@ fn parse_external_declaration(
         // type qualifier, storage class, function_specifier, typedef all have 0 effect on
         // empty declaration.
         eat_or_error!(toks, CLexemes::Semicolon)?;
-        let empty_declaration =
-            ASTNode::EmptyDeclaration(qualified_type.base_type, state.current_scope);
+        let empty_declaration = ASTNode::EmptyDeclaration(qualified_type, state.current_scope);
         return Ok(empty_declaration);
     }
 
@@ -993,7 +992,7 @@ fn parse_external_declaration(
     match toks.peek() {
         Some((CLexemes::LBrace, _, _)) => {
             // must be a function definition; declarator must be function type
-            match declaration_type.base_type {
+            match declaration_type {
                 CType::FunctionTypeRef { symtab_idx } => {
                     // set scope to function prototype scope so that we inherit parameter names
                     let fn_type = &state.function_types[symtab_idx];
@@ -1084,10 +1083,8 @@ fn parse_declaration(
     // handle empty declaration case, see parse_external_declaration
     if matches!(toks.peek(), Some((CLexemes::Semicolon, _, _))) {
         eat_or_error!(toks, CLexemes::Semicolon)?;
-        let empty_declaration = ASTNode::EmptyDeclaration(
-            declaration_specifiers.qualified_type.base_type,
-            state.current_scope,
-        );
+        let empty_declaration =
+            ASTNode::EmptyDeclaration(declaration_specifiers.qualified_type, state.current_scope);
         return Ok(empty_declaration);
     }
 
@@ -1102,7 +1099,7 @@ fn parse_declaration(
 fn parse_type_name(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-) -> Result<QualifiedType, ParseError> {
+) -> Result<CType, ParseError> {
     let base_type = parse_specifier_qualifier_list(toks, state)?;
     let derived_type = parse_abstract_declarator(toks, state, base_type)?;
     Ok(derived_type)
@@ -1170,7 +1167,7 @@ fn is_lookahead_declaration(
 
 #[derive(Debug, Clone)]
 struct DeclarationSpecifiers {
-    qualified_type: QualifiedType,
+    qualified_type: CType,
     storage_class: StorageClass,
     function_specifier: FunctionSpecifier,
     is_typedef: bool,
@@ -1211,14 +1208,18 @@ impl TryFrom<CLexemes> for BasicTypeLexeme {
 fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CType, ParseError> {
     // should be ok for now, optimize later
     match basic_type_specifiers {
-        [BasicTypeLexeme::Void] => Ok(CType::Void),
+        [BasicTypeLexeme::Void] => Ok(CType::Void {
+            qualifier: TypeQualifier::empty(),
+        }),
         // default is signed char
         [BasicTypeLexeme::Char] | [BasicTypeLexeme::Signed, BasicTypeLexeme::Char] => {
             Ok(CType::BasicType {
+                qualifier: TypeQualifier::empty(),
                 basic_type: BasicType::Char,
             })
         }
         [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Char] => Ok(CType::BasicType {
+            qualifier: TypeQualifier::empty(),
             basic_type: BasicType::UChar,
         }),
         [BasicTypeLexeme::Short]
@@ -1226,22 +1227,26 @@ fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CTy
         | [BasicTypeLexeme::Short, BasicTypeLexeme::Int]
         | [BasicTypeLexeme::Signed, BasicTypeLexeme::Short, BasicTypeLexeme::Int] => {
             Ok(CType::BasicType {
+                qualifier: TypeQualifier::empty(),
                 basic_type: BasicType::Short,
             })
         }
         [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Short]
         | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Short, BasicTypeLexeme::Int] => {
             Ok(CType::BasicType {
+                qualifier: TypeQualifier::empty(),
                 basic_type: BasicType::UShort,
             })
         }
         [BasicTypeLexeme::Int]
         | [BasicTypeLexeme::Signed]
         | [BasicTypeLexeme::Signed, BasicTypeLexeme::Int] => Ok(CType::BasicType {
+            qualifier: TypeQualifier::empty(),
             basic_type: BasicType::Int,
         }),
         [BasicTypeLexeme::Unsigned] | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Int] => {
             Ok(CType::BasicType {
+                qualifier: TypeQualifier::empty(),
                 basic_type: BasicType::UInt,
             })
         }
@@ -1254,6 +1259,7 @@ fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CTy
         | [BasicTypeLexeme::Long, BasicTypeLexeme::Long, BasicTypeLexeme::Int]
         | [BasicTypeLexeme::Signed, BasicTypeLexeme::Long, BasicTypeLexeme::Long, BasicTypeLexeme::Int] => {
             Ok(CType::BasicType {
+                qualifier: TypeQualifier::empty(),
                 basic_type: BasicType::Long,
             })
         }
@@ -1262,15 +1268,18 @@ fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CTy
         | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long, BasicTypeLexeme::Long]
         | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long, BasicTypeLexeme::Long, BasicTypeLexeme::Int] => {
             Ok(CType::BasicType {
+                qualifier: TypeQualifier::empty(),
                 basic_type: BasicType::ULong,
             })
         }
         [BasicTypeLexeme::Double] | [BasicTypeLexeme::Long, BasicTypeLexeme::Double] => {
             Ok(CType::BasicType {
+                qualifier: TypeQualifier::empty(),
                 basic_type: BasicType::Double,
             })
         }
         [BasicTypeLexeme::Float] => Ok(CType::BasicType {
+            qualifier: TypeQualifier::empty(),
             basic_type: BasicType::Float,
         }),
 
@@ -1290,7 +1299,7 @@ fn parse_declaration_specifiers_base(
 
     let mut primitive_type_specifiers: Vec<BasicTypeLexeme> = Vec::new();
     let mut struct_or_union_or_enum: Option<CType> = None;
-    let mut typedef: Option<QualifiedType> = None;
+    let mut typedef: Option<CType> = None;
 
     let mut is_typedef = false;
     loop {
@@ -1404,6 +1413,7 @@ fn parse_declaration_specifiers_base(
                 {
                     let struct_type = parse_struct_specifier(toks, state)?;
                     struct_or_union_or_enum = Some(CType::StructureTypeRef {
+                        qualifier: TypeQualifier::empty(),
                         symtab_idx: struct_type,
                     });
                 }
@@ -1414,6 +1424,7 @@ fn parse_declaration_specifiers_base(
                 {
                     let union_type = parse_union_specifier(toks, state)?;
                     struct_or_union_or_enum = Some(CType::UnionTypeRef {
+                        qualifier: TypeQualifier::empty(),
                         symtab_idx: union_type,
                     });
                 }
@@ -1430,6 +1441,7 @@ fn parse_declaration_specifiers_base(
                 {
                     let enum_type = parse_enum_specifier(toks, state)?;
                     struct_or_union_or_enum = Some(CType::EnumTypeRef {
+                        qualifier: TypeQualifier::empty(),
                         symtab_idx: enum_type,
                     });
                 }
@@ -1465,18 +1477,14 @@ fn parse_declaration_specifiers_base(
     }
 
     let qualified_type = if !primitive_type_specifiers.is_empty() {
-        let basic_type = parse_basic_type(&mut primitive_type_specifiers)?;
-        QualifiedType {
-            base_type: basic_type,
-            qualifier: type_qualifier,
-        }
-    } else if let Some(ty) = struct_or_union_or_enum {
-        QualifiedType {
-            base_type: ty,
-            qualifier: type_qualifier,
-        }
+        let mut basic_type = parse_basic_type(&mut primitive_type_specifiers)?;
+        *basic_type.qualifier_mut() = type_qualifier;
+        basic_type
+    } else if let Some(mut ty) = struct_or_union_or_enum {
+        *ty.qualifier_mut() = type_qualifier;
+        ty
     } else if let Some(mut ty) = typedef {
-        ty.qualifier |= type_qualifier;
+        *ty.qualifier_mut() |= type_qualifier;
         ty
     } else {
         return Err(ParseError::MissingTypeSpecifier);
@@ -1506,7 +1514,7 @@ fn parse_declaration_specifiers(
 fn parse_specifier_qualifier_list(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-) -> Result<QualifiedType, ParseError> {
+) -> Result<CType, ParseError> {
     let DeclarationSpecifiers { qualified_type, .. } =
         parse_declaration_specifiers_base(toks, state, false, false)?;
     Ok(qualified_type)
@@ -1538,7 +1546,7 @@ fn parse_struct_declaration_list(
 fn parse_struct_declarator_list(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-    base_type: QualifiedType,
+    base_type: CType,
     members: &mut Vec<AggregateMember>,
 ) -> Result<(), ParseError> {
     // TODO: support bitfields
@@ -1904,11 +1912,11 @@ fn parse_initializer(
 
 // The concept of a declarator basically only exists during parsing and isn't semantically meaningful elsewhere
 // "abstract" declarator has no identifier
-struct Declarator(QualifiedType, Option<String>);
+struct Declarator(CType, Option<String>);
 fn parse_declarator_base(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-    base_type: QualifiedType,
+    base_type: CType,
 ) -> Result<Declarator, ParseError> {
     let mut pointers: Vec<(TypeQualifier, usize)> = Vec::new();
     #[derive(Debug)]
@@ -2008,11 +2016,9 @@ fn parse_declarator_base(
     let mut current_type = base_type;
     for level in 0..=max_level {
         while pointer_index < pointers.len() && pointers[pointer_index].1 == level {
-            current_type = QualifiedType {
-                base_type: CType::PointerType {
-                    pointee_type: Box::new(current_type),
-                },
+            current_type = CType::PointerType {
                 qualifier: pointers[pointer_index].0,
+                pointee_type: Box::new(current_type),
             };
 
             pointer_index += 1;
@@ -2022,46 +2028,21 @@ fn parse_declarator_base(
                 let (d, _) = array_or_function_declarators.pop().unwrap();
                 match d {
                     ArrayOrFunctionDeclarator::ArrayDeclarator(array) => {
-                        match current_type.base_type {
-                            /* RESOLVE LOGIC
-                            CType::IncompleteArrayType { .. }
-                            | CType::FunctionType { .. }
-                            | CType::Void => {
-                                return Err(ParseError::ArrayOfIncompleteType);
-                            },
-                            // have to do lookup to check if its incomplete
-                            CType::StructureTypeRef { symtab_idx }
-                            | CType::UnionTypeRef { symtab_idx } => {
-
-                                match state.symbol_table.get_type(symtab_idx) {
-                                    CanonicalType::IncompleteUnionType { .. }
-                                    | CanonicalType::IncompleteStructureType { .. } => {
-                                        return Err(ParseError::ArrayOfIncompleteType);
-                                    }
-                                    _ => {}
-                                }
-
-                            },
-                            */
-                            _ => {}
-                        }
-
                         let new_type: CType;
                         if let Some(size) = array.1 {
                             new_type = CType::ArrayType {
+                                qualifier: array.0,
                                 size,
                                 element_type: Box::new(current_type),
                             };
                         } else {
                             new_type = CType::IncompleteArrayType {
+                                qualifier: array.0,
                                 element_type: Box::new(current_type),
                             };
                         }
 
-                        current_type = QualifiedType {
-                            base_type: new_type,
-                            qualifier: array.0,
-                        }
+                        current_type = new_type;
                     }
                     ArrayOrFunctionDeclarator::FunctionDeclarator(func) => {
                         let fn_type = FunctionType {
@@ -2077,10 +2058,7 @@ fn parse_declarator_base(
                             symtab_idx: fn_type_idx,
                         };
 
-                        current_type = QualifiedType {
-                            base_type: new_type,
-                            qualifier: TypeQualifier::empty(),
-                        }
+                        current_type = new_type;
                     }
                 };
             }
@@ -2094,8 +2072,8 @@ fn parse_declarator_base(
 fn parse_declarator(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-    base_type: QualifiedType,
-) -> Result<(QualifiedType, String), ParseError> {
+    base_type: CType,
+) -> Result<(CType, String), ParseError> {
     let decl = parse_declarator_base(toks, state, base_type)?;
     if let Some(ident) = decl.1 {
         Ok((decl.0, ident))
@@ -2107,8 +2085,8 @@ fn parse_declarator(
 fn parse_abstract_declarator(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
-    base_type: QualifiedType,
-) -> Result<QualifiedType, ParseError> {
+    base_type: CType,
+) -> Result<CType, ParseError> {
     let decl = parse_declarator_base(toks, state, base_type)?;
     if let None = decl.1 {
         Ok(decl.0)
@@ -2149,7 +2127,7 @@ fn parse_pointer_declarator(
     }
 }
 #[derive(Debug, Clone, Copy)]
-struct ArrayDeclarator(TypeQualifier, Option<usize>);
+struct ArrayDeclarator(TypeQualifier, Option<u32>);
 fn parse_array_declarator(
     toks: &mut impl TokenStream<CLexemes>,
     _state: &mut ParserState,
@@ -2172,9 +2150,7 @@ fn parse_array_declarator(
                 return Ok(ArrayDeclarator(qualifier, None));
             }
             Some((CLexemes::IntegerConst, i, _)) => {
-                let size = i
-                    .parse::<usize>()
-                    .map_err(|e| ParseError::BadArrayBound(e))?;
+                let size = i.parse::<u32>().map_err(|e| ParseError::BadArrayBound(e))?;
 
                 eat_or_error!(toks, CLexemes::RBracket)?;
                 return Ok(ArrayDeclarator(qualifier, Some(size)));
