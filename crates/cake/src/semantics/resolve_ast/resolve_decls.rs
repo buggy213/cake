@@ -337,7 +337,7 @@ fn resolve_declaration_type(
                     tag.map(String::from),
                     new_struct_members,
                 );
-                complete_struct(symtab, ast_struct_type_idx, completed_struct);
+                complete_struct(symtab, ast_struct_type_idx, completed_struct)?;
 
                 *ast_idx = ast_struct_type_idx;
                 return Ok(TypeCategory::Object);
@@ -383,7 +383,7 @@ fn resolve_declaration_type(
 
                 let completed_union =
                     UnionType::new_complete_union_type(tag.map(String::from), new_union_members);
-                complete_union(symtab, ast_union_type_idx, completed_union);
+                complete_union(symtab, ast_union_type_idx, completed_union)?;
 
                 *ast_idx = ast_union_type_idx;
                 return Ok(TypeCategory::Object);
@@ -539,9 +539,9 @@ fn adjust_function_type(
     let FunctionType {
         parameter_types,
         return_type,
-        function_specifier,
         varargs,
         prototype_scope,
+        ..
     } = &mut function_type;
 
     // Note: gcc / clang seem to disallow defining a new type (struct / enum / union)
