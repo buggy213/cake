@@ -1,3 +1,4 @@
 pub mod constexpr;
-pub mod resolve_ast;
+pub mod resolved_ast;
+pub mod resolver;
 pub mod symtab;

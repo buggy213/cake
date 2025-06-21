@@ -1,12 +1,10 @@
-use std::{
-    collections::HashMap,
-    ops::{Index, IndexMut},
-};
+use std::collections::HashMap;
 
 use thiserror::Error;
 
 use crate::{
-    parser::ast::{Constant, NodeRef},
+    parser::ast::Constant,
+    semantics::resolved_ast::NodeRef,
     types::{
         CType, EnumType, EnumTypeIdx, FunctionType, FunctionTypeIdx, StructureType,
         StructureTypeIdx, UnionType, UnionTypeIdx,

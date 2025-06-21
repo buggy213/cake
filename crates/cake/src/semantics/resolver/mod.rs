@@ -4,10 +4,10 @@ use std::mem::MaybeUninit;
 use thiserror::Error;
 
 use super::symtab::{Scope, SymbolTable, SymtabError};
-use crate::parser::ast::{
+use crate::parser::hand_parser::ParserState;
+use crate::semantics::resolved_ast::{
     ContextRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
-use crate::parser::hand_parser::ParserState;
 use crate::types::{EnumType, FunctionType, FunctionTypeIdx, StructureType, UnionType};
 use crate::{
     parser::ast::{ASTNode, Constant, ExpressionNode},

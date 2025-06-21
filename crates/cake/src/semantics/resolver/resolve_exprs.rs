@@ -1,6 +1,7 @@
 use thiserror::Error;
 
-use crate::parser::ast::{Constant, ExprRangeRef, ExprRef, ExpressionNode, TypedExpressionNode};
+use crate::parser::ast::{Constant, ExpressionNode};
+use crate::semantics::resolved_ast::{ExprRangeRef, ExprRef, TypedExpressionNode};
 use crate::semantics::symtab::Symbol;
 use crate::semantics::{constexpr::integer_constant_eval, symtab::SymbolTable};
 use crate::types::{BasicType, CType, TypeQualifier};
