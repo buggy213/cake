@@ -1,10 +1,12 @@
+use std::iter;
+
 use thiserror::Error;
 
 use crate::parser::ast::{Constant, ExpressionNode};
-use crate::semantics::resolved_ast::{ExprRangeRef, ExprRef, TypedExpressionNode};
-use crate::semantics::symtab::Symbol;
+use crate::semantics::resolved_ast::{ExprRangeRef, ExprRef, MemberRef, TypedExpressionNode};
+use crate::semantics::symtab::{Function, Object, ScopedSymtab, Symbol};
 use crate::semantics::{constexpr::integer_constant_eval, symtab::SymbolTable};
-use crate::types::{BasicType, CType, TypeQualifier};
+use crate::types::{AggregateMember, BasicType, CType, TypeQualifier};
 
 use super::ASTResolveError;
 
@@ -16,10 +18,18 @@ pub(super) enum ResolveExprError {
     IdentifierNotFound,
     #[error("unable to resolve function expression")]
     BadFunctionExpr,
+    #[error("attempt to use dot or arrow to access member of non-aggregate type")]
+    BadMemberAccess,
+    #[error("aggregate member does not exist")]
+    MemberNotFound,
+    #[error("failed assignment type conversion")]
+    InvalidAssignmentConversion,
+    #[error("function call has incorrect number of argumnets")]
+    IncorrectNumberOfArguments,
 }
 
 pub(super) fn resolve_integer_constant_expression(
-    symtab: &SymbolTable,
+    symtab: &ScopedSymtab,
     expr: &ExpressionNode,
 ) -> Result<Constant, ASTResolveError> {
     let constant = integer_constant_eval(symtab, expr);
@@ -41,7 +51,7 @@ pub(super) fn resolve_expr(
     expr: &ExpressionNode,
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
     expr_indices: &mut Vec<ExprRef>,
-    symtab: &SymbolTable,
+    symtab: &ScopedSymtab,
 ) -> Result<ExprRef, ResolveExprError> {
     match expr {
         ExpressionNode::CommaExpr(expression_nodes) => todo!(),
@@ -179,11 +189,6 @@ pub(super) fn resolve_expr(
         ExpressionNode::FunctionCall(fn_expr, argument_exprs) => {
             // either a pointer to a function, or a "function designator" directly
             let fn_expr_ref = resolve_expr(&fn_expr, resolved_expr_vec, expr_indices, symtab)?;
-            let mut argument_expr_refs = Vec::new();
-            for argument in argument_exprs {
-                let fn_arg_ref = resolve_expr(argument, resolved_expr_vec, expr_indices, symtab)?;
-                argument_expr_refs.push(fn_arg_ref);
-            }
 
             let fn_expr_type = resolved_expr_vec[fn_expr_ref.0 as usize].expr_type();
             let fn_expr_type_idx = match fn_expr_type {
@@ -199,9 +204,22 @@ pub(super) fn resolve_expr(
 
             // get return type
             let fn_canonical_type = symtab.get_function_type(fn_expr_type_idx);
-            let return_type = fn_canonical_type.return_type.as_ref().clone();
+            let return_type = fn_canonical_type.return_type.clone();
 
-            // TODO: type check arguments (and insert appropriate casts if needed)
+            // TODO: deal with varargs
+            let mut argument_expr_refs = Vec::new();
+            if fn_canonical_type.parameter_types.len() != argument_exprs.len() {
+                return Err(ResolveExprError::IncorrectNumberOfArguments);
+            }
+
+            for ((_, formal_arg_type), actual_arg) in
+                iter::zip(fn_canonical_type.parameter_types.iter(), argument_exprs)
+            {
+                let fn_arg_ref = resolve_expr(actual_arg, resolved_expr_vec, expr_indices, symtab)?;
+                let converted_arg_ref =
+                    assignment_type_conversion(formal_arg_type, fn_arg_ref, resolved_expr_vec)?;
+                argument_expr_refs.push(converted_arg_ref);
+            }
 
             let arg_range_start = expr_indices.len();
             expr_indices.extend(argument_expr_refs);
@@ -214,7 +232,49 @@ pub(super) fn resolve_expr(
 
             Ok(fn_call_ref)
         }
-        ExpressionNode::DotAccess(expression_node, identifier) => todo!(),
+        ExpressionNode::DotAccess(accessee, identifier) => {
+            let accessee_ref = resolve_expr(&accessee, resolved_expr_vec, expr_indices, symtab)?;
+            let accessee = &resolved_expr_vec[accessee_ref.0 as usize];
+            let accessee_type = accessee.expr_type();
+
+            let members = match accessee_type {
+                CType::StructureTypeRef { symtab_idx, .. } => {
+                    symtab.get_structure_type(*symtab_idx).members()
+                }
+                CType::UnionTypeRef { symtab_idx, .. } => {
+                    symtab.get_union_type(*symtab_idx).members()
+                }
+                _ => {
+                    return Err(ResolveExprError::BadMemberAccess);
+                }
+            };
+
+            let pred = |(member_idx, member): (usize, &AggregateMember)| {
+                if member.0 == identifier.name {
+                    Some((member_idx, member.1.clone()))
+                } else {
+                    None
+                }
+            };
+
+            let (member_idx, member_type) = if let Some((member_idx, member_type)) =
+                members.iter().enumerate().find_map(pred)
+            {
+                (member_idx, member_type)
+            } else {
+                return Err(ResolveExprError::MemberNotFound);
+            };
+
+            let dot_access = TypedExpressionNode::DotAccess(
+                member_type,
+                accessee_ref,
+                MemberRef(member_idx as u32),
+            );
+            let dot_access_ref = ExprRef(resolved_expr_vec.len() as u32);
+            resolved_expr_vec.push(dot_access);
+
+            Ok(dot_access_ref)
+        }
         ExpressionNode::ArrowAccess(expression_node, identifier) => todo!(),
         ExpressionNode::Identifier(identifier) => {
             let symbol = symtab.lookup_symbol(identifier.scope, &identifier.name);
@@ -226,22 +286,32 @@ pub(super) fn resolve_expr(
                     return resolve_expr(&dummy, resolved_expr_vec, expr_indices, symtab);
                 }
 
-                Some(Symbol::Function { function_type, .. }) => {
-                    todo!()
+                Some(Symbol::Function(idx)) => {
+                    let Function { function_type, .. } = symtab.get_function(*idx);
+                    let function_type = CType::FunctionTypeRef {
+                        symtab_idx: *function_type,
+                    };
+
+                    let function_expr =
+                        TypedExpressionNode::FunctionIdentifier(function_type, *idx);
+                    let function_ref = ExprRef(resolved_expr_vec.len() as u32);
+                    resolved_expr_vec.push(function_expr);
+
+                    return Ok(function_ref);
                 }
 
-                Some(Symbol::Object { object_type, .. }) => {
-                    let object_type = symtab.get_qualified_type(*object_type).clone();
+                Some(Symbol::Object(idx)) => {
+                    let Object { object_type, .. } = symtab.get_object(*idx);
 
-                    let object = TypedExpressionNode::Identifier(object_type, identifier.clone());
+                    let object_type = object_type.clone();
+
+                    let object = TypedExpressionNode::ObjectIdentifier(object_type, *idx);
                     let object_ref = ExprRef(resolved_expr_vec.len() as u32);
                     resolved_expr_vec.push(object);
 
                     return Ok(object_ref);
                 }
             }
-
-            todo!()
         }
         ExpressionNode::Constant(constant) => {
             let constant_type = CType::BasicType {
@@ -255,7 +325,21 @@ pub(super) fn resolve_expr(
 
             Ok(constant_ref)
         }
-        ExpressionNode::StringLiteral(_) => todo!(),
+        ExpressionNode::StringLiteral(string) => {
+            // TODO: should technically be its own type for sizeof purposes
+            let const_char_ptr = CType::PointerType {
+                pointee_type: Box::new(CType::BasicType {
+                    basic_type: BasicType::Char,
+                    qualifier: TypeQualifier::Const,
+                }),
+                qualifier: TypeQualifier::empty(),
+            };
+            let string_literal = TypedExpressionNode::StringLiteral(const_char_ptr, string.clone());
+            let string_literal_ref = ExprRef(resolved_expr_vec.len() as u32);
+            resolved_expr_vec.push(string_literal);
+
+            Ok(string_literal_ref)
+        }
     }
 }
 
@@ -340,7 +424,7 @@ fn basic_binary_op(
 
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
     expr_indices: &mut Vec<ExprRef>,
-    symtab: &SymbolTable,
+    symtab: &ScopedSymtab,
 ) -> Result<ExprRef, ResolveExprError> {
     let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
     let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
@@ -352,4 +436,72 @@ fn basic_binary_op(
     resolved_expr_vec.push(result);
 
     Ok(result_ref)
+}
+
+fn insert_cast(
+    target: &CType,
+    base: ExprRef,
+    resolved_expr_vec: &mut Vec<TypedExpressionNode>,
+) -> ExprRef {
+    let base_type = resolved_expr_vec[base.0 as usize].expr_type();
+    let cast = TypedExpressionNode::Cast(target.clone(), base, base_type.clone());
+    let cast_ref = ExprRef(resolved_expr_vec.len() as u32);
+    resolved_expr_vec.push(cast);
+    cast_ref
+}
+
+// assignment type conversions: see
+// https://www.gnu.org/software/c-intro-and-ref/manual/html_node/Assignment-Type-Conversions.html
+// TODO: "upward compatibility" (isn't this essentially a no-op?) and think more about qualifiers
+fn assignment_type_conversion(
+    target: &CType,
+    base_ref: ExprRef,
+    resolved_expr_vec: &mut Vec<TypedExpressionNode>,
+) -> Result<ExprRef, ResolveExprError> {
+    let base_type = resolved_expr_vec[base_ref.0 as usize].expr_type();
+    let base = &resolved_expr_vec[base_ref.0 as usize];
+
+    if base_type == target {
+        // no conversion needed
+        return Ok(base_ref);
+    }
+
+    // 1. converting from any numeric type to any numeric type
+    match (base_type, target) {
+        (CType::BasicType { .. }, CType::BasicType { .. }) => {
+            return Ok(insert_cast(target, base_ref, resolved_expr_vec));
+        }
+        _ => (),
+    }
+
+    match (base_type, target) {
+        // 2. converting void* to any pointer type and vise-versa (except function pointers)
+        (CType::PointerType { .. }, CType::PointerType { .. }) => {
+            if base_type.is_void_pointer() && !target.is_function_pointer() {
+                return Ok(insert_cast(target, base_ref, resolved_expr_vec));
+            }
+
+            if !base_type.is_function_pointer() && target.is_void_pointer() {
+                return Ok(insert_cast(target, base_ref, resolved_expr_vec));
+            }
+        }
+        _ => (),
+    }
+
+    // 3. converting 0 to any pointer type
+    match (base, target) {
+        (TypedExpressionNode::Constant(_, Constant::Int(0)), CType::PointerType { .. }) => {
+            return Ok(insert_cast(target, base_ref, resolved_expr_vec));
+        }
+        _ => (),
+    }
+
+    // 4. converting any pointer type to bool
+    // (TODO: support native bool type?)
+    return Err(ResolveExprError::InvalidAssignmentConversion);
+}
+
+// used for varargs primarily
+fn promote_argument() {
+    todo!()
 }

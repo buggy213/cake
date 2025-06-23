@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use cake_util::make_type_idx;
 use thiserror::Error;
 
 use crate::{
@@ -61,28 +62,37 @@ pub(crate) enum Linkage {
     None,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Symbol {
-    Object {
-        object_type: TypeIdx,
-        linkage: Linkage,
-    },
-    // used only for enumeration constants
-    Constant(Constant),
-    Function {
-        function_type: FunctionTypeIdx,
-
-        // 2 types of linkage: internal and external
-        // by default, functions have external linkage, i.e. the linker can see the function and use it to resolve function calls in other translation units
-        // internal linkage means that the linker is not allowed to use a function definition to resolve calls in other translation units (i.e. it is local to the current translation unit)
-        // TODO: maybe implement inline function linkage rules (actual inlining optimization can be done using any function we have definition of in this translation unit)
-        internal_linkage: bool,
-        defined: bool,
-    },
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Object {
+    pub(crate) object_type: CType,
+    pub(crate) linkage: Linkage,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TypeIdx(pub(crate) usize);
+make_type_idx!(ObjectIdx, Object);
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ObjectRangeRef(pub u32, pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Function {
+    pub(crate) function_type: FunctionTypeIdx,
+
+    // 2 types of linkage: internal and external
+    // by default, functions have external linkage, i.e. the linker can see the function and use it to resolve function calls in other translation units
+    // internal linkage means that the linker is not allowed to use a function definition to resolve calls in other translation units (i.e. it is local to the current translation unit)
+    // TODO: maybe implement inline function linkage rules (actual inlining optimization can be done using any function we have definition of in this translation unit)
+    pub(crate) internal_linkage: bool,
+    pub(crate) defined: bool,
+}
+
+make_type_idx!(FunctionIdx, Function);
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Symbol {
+    Object(ObjectIdx),
+    // used only for enumeration constants
+    Constant(Constant),
+    Function(FunctionIdx),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TaggedTypeIdx {
@@ -121,25 +131,74 @@ impl TaggedTypeIdx {
 }
 
 // monolithic symbol table contains all symbols in program
-// in particular, every symbol has an associated identifier and type
-// will likely need to add storage / linkage / layout information as well
+
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct SymbolTable {
+pub(crate) struct ScopedSymtab {
     // these are built during parse; types may need to be merged during resolve
     scopes: Vec<Scope>,
 
-    // these are built during resolve phase
+    // the rest are built during resolve phase, by extracting information from
+    // parsed AST
     symbols: Vec<HashMap<String, Symbol>>,
     labels: Vec<HashMap<String, NodeRef>>,
     tags: Vec<HashMap<String, TaggedTypeIdx>>,
 
-    types: Vec<CType>,
+    objects: Vec<Object>,
+    functions: Vec<Function>,
+
+    // which objects are associated with every function vs which are global
+    function_object_ranges: Vec<ObjectRangeRef>,
+    global_objects: Vec<ObjectIdx>,
 
     enum_types: Vec<EnumType>,
     structure_types: Vec<StructureType>,
     union_types: Vec<UnionType>,
 
     function_types: Vec<FunctionType>,
+}
+
+// subset of symbol table used after resolve
+// (i.e. string identifiers are no longer used, only numeric indices)
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SymbolTable {
+    objects: Vec<Object>,
+    functions: Vec<Function>,
+
+    enum_types: Vec<EnumType>,
+    structure_types: Vec<StructureType>,
+    union_types: Vec<UnionType>,
+
+    function_object_ranges: Vec<ObjectRangeRef>,
+    global_objects: Vec<ObjectIdx>,
+
+    function_types: Vec<FunctionType>,
+}
+
+impl SymbolTable {
+    pub(crate) fn from_scoped_symtab(scoped_symtab: ScopedSymtab) -> SymbolTable {
+        let ScopedSymtab {
+            objects,
+            functions,
+            function_object_ranges,
+            global_objects,
+            enum_types,
+            structure_types,
+            union_types,
+            function_types,
+            ..
+        } = scoped_symtab;
+
+        SymbolTable {
+            objects,
+            functions,
+            enum_types,
+            structure_types,
+            union_types,
+            function_object_ranges,
+            global_objects,
+            function_types,
+        }
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -152,7 +211,7 @@ pub(crate) enum SymtabError {
     LabelAlreadyDeclared(String),
 }
 
-impl SymbolTable {
+impl ScopedSymtab {
     pub(crate) fn new_with_scopes(scopes: Vec<Scope>) -> Self {
         let symbols = vec![HashMap::new(); scopes.len()];
         let labels = vec![HashMap::new(); scopes.len()];
@@ -176,6 +235,16 @@ impl SymbolTable {
         &self.scopes
     }
 
+    // only look in current scope
+    pub(crate) fn direct_lookup_tag_type_idx(
+        &self,
+        scope: Scope,
+        tag: &str,
+    ) -> Option<TaggedTypeIdx> {
+        let direct_lookup = self.tags[scope.index].get(tag);
+        direct_lookup.copied()
+    }
+
     // look in current scope and all parent scopes
     pub(crate) fn lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<TaggedTypeIdx> {
         let mut current_scope = scope;
@@ -190,14 +259,8 @@ impl SymbolTable {
         }
     }
 
-    // only look in current scope
-    pub(crate) fn direct_lookup_tag_type_idx(
-        &self,
-        scope: Scope,
-        tag: &str,
-    ) -> Option<TaggedTypeIdx> {
-        let direct_lookup = self.tags[scope.index].get(tag);
-        direct_lookup.copied()
+    pub(crate) fn direct_lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
+        self.symbols[scope.index].get(name)
     }
 
     pub(crate) fn lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
@@ -211,18 +274,6 @@ impl SymbolTable {
                 },
             }
         }
-    }
-
-    pub(crate) fn direct_lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
-        self.symbols[scope.index].get(name)
-    }
-
-    pub(crate) fn direct_lookup_symbol_mut(
-        &mut self,
-        scope: Scope,
-        name: &str,
-    ) -> Option<&mut Symbol> {
-        self.symbols[scope.index].get_mut(name)
     }
 
     pub(crate) fn lookup_label(&self, scope: Scope, name: &str) -> Option<NodeRef> {
@@ -247,16 +298,6 @@ impl SymbolTable {
         scope: Scope,
     ) -> impl Iterator<Item = (&String, &Symbol)> {
         self.symbols[scope.index].iter()
-    }
-
-    pub(crate) fn scope_from_idx(&self, idx: usize) -> Scope {
-        self.scopes[idx]
-    }
-
-    pub(crate) fn add_qualified_type(&mut self, ctype: CType) -> TypeIdx {
-        let type_idx = TypeIdx(self.types.len());
-        self.types.push(ctype);
-        type_idx
     }
 
     pub(crate) fn add_enum_type(&mut self, enum_type: EnumType) -> EnumTypeIdx {
@@ -290,16 +331,50 @@ impl SymbolTable {
         Ok(())
     }
 
-    pub(crate) fn add_symbol(
+    pub(crate) fn add_object(
         &mut self,
         scope: Scope,
         name: String,
-        symbol: Symbol,
+        object: Object,
+    ) -> Result<ObjectIdx, SymtabError> {
+        if self.symbols[scope.index].contains_key(&name) {
+            return Err(SymtabError::AlreadyDeclared(name));
+        }
+
+        let object_idx = ObjectIdx::from_push(&mut self.objects, object);
+        let object_symbol = Symbol::Object(object_idx);
+        self.symbols[scope.index].insert(name, object_symbol);
+        Ok(object_idx)
+    }
+
+    pub(crate) fn add_function(
+        &mut self,
+        scope: Scope,
+        name: String,
+        function: Function,
+    ) -> Result<FunctionIdx, SymtabError> {
+        if self.symbols[scope.index].contains_key(&name) {
+            return Err(SymtabError::AlreadyDeclared(name));
+        }
+
+        let function_idx = FunctionIdx::from_push(&mut self.functions, function);
+        let function_symbol = Symbol::Function(function_idx);
+        self.symbols[scope.index].insert(name, function_symbol);
+        Ok(function_idx)
+    }
+
+    pub(crate) fn add_constant(
+        &mut self,
+        scope: Scope,
+        name: String,
+        constant: Constant,
     ) -> Result<(), SymtabError> {
         if self.symbols[scope.index].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
         }
-        self.symbols[scope.index].insert(name, symbol);
+
+        let constant = Symbol::Constant(constant);
+        self.symbols[scope.index].insert(name, constant);
         Ok(())
     }
 
@@ -330,10 +405,6 @@ impl SymbolTable {
 
         fn_scope.insert(name, labeled_statement);
         Ok(())
-    }
-
-    pub(crate) fn get_qualified_type(&self, idx: TypeIdx) -> &CType {
-        &self.types[idx.0 as usize]
     }
 
     pub(crate) fn get_enum_type(&self, idx: EnumTypeIdx) -> &EnumType {
@@ -368,26 +439,19 @@ impl SymbolTable {
         &mut self.function_types[idx]
     }
 
-    pub(crate) fn new_scope(&mut self, parent: Option<Scope>, scope_type: ScopeType) -> Scope {
-        if let None = parent {
-            debug_assert!(scope_type == ScopeType::FileScope);
-        }
-
-        let new_scope = Scope {
-            scope_type,
-            parent_scope: parent.map(|s| s.index),
-            index: self.scopes.len(),
-        };
-
-        self.scopes.push(new_scope);
-        // a little bit inefficient to keep around many empty hashmaps, but hopefully it's ok
-        self.symbols.push(Default::default());
-        self.labels.push(Default::default());
-        self.tags.push(Default::default());
-        new_scope
+    pub(crate) fn get_object(&self, idx: ObjectIdx) -> &Object {
+        &self.objects[idx]
     }
 
-    pub(crate) fn get_parent_scope(&self, scope: Scope) -> Option<Scope> {
-        scope.parent_scope.map(|idx| self.scopes[idx])
+    pub(crate) fn get_object_mut(&mut self, idx: ObjectIdx) -> &mut Object {
+        &mut self.objects[idx]
+    }
+
+    pub(crate) fn get_function(&self, idx: FunctionIdx) -> &Function {
+        &self.functions[idx]
+    }
+
+    pub(crate) fn get_function_mut(&mut self, idx: FunctionIdx) -> &mut Function {
+        &mut self.functions[idx]
     }
 }

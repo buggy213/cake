@@ -2047,7 +2047,7 @@ fn parse_declarator_base(
                     ArrayOrFunctionDeclarator::FunctionDeclarator(func) => {
                         let fn_type = FunctionType {
                             parameter_types: func.argument_types,
-                            return_type: Box::new(current_type),
+                            return_type: current_type,
                             function_specifier: FunctionSpecifier::None, // TODO: figure out inline
                             varargs: func.varargs,
                             prototype_scope: func.prototype_scope,

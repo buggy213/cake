@@ -1,6 +1,6 @@
 use crate::{
     parser::ast::{Constant, Identifier},
-    semantics::symtab::Scope,
+    semantics::symtab::{FunctionIdx, ObjectIdx},
     types::CType,
 };
 
@@ -19,15 +19,17 @@ pub(crate) struct ContextRef(pub u32);
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) struct ExprRangeRef(pub u32, pub u32);
 
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub(crate) struct MemberRef(pub u32);
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum ResolvedASTNode {
     TranslationUnit {
         children: NodeRangeRef,
-        scope: Scope,
     },
     FunctionDefinition {
         parent: NodeRef,
-        ident: Identifier,
+        symbol_idx: FunctionIdx,
         body: NodeRef,
     },
 
@@ -51,38 +53,32 @@ pub(crate) enum ResolvedASTNode {
     CompoundStatement {
         parent: NodeRef,
         stmts: NodeRangeRef,
-        scope: Scope,
     },
     ExpressionStatement {
         parent: NodeRef,
         expr: ExprRef,
-        scope: Scope,
     },
     IfStatement {
         parent: NodeRef,
         condition: ExprRef,
         taken: NodeRef,
         not_taken: Option<NodeRef>,
-        scope: Scope,
     },
     SwitchStatement {
         parent: NodeRef,
         controlling_expr: ExprRef,
         body: NodeRef,
         context: ContextRef,
-        scope: Scope,
     },
     WhileStatement {
         parent: NodeRef,
         condition: ExprRef,
         body: NodeRef,
-        scope: Scope,
     },
     DoWhileStatement {
         parent: NodeRef,
         condition: ExprRef,
         body: NodeRef,
-        scope: Scope,
     },
     ForStatement {
         parent: NodeRef,
@@ -90,7 +86,6 @@ pub(crate) enum ResolvedASTNode {
         condition: Option<ExprRef>,
         post_body: Option<ExprRef>,
         body: NodeRef,
-        scope: Scope,
     },
 
     GotoStatement {
@@ -108,7 +103,6 @@ pub(crate) enum ResolvedASTNode {
     ReturnStatement {
         parent: NodeRef,
         return_value: Option<ExprRef>,
-        scope: Scope,
     },
 }
 
@@ -151,6 +145,8 @@ pub(crate) enum TypedExpressionNode {
     Modulo(CType, ExprRef, ExprRef),
     Add(CType, ExprRef, ExprRef),
     Subtract(CType, ExprRef, ExprRef),
+
+    // destination type, reference, source type
     Cast(CType, ExprRef, CType),
 
     PreIncrement(CType, ExprRef),
@@ -167,11 +163,14 @@ pub(crate) enum TypedExpressionNode {
     PostDecrement(CType, ExprRef),
     ArraySubscript(CType, ExprRef, ExprRef),
     FunctionCall(CType, ExprRef, ExprRangeRef),
-    DotAccess(CType, ExprRef, Identifier),
-    ArrowAccess(CType, ExprRef, Identifier),
+    DotAccess(CType, ExprRef, MemberRef),
+    ArrowAccess(CType, ExprRef, MemberRef),
+
     // TODO: add support for compound initializers
     // CompoundInitializer
-    Identifier(CType, Identifier),
+    ObjectIdentifier(CType, ObjectIdx),
+    FunctionIdentifier(CType, FunctionIdx),
+
     Constant(CType, Constant),
     StringLiteral(CType, String),
 }
@@ -226,7 +225,8 @@ impl TypedExpressionNode {
             | TypedExpressionNode::FunctionCall(qualified_type, _, _)
             | TypedExpressionNode::DotAccess(qualified_type, _, _)
             | TypedExpressionNode::ArrowAccess(qualified_type, _, _)
-            | TypedExpressionNode::Identifier(qualified_type, _)
+            | TypedExpressionNode::ObjectIdentifier(qualified_type, _)
+            | TypedExpressionNode::FunctionIdentifier(qualified_type, _)
             | TypedExpressionNode::Constant(qualified_type, _)
             | TypedExpressionNode::StringLiteral(qualified_type, _) => qualified_type,
         }

@@ -1,4 +1,4 @@
-use std::ops::{Index, IndexMut};
+use cake_util::make_type_idx;
 
 use bitflags::bitflags;
 
@@ -75,50 +75,6 @@ impl BasicType {
     pub(crate) fn align(&self) -> u32 {
         self.bytes()
     }
-}
-
-macro_rules! make_type_idx {
-    ($type_idx_name:tt, $type_name:tt) => {
-        // TODO: consider newtyping Vec and adding push which returns type_idx
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub(crate) struct $type_idx_name(u32);
-
-        impl $type_idx_name {
-            pub(crate) fn from_push(vec: &mut Vec<$type_name>, val: $type_name) -> $type_idx_name {
-                let idx = $type_idx_name(vec.len() as u32);
-                vec.push(val);
-                idx
-            }
-        }
-
-        impl Index<$type_idx_name> for [$type_name] {
-            type Output = $type_name;
-
-            fn index(&self, index: $type_idx_name) -> &Self::Output {
-                &self[index.0 as usize]
-            }
-        }
-
-        impl IndexMut<$type_idx_name> for [$type_name] {
-            fn index_mut(&mut self, index: $type_idx_name) -> &mut Self::Output {
-                &mut self[index.0 as usize]
-            }
-        }
-
-        impl Index<$type_idx_name> for Vec<$type_name> {
-            type Output = $type_name;
-
-            fn index(&self, index: $type_idx_name) -> &Self::Output {
-                self.as_slice().index(index)
-            }
-        }
-
-        impl IndexMut<$type_idx_name> for Vec<$type_name> {
-            fn index_mut(&mut self, index: $type_idx_name) -> &mut Self::Output {
-                self.as_mut_slice().index_mut(index)
-            }
-        }
-    };
 }
 
 // for now, all enums will be 4 bytes
@@ -264,7 +220,7 @@ pub(crate) enum FunctionSpecifier {
 pub(crate) struct FunctionType {
     // public visibility of fields is reasonable, no real internal invariants to uphold
     pub(crate) parameter_types: Vec<FunctionArgument>,
-    pub(crate) return_type: Box<CType>,
+    pub(crate) return_type: CType,
     pub(crate) function_specifier: FunctionSpecifier,
     pub(crate) varargs: bool,
 
@@ -376,5 +332,25 @@ impl CType {
 
     pub(crate) fn is_void(&self) -> bool {
         matches!(self, CType::Void { .. })
+    }
+
+    pub(crate) fn is_function_pointer(&self) -> bool {
+        match self {
+            CType::PointerType { pointee_type, .. } => match pointee_type.as_ref() {
+                CType::FunctionTypeRef { .. } => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_void_pointer(&self) -> bool {
+        match self {
+            CType::PointerType { pointee_type, .. } => match pointee_type.as_ref() {
+                CType::Void { .. } => true,
+                _ => false,
+            },
+            _ => false,
+        }
     }
 }

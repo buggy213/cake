@@ -1,5 +1,6 @@
 use crate::semantics::symtab::{
-    Linkage, Scope, ScopeType, StorageClass, SymbolTable, TaggedTypeIdx,
+    Function, FunctionIdx, Linkage, Object, Scope, ScopeType, ScopedSymtab, StorageClass,
+    SymbolTable, TaggedTypeIdx,
 };
 use crate::{
     parser::ast::{Constant, Declaration},
@@ -61,7 +62,7 @@ impl HasTypeCategory for FunctionType {
 }
 
 impl CType {
-    fn type_category(&self, symtab: &SymbolTable) -> TypeCategory {
+    fn type_category(&self, symtab: &ScopedSymtab) -> TypeCategory {
         match self {
             CType::BasicType { .. } => TypeCategory::Object,
             CType::IncompleteArrayType { .. } => TypeCategory::Incomplete,
@@ -85,7 +86,7 @@ impl CType {
 }
 
 pub(super) fn resolve_declaration(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     declaration: &Declaration,
     parser_types: ParserTypes,
 ) -> Result<(), ASTResolveError> {
@@ -114,7 +115,7 @@ pub(super) fn resolve_declaration(
             return Err(ASTResolveError::SymbolRedeclaration);
         }
         None => {
-            let symbol = match declaration_type_category {
+            match declaration_type_category {
                 TypeCategory::Object => {
                     // resolve linkage rules here for declarations
                     // i don't think this is fully standards compliant
@@ -133,13 +134,12 @@ pub(super) fn resolve_declaration(
                         }
                     };
 
-                    // place resolved type into symbol table
-                    let resolved_type_idx = symtab.add_qualified_type(type_copy);
-
-                    Symbol::Object {
-                        object_type: resolved_type_idx,
+                    let object = Object {
+                        object_type: type_copy,
                         linkage,
-                    }
+                    };
+
+                    symtab.add_object(scope, declaration.name.name.clone(), object)?;
                 }
                 TypeCategory::Function => {
                     // this is definitely not standards compliant
@@ -158,19 +158,19 @@ pub(super) fn resolve_declaration(
                         }
                     };
 
-                    Symbol::Function {
+                    let function = Function {
                         function_type: fn_type_idx,
                         internal_linkage: linkage == Linkage::Internal,
                         defined: false,
-                    }
+                    };
+
+                    symtab.add_function(scope, declaration.name.name.clone(), function)?;
                 }
                 TypeCategory::Incomplete => {
                     // cannot declare an incomplete object
                     return Err(ASTResolveError::IncompleteDeclaration);
                 }
-            };
-
-            symtab.add_symbol(scope, declaration.name.name.clone(), symbol)?;
+            }
         }
     }
 
@@ -180,7 +180,7 @@ pub(super) fn resolve_declaration(
 // Resolves empty declaration. This is generally only used for declaring a new type
 // (i.e. non-anonymous struct / union / enum)
 pub(super) fn resolve_empty_declaration(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     declared_type: &CType,
     scope: Scope,
     parser_types: ParserTypes,
@@ -195,7 +195,7 @@ pub(super) fn resolve_empty_declaration(
 /// takes ownership of qualified_type from parser AST (right now it's a clone)
 /// then places it into symbol table's types list; symbols will reference it through a TypeIdx
 fn resolve_declaration_type(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     qualified_type: &mut CType,
     scope: Scope,
     parser_types: ParserTypes,
@@ -283,8 +283,8 @@ fn resolve_declaration_type(
                 };
 
                 for enum_variant in enum_type.members() {
-                    let symbol = Symbol::Constant(Constant::Int(enum_variant.1));
-                    symtab.add_symbol(scope, enum_variant.0.clone(), symbol)?;
+                    let variant_value = Constant::Int(enum_variant.1);
+                    symtab.add_constant(scope, enum_variant.0.clone(), variant_value)?;
                 }
 
                 complete_enum(symtab, ast_enum_type_idx, enum_type.clone())?;
@@ -398,7 +398,7 @@ fn resolve_declaration_type(
 // is considered an incomplete type before resolution
 // If appropriate type to resolve to is not found, then creates a new one
 fn resolve_incomplete_type(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
 
     ast_idx: &mut TaggedTypeIdx,
     parser_types: ParserTypes,
@@ -439,7 +439,7 @@ fn resolve_incomplete_type(
 }
 
 fn resolve_incomplete_enum(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     ast_idx: &mut EnumTypeIdx,
     parser_types: ParserTypes,
     tag: &str,
@@ -456,7 +456,7 @@ fn resolve_incomplete_enum(
 }
 
 fn resolve_incomplete_struct(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     ast_idx: &mut StructureTypeIdx,
     parser_types: ParserTypes,
     tag: &str,
@@ -473,7 +473,7 @@ fn resolve_incomplete_struct(
 }
 
 fn resolve_incomplete_union(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     ast_idx: &mut UnionTypeIdx,
     parser_types: ParserTypes,
     tag: &str,
@@ -490,7 +490,7 @@ fn resolve_incomplete_union(
 }
 
 fn complete_enum(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     type_idx: EnumTypeIdx,
     completed: EnumType,
 ) -> Result<(), ASTResolveError> {
@@ -504,7 +504,7 @@ fn complete_enum(
 }
 
 fn complete_struct(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     type_idx: StructureTypeIdx,
     completed: StructureType,
 ) -> Result<(), ASTResolveError> {
@@ -518,7 +518,7 @@ fn complete_struct(
 }
 
 fn complete_union(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     type_idx: UnionTypeIdx,
     completed: UnionType,
 ) -> Result<(), ASTResolveError> {
@@ -532,7 +532,7 @@ fn complete_union(
 }
 
 fn adjust_function_type(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     parser_type_idx: FunctionTypeIdx,
     parser_types: ParserTypes,
 ) -> Result<FunctionType, ASTResolveError> {
@@ -552,7 +552,7 @@ fn adjust_function_type(
 
     // return type cannot be function type or array type
     let return_type_is_array = matches!(
-        return_type.as_ref(),
+        return_type,
         CType::ArrayType { .. } | CType::IncompleteArrayType { .. }
     );
     let return_type_is_fn = matches!(return_type_category, TypeCategory::Function);
@@ -613,7 +613,7 @@ fn adjust_function_type(
 }
 
 fn resolve_member_types(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     members: &mut Vec<AggregateMember>,
     scope: Scope,
     parser_types: ParserTypes,
@@ -632,10 +632,10 @@ fn resolve_member_types(
 }
 
 pub(crate) fn resolve_function_definition(
-    symtab: &mut SymbolTable,
+    symtab: &mut ScopedSymtab,
     fn_declaration: &Declaration,
     parser_types: ParserTypes,
-) -> Result<FunctionTypeIdx, ASTResolveError> {
+) -> Result<FunctionIdx, ASTResolveError> {
     let scope = fn_declaration.name.scope;
     assert!(
         scope.scope_type == ScopeType::FileScope,
@@ -668,14 +668,16 @@ pub(crate) fn resolve_function_definition(
         }
     };
 
-    match symtab.direct_lookup_symbol_mut(scope, &fn_declaration.name.name) {
+    match symtab.direct_lookup_symbol(scope, &fn_declaration.name.name) {
         Some(sym) => {
-            if let Symbol::Function {
-                function_type,
-                internal_linkage,
-                defined,
-            } = sym
-            {
+            if let Symbol::Function(function_idx) = sym {
+                let function_idx = *function_idx;
+                let Function {
+                    function_type,
+                    internal_linkage,
+                    defined,
+                } = symtab.get_function_mut(function_idx);
+
                 // no redefinition
                 if *defined {
                     return Err(ASTResolveError::FunctionRedefinition);
@@ -688,8 +690,8 @@ pub(crate) fn resolve_function_definition(
                 }
 
                 // check that definitions are compatible
-                let idx = *function_type;
-                let symtab_inner = symtab.get_function_type(idx);
+                let function_type_idx = *function_type;
+                let symtab_inner = symtab.get_function_type(function_type_idx);
 
                 // whether they are varargs must be equal
                 if symtab_inner.varargs != adjusted_type.varargs {
@@ -711,9 +713,9 @@ pub(crate) fn resolve_function_definition(
                 }
 
                 // replace canonical type in symtab
-                let symtab_record = symtab.get_function_type_mut(idx);
+                let symtab_record = symtab.get_function_type_mut(function_type_idx);
                 *symtab_record = adjusted_type;
-                return Ok(idx);
+                return Ok(function_idx);
             } else {
                 return Err(ASTResolveError::SymbolRedeclaration);
             }
@@ -721,14 +723,14 @@ pub(crate) fn resolve_function_definition(
         None => {
             // first declaration and definition
             let fn_type_idx = symtab.add_function_type(adjusted_type);
-            let fn_symbol = Symbol::Function {
+            let function = Function {
                 function_type: fn_type_idx,
                 internal_linkage: definition_internal_linkage,
                 defined: true,
             };
 
-            symtab.add_symbol(scope, fn_declaration.name.name.clone(), fn_symbol)?;
-            return Ok(fn_type_idx);
+            let fn_idx = symtab.add_function(scope, fn_declaration.name.name.clone(), function)?;
+            return Ok(fn_idx);
         }
     }
 }

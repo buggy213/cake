@@ -8,6 +8,7 @@ use crate::parser::hand_parser::ParserState;
 use crate::semantics::resolved_ast::{
     ContextRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
+use crate::semantics::symtab::{Function, ScopedSymtab};
 use crate::types::{EnumType, FunctionType, FunctionTypeIdx, StructureType, UnionType};
 use crate::{
     parser::ast::{ASTNode, Constant, ExpressionNode},
@@ -94,7 +95,7 @@ impl ResolvedAST {
     // Precondition: every element of intermediate.nodes / intermediate.exprs is initialized
     unsafe fn from_intermediate_ast(
         intermediate: IntermediateAST,
-        symtab: SymbolTable,
+        resolve_state: ResolverState,
     ) -> ResolvedAST {
         let IntermediateAST {
             nodes,
@@ -102,6 +103,8 @@ impl ResolvedAST {
             exprs,
             expr_indices,
         } = intermediate;
+
+        let ResolverState { scoped_symtab, .. } = resolve_state;
 
         // relies on "in-place collect" optimization for efficiency
         // MaybeUninit<T> is guaranteed to have same size and alignment as T
@@ -112,7 +115,7 @@ impl ResolvedAST {
             ast_indices,
             exprs,
             expr_indices,
-            symtab,
+            symtab: SymbolTable::from_scoped_symtab(scoped_symtab),
         }
     }
 }
@@ -162,7 +165,7 @@ impl ResolverContext {
 }
 
 struct ResolverState {
-    pub(crate) symtab: SymbolTable,
+    pub(crate) scoped_symtab: ScopedSymtab,
 
     current_context: Option<usize>,
     context_stack: Vec<ResolverContext>,
@@ -173,7 +176,7 @@ struct ResolverState {
 impl ResolverState {
     fn new(scopes: Vec<Scope>) -> ResolverState {
         ResolverState {
-            symtab: SymbolTable::new_with_scopes(scopes),
+            scoped_symtab: ScopedSymtab::new_with_scopes(scopes),
             current_context: None,
             context_stack: Vec::new(),
             deferred_goto_resolve: Vec::new(),
@@ -409,7 +412,7 @@ pub fn resolve_ast(
 
     // SAFETY: we initialize all entries of resolved AST
     let resolved_ast =
-        unsafe { ResolvedAST::from_intermediate_ast(intermediate_ast, resolver_state.symtab) };
+        unsafe { ResolvedAST::from_intermediate_ast(intermediate_ast, resolver_state) };
 
     Ok(resolved_ast)
 }
@@ -485,10 +488,7 @@ fn resolve_ast_top(
 
             let range = add_indices(&mut intermediate_ast.ast_indices, children.into_iter());
 
-            let translation_unit_node = ResolvedASTNode::TranslationUnit {
-                children: range,
-                scope: *scope,
-            };
+            let translation_unit_node = ResolvedASTNode::TranslationUnit { children: range };
             intermediate_ast.nodes[node_idx].write(translation_unit_node);
 
             Ok(node_ref)
@@ -510,11 +510,16 @@ fn resolve_ast_inner(
     match ast {
         ASTNode::TranslationUnit(_, _) => unreachable!("Must call resolve_ast_top"),
         ASTNode::FunctionDefinition(fn_declaration, body) => {
-            let func_type_idx = resolve_function_definition(
-                &mut resolve_state.symtab,
+            let func_idx = resolve_function_definition(
+                &mut resolve_state.scoped_symtab,
                 &fn_declaration,
                 parser_types,
             )?;
+
+            let func_type_idx = resolve_state
+                .scoped_symtab
+                .get_function(func_idx)
+                .function_type;
 
             let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
 
@@ -540,7 +545,7 @@ fn resolve_ast_inner(
                 };
 
                 resolve_state
-                    .symtab
+                    .scoped_symtab
                     .lookup_label(goto_target.scope, &goto_target.name)
                     .ok_or(ASTResolveError::BadGotoTarget)?;
             }
@@ -549,7 +554,7 @@ fn resolve_ast_inner(
             let ident = fn_declaration.name.clone();
             let fn_definition_node = ResolvedASTNode::FunctionDefinition {
                 parent,
-                ident,
+                symbol_idx: func_idx,
                 body: body_ref,
             };
             intermediate_ast.nodes[node_idx].write(fn_definition_node);
@@ -572,10 +577,11 @@ fn resolve_ast_inner(
             )?;
 
             // Prevent duplicate labels in same function
-            match resolve_state
-                .symtab
-                .add_label(ident.scope, ident.name.clone(), labelee_node)
-            {
+            match resolve_state.scoped_symtab.add_label(
+                ident.scope,
+                ident.name.clone(),
+                labelee_node,
+            ) {
                 Err(e @ SymtabError::LabelAlreadyDeclared(_)) => {
                     return Err(ASTResolveError::RedeclaredLabel(e))
                 }
@@ -604,7 +610,8 @@ fn resolve_ast_inner(
 
             let value_expr: &ExpressionNode = &(**case_value);
 
-            let value = resolve_integer_constant_expression(&mut resolve_state.symtab, value_expr)?;
+            let value =
+                resolve_integer_constant_expression(&mut resolve_state.scoped_symtab, value_expr)?;
 
             let case_expr = TypedExpressionNode::Constant(
                 CType::BasicType {
@@ -710,7 +717,6 @@ fn resolve_ast_inner(
             let compound_statement_node = ResolvedASTNode::CompoundStatement {
                 parent,
                 stmts: range,
-                scope: *scope,
             };
             intermediate_ast.nodes[node_idx].write(compound_statement_node);
 
@@ -721,12 +727,11 @@ fn resolve_ast_inner(
                 expr,
                 &mut intermediate_ast.exprs,
                 &mut intermediate_ast.expr_indices,
-                &resolve_state.symtab,
+                &resolve_state.scoped_symtab,
             )?;
             let expr_node = ResolvedASTNode::ExpressionStatement {
                 parent,
                 expr: expr_ref,
-                scope: *scope,
             };
             let expr_node_ref = NodeRef(intermediate_ast.nodes.len() as u32);
             intermediate_ast.nodes.push(MaybeUninit::new(expr_node));
@@ -747,7 +752,7 @@ fn resolve_ast_inner(
                 controlling_expr,
                 &mut intermediate_ast.exprs,
                 &mut intermediate_ast.expr_indices,
-                &resolve_state.symtab,
+                &resolve_state.scoped_symtab,
             )?;
 
             let controlling_expr_type =
@@ -785,7 +790,6 @@ fn resolve_ast_inner(
                 condition: controlling_expr_ref,
                 taken: taken_ref,
                 not_taken: not_taken_ref,
-                scope: *scope,
             };
             intermediate_ast.nodes[node_idx].write(if_statement_node);
 
@@ -796,7 +800,7 @@ fn resolve_ast_inner(
                 &controlling_expr,
                 &mut intermediate_ast.exprs,
                 &mut intermediate_ast.expr_indices,
-                &resolve_state.symtab,
+                &resolve_state.scoped_symtab,
             )?;
 
             let controlling_expr_type =
@@ -830,7 +834,6 @@ fn resolve_ast_inner(
                 controlling_expr: controlling_expr_ref,
                 body: body_ref,
                 context: context_ref,
-                scope: *scope,
             };
             intermediate_ast.nodes[node_idx].write(switch_statement_node);
 
@@ -842,7 +845,7 @@ fn resolve_ast_inner(
                 &controlling_expr,
                 &mut intermediate_ast.exprs,
                 &mut intermediate_ast.expr_indices,
-                &resolve_state.symtab,
+                &resolve_state.scoped_symtab,
             )?;
 
             let controlling_expr_type =
@@ -868,14 +871,12 @@ fn resolve_ast_inner(
                     parent,
                     condition: todo!(),
                     body: body_ref,
-                    scope: *scope,
                 }
             } else {
                 ResolvedASTNode::DoWhileStatement {
                     parent,
                     condition: todo!(),
                     body: body_ref,
-                    scope: *scope,
                 }
             };
             intermediate_ast.nodes[node_idx].write(while_statement_node);
@@ -941,7 +942,6 @@ fn resolve_ast_inner(
                 condition: second_clause,
                 post_body: third_clause,
                 body: body_ref,
-                scope: *scope,
             };
             intermediate_ast.nodes[node_idx].write(for_statement_node);
 
@@ -1012,8 +1012,10 @@ fn resolve_ast_inner(
             let current_fn = resolve_state.current_function_defn()
                 .expect("internal compiler error: grammar requires return can only be in function definition");
 
-            let current_fn_type = resolve_state.symtab.get_function_type(current_fn.func_type);
-            let current_fn_return_type = current_fn_type.return_type.as_ref();
+            let current_fn_type = resolve_state
+                .scoped_symtab
+                .get_function_type(current_fn.func_type);
+            let current_fn_return_type = &current_fn_type.return_type;
 
             // do type-check
             let return_value = match expr {
@@ -1022,7 +1024,7 @@ fn resolve_ast_inner(
                         expr,
                         &mut intermediate_ast.exprs,
                         &mut intermediate_ast.expr_indices,
-                        &resolve_state.symtab,
+                        &resolve_state.scoped_symtab,
                     )?;
                     let expr_type = intermediate_ast.exprs[expr_ref.0 as usize].expr_type();
 
@@ -1046,7 +1048,6 @@ fn resolve_ast_inner(
             let return_statement_node = ResolvedASTNode::ReturnStatement {
                 parent,
                 return_value,
-                scope: *scope,
             };
             intermediate_ast
                 .nodes
@@ -1068,11 +1069,11 @@ fn resolve_ast_declaration(
 ) -> Result<(), ASTResolveError> {
     if let ASTNode::Declaration(declaration_list) = ast {
         for decl in declaration_list {
-            resolve_declaration(&mut resolve_state.symtab, decl, parser_types)?;
+            resolve_declaration(&mut resolve_state.scoped_symtab, decl, parser_types)?;
         }
     } else if let ASTNode::EmptyDeclaration(declared_type, scope) = ast {
         resolve_empty_declaration(
-            &mut resolve_state.symtab,
+            &mut resolve_state.scoped_symtab,
             declared_type,
             *scope,
             parser_types,
@@ -1113,6 +1114,7 @@ pub(crate) mod resolve_ast_tests {
 
         // compare
         dbg!(&resolve_result);
+        panic!();
 
         resolve_result
     }
@@ -1212,7 +1214,7 @@ pub(crate) mod resolve_ast_tests {
     #[test]
     fn resolve_hello() {
         let hello = r#"
-        int printf(const char *restrict format, ...);
+        int printf(const char *format, ...);
         
         int main(int argc, char *argv[]) {
             printf("Hello world!");

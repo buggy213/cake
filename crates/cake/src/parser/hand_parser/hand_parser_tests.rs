@@ -180,7 +180,7 @@ fn test_parse_hello_world() {
                     (Some(String::from("argc")), argc_type),
                     (Some(String::from("argv")), argv_type),
                 ],
-                return_type: Box::new(return_type),
+                return_type: return_type,
                 function_specifier: FunctionSpecifier::None,
                 varargs: false,
                 prototype_scope: dummy_state.current_scope,
@@ -276,7 +276,7 @@ fn test_parse_hello_world_unnamed_args() {
 
             let fn_type = FunctionType {
                 parameter_types: vec![(None, argc_type), (None, argv_type)],
-                return_type: Box::new(return_type),
+                return_type: return_type,
                 function_specifier: FunctionSpecifier::None,
                 varargs: false,
                 prototype_scope: dummy_state.current_scope,
@@ -414,7 +414,7 @@ fn parse_abstract_type_test_2() {
             dummy_state.open_scope(ScopeType::FunctionScope);
             let fn_type = FunctionType {
                 parameter_types: vec![],
-                return_type: Box::new(base_type),
+                return_type: base_type,
                 function_specifier: FunctionSpecifier::None,
                 varargs: false,
                 prototype_scope: dummy_state.current_scope,
@@ -459,7 +459,7 @@ fn parse_abstract_type_test_3() {
                 dummy_state.open_scope(ScopeType::FunctionScope);
                 let anon_fn_type = FunctionType {
                     parameter_types: vec![(None, uint_type)],
-                    return_type: Box::new(base_type),
+                    return_type: base_type,
                     function_specifier: FunctionSpecifier::None,
                     varargs: true,
                     prototype_scope: dummy_state.current_scope,
