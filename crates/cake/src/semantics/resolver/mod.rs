@@ -621,9 +621,7 @@ fn resolve_ast_inner(
                 value,
             );
 
-            intermediate_ast.exprs.push(case_expr);
-            let expr_ref = intermediate_ast.exprs.len() - 1;
-            let expr_ref = ExprRef(expr_ref as u32);
+            let expr_ref = ExprRef::from_push(&mut intermediate_ast.exprs, case_expr);
 
             let current_switch = match resolve_state.current_switch_mut() {
                 Some(switch) => switch,
@@ -755,10 +753,9 @@ fn resolve_ast_inner(
                 &resolve_state.scoped_symtab,
             )?;
 
-            let controlling_expr_type =
-                intermediate_ast.exprs[controlling_expr_ref.0 as usize].expr_type();
+            let controlling_expr_type = intermediate_ast.exprs[controlling_expr_ref].expr_type();
 
-            if !controlling_expr_type.scalar_type() {
+            if !controlling_expr_type.is_scalar_type() {
                 return Err(ASTResolveError::BadControllingExprType);
             }
 
@@ -803,8 +800,7 @@ fn resolve_ast_inner(
                 &resolve_state.scoped_symtab,
             )?;
 
-            let controlling_expr_type =
-                intermediate_ast.exprs[controlling_expr_ref.0 as usize].expr_type();
+            let controlling_expr_type = intermediate_ast.exprs[controlling_expr_ref].expr_type();
 
             if !matches!(controlling_expr_type, CType::BasicType { .. }) {
                 return Err(ASTResolveError::BadControllingExprType);
@@ -848,9 +844,8 @@ fn resolve_ast_inner(
                 &resolve_state.scoped_symtab,
             )?;
 
-            let controlling_expr_type =
-                intermediate_ast.exprs[controlling_expr_ref.0 as usize].expr_type();
-            if !controlling_expr_type.scalar_type() {
+            let controlling_expr_type = intermediate_ast.exprs[controlling_expr_ref].expr_type();
+            if !controlling_expr_type.is_scalar_type() {
                 return Err(ASTResolveError::BadControllingExprType);
             }
 
@@ -1026,7 +1021,7 @@ fn resolve_ast_inner(
                         &mut intermediate_ast.expr_indices,
                         &resolve_state.scoped_symtab,
                     )?;
-                    let expr_type = intermediate_ast.exprs[expr_ref.0 as usize].expr_type();
+                    let expr_type = intermediate_ast.exprs[expr_ref].expr_type();
 
                     // qualifiers don't matter here, i think
                     // technically, this is not compliant to standard i think

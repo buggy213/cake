@@ -322,7 +322,7 @@ impl CType {
         lhs == rhs
     }
 
-    pub(crate) fn scalar_type(&self) -> bool {
+    pub(crate) fn is_scalar_type(&self) -> bool {
         match self {
             CType::BasicType { .. } => true,
             CType::PointerType { .. } => true,
@@ -330,8 +330,39 @@ impl CType {
         }
     }
 
+    pub(crate) fn is_arithmetic_type(&self) -> bool {
+        matches!(self, CType::BasicType { .. })
+    }
+
+    pub(crate) fn is_integer_type(&self) -> bool {
+        match self {
+            CType::BasicType { basic_type, .. } if basic_type.is_integral() => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn is_void(&self) -> bool {
         matches!(self, CType::Void { .. })
+    }
+
+    pub(crate) fn is_pointer(&self) -> bool {
+        matches!(self, CType::PointerType { .. })
+    }
+
+    pub(crate) fn is_object_pointer(&self) -> bool {
+        match self {
+            CType::PointerType { pointee_type, .. } => match pointee_type.as_ref() {
+                CType::ArrayType { .. }
+                | CType::BasicType { .. }
+                | CType::EnumTypeRef { .. }
+                | CType::IncompleteArrayType { .. }
+                | CType::PointerType { .. }
+                | CType::StructureTypeRef { .. }
+                | CType::UnionTypeRef { .. } => true,
+                _ => false,
+            },
+            _ => false,
+        }
     }
 
     pub(crate) fn is_function_pointer(&self) -> bool {
@@ -351,6 +382,35 @@ impl CType {
                 _ => false,
             },
             _ => false,
+        }
+    }
+
+    // can this type be the target of an assignment expression
+    pub(crate) fn is_assignable(&self) -> bool {
+        match self {
+            CType::BasicType { .. } => true,
+            CType::IncompleteArrayType { .. } => false,
+            CType::ArrayType { .. } => false,
+            CType::PointerType { .. } => true,
+            CType::Void { .. } => false,
+            CType::StructureTypeRef { .. } => true,
+            CType::UnionTypeRef { .. } => true,
+            CType::EnumTypeRef { .. } => true,
+            CType::FunctionTypeRef { .. } => false,
+        }
+    }
+
+    pub(crate) fn int() -> CType {
+        CType::BasicType {
+            basic_type: BasicType::Int,
+            qualifier: TypeQualifier::empty(),
+        }
+    }
+
+    pub(crate) fn ptrdiff_type() -> CType {
+        CType::BasicType {
+            basic_type: BasicType::ULong,
+            qualifier: TypeQualifier::empty(),
         }
     }
 }

@@ -1,3 +1,5 @@
+use cake_util::make_type_idx;
+
 use crate::{
     parser::ast::{Constant, Identifier},
     semantics::symtab::{FunctionIdx, ObjectIdx},
@@ -10,8 +12,7 @@ pub(crate) struct NodeRef(pub u32);
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) struct NodeRangeRef(pub u32, pub u32);
 
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub(crate) struct ExprRef(pub u32);
+make_type_idx!(ExprRef, TypedExpressionNode);
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) struct ContextRef(pub u32);
@@ -106,16 +107,26 @@ pub(crate) enum ResolvedASTNode {
     },
 }
 
+// First member (.0) is always the type of the expression
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) enum TypedExpressionNode {
     CommaExpr(CType, ExprRangeRef),
 
     SimpleAssign(CType, ExprRef, ExprRef),
+
+    // a += b is not equivalent to a = a + b since the lvalue
+    // of a is only evaluated once
+    // ex:
+    // int *has_side_effects();
+    // *(has_side_effects()) += 1;
+    // *(has_side_effects()) = *(has_side_effects()) + 1;
     MultiplyAssign(CType, ExprRef, ExprRef),
     DivideAssign(CType, ExprRef, ExprRef),
     ModuloAssign(CType, ExprRef, ExprRef),
     AddAssign(CType, ExprRef, ExprRef),
     SubAssign(CType, ExprRef, ExprRef),
+    PtrAddAssign(CType, ExprRef, ExprRef),
+    PtrSubAssign(CType, ExprRef, ExprRef),
     LShiftAssign(CType, ExprRef, ExprRef),
     RShiftAssign(CType, ExprRef, ExprRef),
     AndAssign(CType, ExprRef, ExprRef),
@@ -143,8 +154,14 @@ pub(crate) enum TypedExpressionNode {
     Multiply(CType, ExprRef, ExprRef),
     Divide(CType, ExprRef, ExprRef),
     Modulo(CType, ExprRef, ExprRef),
+
     Add(CType, ExprRef, ExprRef),
     Subtract(CType, ExprRef, ExprRef),
+
+    // pointer arithmetic given separate variants
+    PointerAdd(CType, ExprRef, ExprRef),
+    PointerSub(CType, ExprRef, ExprRef),
+    PointerDiff(CType, ExprRef, ExprRef),
 
     // destination type, reference, source type
     Cast(CType, ExprRef, CType),
@@ -161,7 +178,7 @@ pub(crate) enum TypedExpressionNode {
 
     PostIncrement(CType, ExprRef),
     PostDecrement(CType, ExprRef),
-    ArraySubscript(CType, ExprRef, ExprRef),
+
     FunctionCall(CType, ExprRef, ExprRangeRef),
     DotAccess(CType, ExprRef, MemberRef),
     ArrowAccess(CType, ExprRef, MemberRef),
@@ -185,6 +202,8 @@ impl TypedExpressionNode {
             | TypedExpressionNode::ModuloAssign(qualified_type, _, _)
             | TypedExpressionNode::AddAssign(qualified_type, _, _)
             | TypedExpressionNode::SubAssign(qualified_type, _, _)
+            | TypedExpressionNode::PtrAddAssign(qualified_type, _, _)
+            | TypedExpressionNode::PtrSubAssign(qualified_type, _, _)
             | TypedExpressionNode::LShiftAssign(qualified_type, _, _)
             | TypedExpressionNode::RShiftAssign(qualified_type, _, _)
             | TypedExpressionNode::AndAssign(qualified_type, _, _)
@@ -209,6 +228,9 @@ impl TypedExpressionNode {
             | TypedExpressionNode::Modulo(qualified_type, _, _)
             | TypedExpressionNode::Add(qualified_type, _, _)
             | TypedExpressionNode::Subtract(qualified_type, _, _)
+            | TypedExpressionNode::PointerAdd(qualified_type, _, _)
+            | TypedExpressionNode::PointerSub(qualified_type, _, _)
+            | TypedExpressionNode::PointerDiff(qualified_type, _, _)
             | TypedExpressionNode::Cast(qualified_type, _, _)
             | TypedExpressionNode::PreIncrement(qualified_type, _)
             | TypedExpressionNode::PreDecrement(qualified_type, _)
@@ -221,7 +243,6 @@ impl TypedExpressionNode {
             | TypedExpressionNode::Not(qualified_type, _)
             | TypedExpressionNode::PostIncrement(qualified_type, _)
             | TypedExpressionNode::PostDecrement(qualified_type, _)
-            | TypedExpressionNode::ArraySubscript(qualified_type, _, _)
             | TypedExpressionNode::FunctionCall(qualified_type, _, _)
             | TypedExpressionNode::DotAccess(qualified_type, _, _)
             | TypedExpressionNode::ArrowAccess(qualified_type, _, _)
