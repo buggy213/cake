@@ -11,7 +11,7 @@ type Elf64Word = u32;
 type Elf64Sword = i32;
 type Elf64Xword = u64;
 type Elf64Sxword = u64;
-type uchar = u8;
+type Uchar = u8;
 
 #[derive(Error, Debug)]
 pub enum ElfError {
@@ -20,9 +20,9 @@ pub enum ElfError {
     #[error("bad or unsupported machine type {0}")]
     ElfMachineError(Elf64Half),
     #[error("bad or unsupported data encoding {0}")]
-    ElfEndiannessError(uchar),
+    ElfEndiannessError(Uchar),
     #[error("bad or unsupported elf class {0}")]
-    ElfClassError(uchar),
+    ElfClassError(Uchar),
     #[error("bad version {0}")]
     ElfVersionError(Elf64Word),
     #[error("bad or unsupported section type {0}")]
@@ -32,15 +32,17 @@ pub enum ElfError {
     #[error("unrecognized or unsupported segment type {0}")]
     ElfSegmentTypeError(Elf64Word),
     #[error("bad or unknown symbol type {0}")]
-    ElfSymbolTypeError(uchar),
+    ElfSymbolTypeError(Uchar),
     #[error("bad or unknown symbol visibility {0}")]
-    ElfSymbolVisibilityError(uchar),
+    ElfSymbolVisibilityError(Uchar),
     #[error("bad or unknown symbol binding type {0}")]
-    ElfSymbolBindingError(uchar),
+    ElfSymbolBindingError(Uchar),
     #[error("not an elf file")]
     NotAnElfError,
     #[error("unexpected eof while parsing")]
     UnexpectedEOFError,
+    #[error("other error while parsing")]
+    IOError,
     #[error("unknown error while parsing")]
     Unknown,
 }
@@ -49,10 +51,7 @@ impl From<std::io::Error> for ElfError {
     fn from(value: std::io::Error) -> Self {
         match value.kind() {
             std::io::ErrorKind::UnexpectedEof => ElfError::UnexpectedEOFError,
-            _ => {
-                debug_assert!(false);
-                ElfError::Unknown
-            }
+            _ => ElfError::Unknown,
         }
     }
 }
@@ -62,10 +61,10 @@ pub enum ElfClass {
     ElfClass64,
 }
 
-impl TryFrom<uchar> for ElfClass {
+impl TryFrom<Uchar> for ElfClass {
     type Error = ElfError;
 
-    fn try_from(value: uchar) -> Result<Self, Self::Error> {
+    fn try_from(value: Uchar) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::ElfClass32),
             2 => Ok(Self::ElfClass64),
@@ -82,10 +81,10 @@ pub enum ElfEndianness {
     Big,
 }
 
-impl TryFrom<uchar> for ElfEndianness {
+impl TryFrom<Uchar> for ElfEndianness {
     type Error = ElfError;
 
-    fn try_from(value: uchar) -> Result<Self, Self::Error> {
+    fn try_from(value: Uchar) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::Little),
             2 => Ok(Self::Big),
@@ -98,10 +97,10 @@ pub enum ElfVersion {
     Current,
 }
 
-impl TryFrom<uchar> for ElfVersion {
+impl TryFrom<Uchar> for ElfVersion {
     type Error = ElfError;
 
-    fn try_from(value: uchar) -> Result<Self, Self::Error> {
+    fn try_from(value: Uchar) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::Current),
             _ => Err(ElfError::ElfVersionError(value as Elf64Word)),
@@ -173,12 +172,21 @@ pub enum ElfSectionType {
     NoBits,
     Rel,
     // others unsupported for now
+    // SHLIB
+    // DYNSYM
+    // LOOS-HIOS (OS-specific)
+    // LOPROC-HIPROC (Processor specific)
 }
 
 impl TryFrom<Elf64Word> for ElfSectionType {
     type Error = ElfError;
 
     fn try_from(value: Elf64Word) -> Result<Self, Self::Error> {
+        const SHT_LOOS: Elf64Word = 0x6000_0000;
+        const SHT_HIOS: Elf64Word = 0x7000_0000;
+        const SHT_LOPROC: Elf64Word = 0x7000_0000;
+        const SHT_HIPROC: Elf64Word = 0x8000_0000;
+
         match value {
             0 => Ok(Self::Null),
             1 => Ok(Self::ProgBits),
@@ -190,6 +198,8 @@ impl TryFrom<Elf64Word> for ElfSectionType {
             7 => Ok(Self::Note),
             8 => Ok(Self::NoBits),
             9 => Ok(Self::Rel),
+            SHT_LOOS..SHT_HIOS => Err(ElfError::ElfSectionTypeError(value)),
+            SHT_LOPROC..SHT_HIPROC => Err(ElfError::ElfSectionTypeError(value)),
             _ => Err(ElfError::ElfSectionTypeError(value)),
         }
     }
@@ -221,10 +231,10 @@ pub enum ElfSymbolType {
     TLS,
 }
 
-impl TryFrom<uchar> for ElfSymbolType {
+impl TryFrom<Uchar> for ElfSymbolType {
     type Error = ElfError;
 
-    fn try_from(value: uchar) -> Result<Self, Self::Error> {
+    fn try_from(value: Uchar) -> Result<Self, Self::Error> {
         match value & 0xF {
             0 => Ok(Self::NoType),
             1 => Ok(Self::Object),
@@ -244,10 +254,10 @@ pub enum ElfSymbolBinding {
     Weak,
 }
 
-impl TryFrom<uchar> for ElfSymbolBinding {
+impl TryFrom<Uchar> for ElfSymbolBinding {
     type Error = ElfError;
 
-    fn try_from(value: uchar) -> Result<Self, Self::Error> {
+    fn try_from(value: Uchar) -> Result<Self, Self::Error> {
         match value >> 4 {
             0 => Ok(Self::Local),
             1 => Ok(Self::Global),
@@ -264,10 +274,10 @@ pub enum ElfSymbolVisibility {
     Protected,
 }
 
-impl TryFrom<uchar> for ElfSymbolVisibility {
+impl TryFrom<Uchar> for ElfSymbolVisibility {
     type Error = ElfError;
 
-    fn try_from(value: uchar) -> Result<Self, Self::Error> {
+    fn try_from(value: Uchar) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::Default),
             1 => Ok(Self::Internal),

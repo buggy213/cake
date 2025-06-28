@@ -5,20 +5,20 @@ use cranelift::{
     module::{DataDescription, DataId, FuncId, Module},
     object::ObjectModule,
     prelude::{
+        AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature, Type, Value,
         settings::{self, Flags},
-        types, AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature, Type,
-        Value,
+        types,
     },
 };
 
 use crate::{
-    parser::ast::{ExprRef, NodeRef, ResolvedASTNode},
+    semantics::resolved_ast::{ExprRef, NodeRef, ResolvedASTNode},
     semantics::{
         self,
-        resolve_ast::ResolvedAST,
+        resolver::ResolvedAST,
         symtab::{Scope, SymbolTable},
-        types::{BasicType, CanonicalType, FunctionTypeInner, QualifiedType, TypeQualifier},
     },
+    types::{BasicType, FunctionType, TypeQualifier},
 };
 
 impl From<BasicType> for Type {
@@ -77,6 +77,38 @@ impl CraneliftBackend {
     }
 
     pub(crate) fn process_global_symbols(&mut self, symtab: &SymbolTable) {
+        let global_objects = symtab.global_objects();
+        let global_object_names = symtab.global_object_names();
+
+        let global_functions = symtab.functions();
+
+        for (global_object, global_object_name) in
+            std::iter::zip(global_objects, global_object_names)
+        {
+            let linkage = match global_object.linkage {
+                semantics::symtab::Linkage::External => cranelift::module::Linkage::Export,
+                semantics::symtab::Linkage::Internal => cranelift::module::Linkage::Local,
+                semantics::symtab::Linkage::None => {
+                    panic!("top-level decls should have defined linkage")
+                }
+            };
+
+            let writable = !global_object
+                .object_type
+                .qualifier()
+                .contains(TypeQualifier::Const);
+
+            let object_id = self
+                .object
+                .declare_data(global_object_name, linkage, writable, false)
+                .expect("failed to declare data");
+
+            // TODO: support initializer
+            let init = DataDescription::new();
+            init.define_zeroinit(size);
+        }
+
+        /*
         for (name, global_symbol) in symtab.all_symbols_at_scope(Scope::new_file_scope()) {
             match global_symbol {
                 semantics::symtab::Symbol::Constant(_) => (), // no-op, as these are folded into resolved expressions
@@ -148,6 +180,7 @@ impl CraneliftBackend {
                 }
             }
         }
+        */
     }
 
     fn lower_function_signature(&self, fn_type: &FunctionTypeInner) -> Signature {
@@ -414,12 +447,13 @@ mod cranelift_backend_tests {
         module::{DataDescription, Linkage, Module},
         object::ObjectModule,
         prelude::{
+            AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder,
             settings::{self, Flags},
-            types, AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder,
+            types,
         },
     };
 
-    use crate::semantics::resolve_ast::resolve_ast_tests::{resolve_harness, ResolveHarnessInput};
+    use crate::semantics::resolver::resolve_ast_tests::{ResolveHarnessInput, resolve_harness};
 
     use super::CraneliftBackend;
 
