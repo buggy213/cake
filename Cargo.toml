@@ -12,7 +12,7 @@ bitflags = "2.6.0"
 byteorder = "1.5.0"
 petgraph = "0.6.4"
 thiserror = "1.0.63"
-bumpalo = "3.16.0"
+bumpalo = { version = "3.16.0", features = ["collections"] }
 clap = "4.5.16"
 bit-set = "0.8.0"
 serde = "1.0.204"

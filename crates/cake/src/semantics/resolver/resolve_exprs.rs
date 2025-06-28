@@ -124,17 +124,173 @@ pub(super) fn resolve_expr(
             Ok(simple_assign_ref)
         }
         ExpressionNode::MultiplyAssign(a, b) => {
-            todo!("think about how best to implement this (and other augmented assigns)")
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, symtab)?;
+            augmented_assign_op(
+                a_ref,
+                b_ref,
+                TypedExpressionNode::MultiplyAssign,
+                TypedExpressionNode::Multiply,
+                Conversions::Arithmetic,
+                resolved_expr_vec,
+            )
         }
-        ExpressionNode::DivideAssign(a, b) => todo!(),
-        ExpressionNode::ModuloAssign(a, b) => todo!(),
-        ExpressionNode::AddAssign(a, b) => todo!(),
-        ExpressionNode::SubAssign(a, b) => todo!(),
-        ExpressionNode::LShiftAssign(a, b) => todo!(),
-        ExpressionNode::RShiftAssign(a, b) => todo!(),
-        ExpressionNode::AndAssign(a, b) => todo!(),
-        ExpressionNode::XorAssign(a, b) => todo!(),
-        ExpressionNode::OrAssign(a, b) => todo!(),
+        ExpressionNode::DivideAssign(a, b) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, symtab)?;
+            augmented_assign_op(
+                a_ref,
+                b_ref,
+                TypedExpressionNode::DivideAssign,
+                TypedExpressionNode::Divide,
+                Conversions::Arithmetic,
+                resolved_expr_vec,
+            )
+        }
+        ExpressionNode::ModuloAssign(a, b) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            augmented_assign_op(
+                a_ref,
+                b_ref,
+                TypedExpressionNode::ModuloAssign,
+                TypedExpressionNode::Modulo,
+                Conversions::Arithmetic,
+                resolved_expr_vec,
+            )
+        }
+        ExpressionNode::AddAssign(a, b) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, symtab)?;
+
+            let a_type = resolved_expr_vec[a_ref].expr_type();
+            let b_type = resolved_expr_vec[b_ref].expr_type();
+
+            let a_int_b_ptr = a_type.is_integer_type() && b_type.is_object_pointer();
+            let a_ptr_b_int = a_type.is_object_pointer() && b_type.is_integer_type();
+
+            if a_int_b_ptr || a_ptr_b_int {
+                // pointer arithmetic
+                let ptr_ref = if a_int_b_ptr { b_ref } else { a_ref };
+                let int_ref = if a_int_b_ptr { a_ref } else { b_ref };
+
+                augmented_assign_op(
+                    ptr_ref,
+                    int_ref,
+                    TypedExpressionNode::PtrAddAssign,
+                    TypedExpressionNode::PointerAdd,
+                    Conversions::None,
+                    resolved_expr_vec,
+                )
+            } else {
+                // normal arithmetic
+                augmented_assign_op(
+                    a_ref,
+                    b_ref,
+                    TypedExpressionNode::AddAssign,
+                    TypedExpressionNode::Add,
+                    Conversions::Arithmetic,
+                    resolved_expr_vec,
+                )
+            }
+        }
+        ExpressionNode::SubAssign(a, b) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, symtab)?;
+
+            let a_type = resolved_expr_vec[a_ref].expr_type();
+            let b_type = resolved_expr_vec[b_ref].expr_type();
+
+            let a_ptr_b_int = a_type.is_object_pointer() && b_type.is_integer_type();
+
+            if a_ptr_b_int {
+                // pointer arithmetic
+                let ptr_ref = a_ref;
+                let int_ref = b_ref;
+
+                augmented_assign_op(
+                    ptr_ref,
+                    int_ref,
+                    TypedExpressionNode::PtrSubAssign,
+                    TypedExpressionNode::PointerSub,
+                    Conversions::None,
+                    resolved_expr_vec,
+                )
+            } else {
+                // normal arithmetic
+                augmented_assign_op(
+                    a_ref,
+                    b_ref,
+                    TypedExpressionNode::SubAssign,
+                    TypedExpressionNode::Subtract,
+                    Conversions::Arithmetic,
+                    resolved_expr_vec,
+                )
+            }
+        }
+        ExpressionNode::LShiftAssign(a, b) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            augmented_assign_op(
+                a_ref,
+                b_ref,
+                TypedExpressionNode::LShiftAssign,
+                TypedExpressionNode::LShift,
+                Conversions::Promotion,
+                resolved_expr_vec,
+            )
+        }
+        ExpressionNode::RShiftAssign(a, b) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            augmented_assign_op(
+                a_ref,
+                b_ref,
+                TypedExpressionNode::RShiftAssign,
+                TypedExpressionNode::RShift,
+                Conversions::Promotion,
+                resolved_expr_vec,
+            )
+        }
+        ExpressionNode::AndAssign(a, b) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+
+            augmented_assign_op(
+                a_ref,
+                b_ref,
+                TypedExpressionNode::AndAssign,
+                TypedExpressionNode::BitwiseAnd,
+                Conversions::Arithmetic,
+                resolved_expr_vec,
+            )
+        }
+        ExpressionNode::XorAssign(a, b) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+
+            augmented_assign_op(
+                a_ref,
+                b_ref,
+                TypedExpressionNode::XorAssign,
+                TypedExpressionNode::BitwiseXor,
+                Conversions::Arithmetic,
+                resolved_expr_vec,
+            )
+        }
+        ExpressionNode::OrAssign(a, b) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+
+            augmented_assign_op(
+                a_ref,
+                b_ref,
+                TypedExpressionNode::OrAssign,
+                TypedExpressionNode::BitwiseOr,
+                Conversions::Arithmetic,
+                resolved_expr_vec,
+            )
+        }
         ExpressionNode::Ternary(a, b, expression_node2) => todo!(),
         ExpressionNode::LogicalAnd(lhs, rhs) => {
             let lhs_ref = resolve_expr(&lhs, resolved_expr_vec, expr_indices, symtab)?;
@@ -338,7 +494,6 @@ pub(super) fn resolve_expr(
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let b_type = resolved_expr_vec[b_ref].expr_type();
 
-            let a_int_b_ptr = a_type.is_integer_type() && b_type.is_object_pointer();
             let a_ptr_b_int = a_type.is_object_pointer() && b_type.is_integer_type();
             let a_ptr_b_ptr = a_type.is_object_pointer() && b_type.is_object_pointer();
             if a_ptr_b_ptr {
@@ -352,11 +507,11 @@ pub(super) fn resolve_expr(
                 let ptrdiff = TypedExpressionNode::PointerDiff(result_type, a_ref, b_ref);
                 let ptrdiff_ref = ExprRef::from_push(resolved_expr_vec, ptrdiff);
                 Ok(ptrdiff_ref)
-            } else if a_int_b_ptr || a_ptr_b_int {
+            } else if a_ptr_b_int {
                 // pointer arithmetic
-                let ptr_type = if a_int_b_ptr { b_type } else { a_type };
-                let ptr_ref = if a_int_b_ptr { b_ref } else { a_ref };
-                let int_ref = if a_int_b_ptr { a_ref } else { b_ref };
+                let ptr_type = a_type;
+                let ptr_ref = a_ref;
+                let int_ref = b_ref;
                 let pointer_sub =
                     TypedExpressionNode::PointerSub(ptr_type.clone(), ptr_ref, int_ref);
                 let pointer_sub_ref = ExprRef::from_push(resolved_expr_vec, pointer_sub);
@@ -988,4 +1143,48 @@ fn integer_promotion(
     } else {
         Ok(expr_ref)
     }
+}
+
+enum Conversions {
+    None,
+    Promotion,
+    Arithmetic,
+}
+fn augmented_assign_op(
+    a_ref: ExprRef,
+    b_ref: ExprRef,
+    assign_op_ctor: fn(CType, ExprRef, ExprRef) -> TypedExpressionNode,
+    op_ctor: fn(CType, ExprRef, ExprRef) -> TypedExpressionNode,
+
+    conversions: Conversions,
+    resolved_expr_vec: &mut Vec<TypedExpressionNode>,
+) -> Result<ExprRef, ResolveExprError> {
+    // ensure LHS is a modifiable l-value
+    let lhs_is_lvalue = check_lvalue(a_ref, resolved_expr_vec);
+    let lhs_type = resolved_expr_vec[a_ref].expr_type();
+    let lhs_type_qualifier = lhs_type.qualifier();
+    let lhs_is_const = lhs_type_qualifier.contains(TypeQualifier::Const);
+
+    if !lhs_is_lvalue || lhs_is_const {
+        return Err(ResolveExprError::ExpressionNotLvalue);
+    }
+
+    let (result_type, a_converted, b_converted) = match conversions {
+        Conversions::None => (lhs_type.clone(), a_ref, b_ref),
+        Conversions::Promotion => {
+            let a_converted = integer_promotion(a_ref, resolved_expr_vec)?;
+            let a_type = resolved_expr_vec[a_converted].expr_type().clone();
+            let b_converted = integer_promotion(b_ref, resolved_expr_vec)?;
+            (a_type, a_converted, b_converted)
+        }
+        Conversions::Arithmetic => usual_arithmetic_conversions(a_ref, b_ref, resolved_expr_vec)?,
+    };
+    let op = op_ctor(result_type, a_converted, b_converted);
+    let op_ref = ExprRef::from_push(resolved_expr_vec, op);
+    let a_type = resolved_expr_vec[a_ref].expr_type().clone();
+    let result_converted = assignment_type_conversion(&a_type, op_ref, resolved_expr_vec)?;
+
+    let assign = assign_op_ctor(a_type, a_ref, result_converted);
+    let assign_ref = ExprRef::from_push(resolved_expr_vec, assign);
+    Ok(assign_ref)
 }

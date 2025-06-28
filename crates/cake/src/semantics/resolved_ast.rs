@@ -120,6 +120,9 @@ pub(crate) enum TypedExpressionNode {
     // int *has_side_effects();
     // *(has_side_effects()) += 1;
     // *(has_side_effects()) = *(has_side_effects()) + 1;
+    // As such, we keep around the lvalue as the first ExprRef and
+    // the casts / operation / rhs / casts as the second ExprRef.
+    // codegen is responsible for ensuring lvalue is only evaluated once
     MultiplyAssign(CType, ExprRef, ExprRef),
     DivideAssign(CType, ExprRef, ExprRef),
     ModuloAssign(CType, ExprRef, ExprRef),
