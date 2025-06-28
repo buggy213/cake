@@ -1,8 +1,11 @@
-use cake_util::make_type_idx;
+use cake_util::{add_additional_index, make_type_idx};
 
 use bitflags::bitflags;
 
-use crate::semantics::symtab::Scope;
+use crate::{
+    codegen::layout::{StructLayout, UnionLayout},
+    semantics::symtab::Scope,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BasicType {
@@ -131,6 +134,7 @@ pub(crate) struct StructureType {
 }
 
 make_type_idx!(StructureTypeIdx, StructureType);
+add_additional_index!(StructureTypeIdx, StructLayout, 'arena);
 
 impl StructureType {
     pub(crate) fn new_complete_structure_type(
@@ -173,6 +177,7 @@ pub(crate) struct UnionType {
 }
 
 make_type_idx!(UnionTypeIdx, UnionType);
+add_additional_index!(UnionTypeIdx, UnionLayout);
 
 impl UnionType {
     pub(crate) fn new_complete_union_type(

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, mem::MaybeUninit};
 
 use cake_util::make_type_idx;
 use thiserror::Error;
@@ -164,6 +164,9 @@ pub(crate) struct SymbolTable {
     objects: Vec<Object>,
     functions: Vec<Function>,
 
+    object_names: Vec<String>,
+    function_names: Vec<String>,
+
     enum_types: Vec<EnumType>,
     structure_types: Vec<StructureType>,
     union_types: Vec<UnionType>,
@@ -185,12 +188,44 @@ impl SymbolTable {
             structure_types,
             union_types,
             function_types,
+
+            symbols,
             ..
         } = scoped_symtab;
+
+        let mut object_names: Vec<MaybeUninit<String>> = Vec::with_capacity(objects.len());
+        // SAFETY: used with_capacity above, and MaybeUninit<T> does not require initialization
+        unsafe { object_names.set_len(objects.len()) }
+
+        let mut function_names: Vec<MaybeUninit<String>> = Vec::with_capacity(functions.len());
+        // SAFETY: see above
+        unsafe { function_names.set_len(functions.len()) }
+
+        for symbols_at_scope in symbols {
+            for (symbol_name, symbol) in symbols_at_scope {
+                match symbol {
+                    Symbol::Constant(constant) => (), // no-op, inlined into expressions
+                    Symbol::Object(object_idx) => {
+                        object_names[object_idx.0 as usize].write(symbol_name);
+                    }
+                    Symbol::Function(function_idx) => {
+                        function_names[function_idx.0 as usize].write(symbol_name);
+                    }
+                }
+            }
+        }
+
+        // SAFETY: Vec<MaybeUninit<String>> should be the same as Vec<String>
+        // in terms of layout, and the above code should initialize all entries
+        let object_names: Vec<String> = unsafe { std::mem::transmute(object_names) };
+        let function_names: Vec<String> = unsafe { std::mem::transmute(function_names) };
 
         SymbolTable {
             objects,
             functions,
+            object_names,
+            function_names,
+
             enum_types,
             structure_types,
             union_types,
@@ -198,6 +233,24 @@ impl SymbolTable {
             global_objects,
             function_types,
         }
+    }
+
+    pub(crate) fn global_objects(&self) -> impl Iterator<Item = &Object> {
+        self.global_objects.iter().map(|idx| &self.objects[*idx])
+    }
+
+    pub(crate) fn global_object_names(&self) -> impl Iterator<Item = &str> {
+        self.global_objects
+            .iter()
+            .map(|idx| self.object_names[idx.0 as usize].as_str())
+    }
+
+    pub(crate) fn functions(&self) -> &[Function] {
+        &self.functions
+    }
+
+    pub(crate) fn function_names(&self) -> &[String] {
+        &self.function_names
     }
 }
 
@@ -285,7 +338,9 @@ impl ScopedSymtab {
                 scope = self.scopes[parent];
             } else {
                 // maybe not unrecoverable, but grammar should 100% prevent this from happening
-                unreachable!("label statement declared with no function scope as ancestor (should be impossible)");
+                unreachable!(
+                    "label statement declared with no function scope as ancestor (should be impossible)"
+                );
             }
         }
 
@@ -394,7 +449,9 @@ impl ScopedSymtab {
                 scope = self.scopes[parent];
             } else {
                 // maybe not unrecoverable, but grammar should 100% prevent this from happening
-                panic!("label statement declared with no function scope as ancestor (should be impossible)");
+                panic!(
+                    "label statement declared with no function scope as ancestor (should be impossible)"
+                );
             }
         }
 

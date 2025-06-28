@@ -31,6 +31,10 @@ macro_rules! make_type_idx {
                 vec.push(val);
                 idx
             }
+
+            pub(crate) fn get_inner(&self) -> usize {
+                self.0 as usize
+            }
         }
 
         impl std::ops::Index<$type_idx_name> for [$type_name] {
@@ -58,6 +62,41 @@ macro_rules! make_type_idx {
         impl std::ops::IndexMut<$type_idx_name> for Vec<$type_name> {
             fn index_mut(&mut self, index: $type_idx_name) -> &mut Self::Output {
                 self.as_mut_slice().index_mut(index)
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! add_additional_index {
+    ($type_idx_name:tt, $type_name:tt) => {
+        impl std::ops::Index<$type_idx_name> for [$type_name] {
+            type Output = $type_name;
+
+            fn index(&self, index: $type_idx_name) -> &Self::Output {
+                &self[index.0 as usize]
+            }
+        }
+
+        impl std::ops::IndexMut<$type_idx_name> for [$type_name] {
+            fn index_mut(&mut self, index: $type_idx_name) -> &mut Self::Output {
+                &mut self[index.0 as usize]
+            }
+        }
+    };
+
+    ($type_idx_name:tt, $type_name:tt, $lifetime:tt) => {
+        impl<$lifetime> std::ops::Index<$type_idx_name> for [$type_name<$lifetime>] {
+            type Output = $type_name<$lifetime>;
+
+            fn index(&self, index: $type_idx_name) -> &Self::Output {
+                &self[index.0 as usize]
+            }
+        }
+
+        impl<$lifetime> std::ops::IndexMut<$type_idx_name> for [$type_name<$lifetime>] {
+            fn index_mut(&mut self, index: $type_idx_name) -> &mut Self::Output {
+                &mut self[index.0 as usize]
             }
         }
     };
