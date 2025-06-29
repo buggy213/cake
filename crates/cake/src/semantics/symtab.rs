@@ -301,6 +301,10 @@ impl SymbolTable {
     pub(crate) fn get_function_type(&self, function_type: FunctionTypeIdx) -> &FunctionType {
         &self.function_types[function_type]
     }
+
+    pub(crate) fn function_types(&self) -> &[FunctionType] {
+        &self.function_types
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

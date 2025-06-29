@@ -1033,6 +1033,8 @@ fn resolve_ast_inner(
                     // qualifiers don't matter here, i think
                     // technically, this is not compliant to standard i think
                     if !CType::unqualified_equal(current_fn_return_type, expr_type) {
+                        dbg!(current_fn_return_type);
+                        dbg!(expr_type);
                         return Err(ASTResolveError::BadReturnValue);
                     }
 

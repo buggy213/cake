@@ -1,6 +1,7 @@
 use cake_util::{add_additional_index, make_type_idx};
 
 use bitflags::bitflags;
+use cranelift::prelude::Signature;
 
 use crate::{
     codegen::layout::{StructLayout, UnionLayout},
@@ -234,6 +235,7 @@ pub(crate) struct FunctionType {
 }
 
 make_type_idx!(FunctionTypeIdx, FunctionType);
+add_additional_index!(FunctionTypeIdx, Signature);
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

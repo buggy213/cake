@@ -996,6 +996,10 @@ fn assignment_type_conversion(
                 return Ok(insert_cast(target, base_ref, resolved_expr_vec));
             }
 
+            // TODO: temporary. need to check for compatible types in the future
+            // (mainly for function types...)
+            return Ok(insert_cast(target, base_ref, resolved_expr_vec));
+
             // 3. up-converting a pointer (i.e. making it more qualified)
             if CType::unqualified_equal(&base_pointee, &target_pointee) {
                 if target_pointee

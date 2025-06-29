@@ -86,6 +86,9 @@ struct CraneliftBackend {
     // these are used for declare_data_in_func, declare_func_in_func
     // and get cleared after each function is built
     function_refs: Vec<FuncRef>,
+
+    // these are used for function declarations
+    function_signatures: Vec<Signature>,
 }
 
 impl CraneliftBackend {
@@ -115,6 +118,8 @@ impl CraneliftBackend {
             functions: Vec::new(),
 
             function_refs: Vec::new(),
+
+            function_signatures: Vec::new(),
         }
     }
 
@@ -150,6 +155,11 @@ impl CraneliftBackend {
 
         let functions = symtab.functions();
         let function_names = symtab.function_names();
+        for fn_type in symtab.function_types() {
+            let signature = self.lower_function_signature(fn_type);
+            self.function_signatures.push(signature);
+        }
+
         for (function, function_name) in std::iter::zip(functions, function_names) {
             let linkage = if function.internal_linkage {
                 cranelift::module::Linkage::Local
@@ -161,8 +171,7 @@ impl CraneliftBackend {
                 }
             };
 
-            let fn_type = symtab.get_function_type(function.function_type);
-            let signature = self.lower_function_signature(fn_type);
+            let signature = &self.function_signatures[function.function_type];
 
             let fn_id = self
                 .object
@@ -399,6 +408,7 @@ impl CraneliftBackend {
                 if let Some(not_taken_node) = *not_taken {
                     self.lower_statement(fn_builder, resolved_ast, not_taken_node, object_frame);
                 }
+
                 fn_builder.ins().jump(postdominator, &[]);
 
                 fn_builder.seal_block(postdominator);
@@ -610,6 +620,54 @@ impl CraneliftBackend {
                     fn_builder.inst_results(rvals)[0]
                 }
             }
+
+            TypedExpressionNode::IndirectFunctionCall(result_type, function_expr, arguments) => {
+                let func_ptr_value =
+                    self.lower_expr(fn_builder, resolved_ast, *function_expr, object_frame);
+
+                let func_ptr_type = resolved_ast.exprs[*function_expr].expr_type();
+                let func_signature = match func_ptr_type {
+                    CType::PointerType { pointee_type, .. } => match pointee_type.as_ref() {
+                        CType::FunctionTypeRef { symtab_idx } => {
+                            &self.function_signatures[*symtab_idx]
+                        }
+                        _ => unreachable!("resolver should prevent this (TODO: put it in ast?)"),
+                    },
+                    _ => unreachable!("see above"),
+                };
+                let func_signature_ref = fn_builder.import_signature(func_signature.clone());
+
+                let arg_range: Range<usize> = (*arguments).into();
+                let mut arg_values = Vec::with_capacity(arg_range.len());
+                for arg_expr in &resolved_ast.expr_indices[arg_range] {
+                    let arg_value =
+                        self.lower_expr(fn_builder, resolved_ast, *arg_expr, object_frame);
+                    arg_values.push(arg_value);
+                }
+                let rvals =
+                    fn_builder
+                        .ins()
+                        .call_indirect(func_signature_ref, func_ptr_value, &arg_values);
+                if result_type.is_void() {
+                    // TODO: fix this. void expressions should be allowed
+                    fn_builder.ins().iconst(self.pointer_type(), 0)
+                } else {
+                    fn_builder.inst_results(rvals)[0]
+                }
+            }
+
+            TypedExpressionNode::AddressOf(_, addressee) => match &resolved_ast.exprs[*addressee] {
+                TypedExpressionNode::ObjectIdentifier(_, object_idx) => {
+                    let stack_slot = object_frame.get_object_stack_slot(*object_idx);
+                    fn_builder
+                        .ins()
+                        .stack_addr(self.pointer_type(), stack_slot, 0)
+                }
+                TypedExpressionNode::FunctionIdentifier(_, fn_idx) => fn_builder
+                    .ins()
+                    .func_addr(self.pointer_type(), self.function_refs[*fn_idx]),
+                _ => todo!(),
+            },
             crate::semantics::resolved_ast::TypedExpressionNode::ObjectIdentifier(
                 object_type,
                 object_idx,
@@ -1015,6 +1073,23 @@ mod cranelift_backend_tests {
     }
 
     #[test]
+    fn test_complicated_conditional() {
+        let code = r#"
+        int main(int argc, char *argv[]) {
+            if (1) {
+            }
+            else if (2) {
+            }
+            else {
+            }
+            return 0;
+        }
+        "#;
+
+        compile_code(code);
+    }
+
+    #[test]
     fn test_while() {
         let code = r#"
         int puts(const char *str);
@@ -1043,7 +1118,22 @@ mod cranelift_backend_tests {
         int puts(const char *str);
         char *gets(char *str);
         char *strcpy(char *dest, const char *src);
+        int strcmp(const char *str1, const char *str2);
         int atoi(const char *str);
+        unsigned long strlen(const char *str);
+
+        int add(int a, int b) {
+            return a + b;
+        }
+        int subtract(int a, int b) {
+            return a - b;
+        }
+        int multiply(int a, int b) {
+            return a * b;
+        }
+        int divide(int a, int b) {
+            return a / b;
+        }
 
         int main(int argc, char *argv[]) {
             char buf[32];
@@ -1055,9 +1145,50 @@ mod cranelift_backend_tests {
             puts("Enter second number: ");
             gets(buf);
             b = atoi(buf);
+            
+            int (*calc)(int, int);
+            
+            puts("Choose operation (+, -, *, /): ");
+            gets(buf);
+
+            if (1) {
+            }
+            else if (2) {
+            }
+            else {
+            }
+
+            if (strcmp(buf, "+") == 0) {
+                calc = &add;
+            }
+            else if (strcmp(buf, "-") == 0) {
+                calc = &subtract;
+            }
+            else if (strcmp(buf, "*") == 0) {
+                calc = &multiply;
+            }
+            else if (strcmp(buf, "/") == 0) {
+                calc = &divide;
+            }
+            else {
+                return 0 - 1;
+            }
+
+            int answer;
+            answer = calc(a, b);
+            
+            unsigned long idx;
             strcpy(buf, "The answer is: ");
-            buf[15] = '0' + a + b;
-            buf[16] = '\0';
+            idx = strlen(buf);
+
+            do {
+                int lsd;
+                lsd = answer % 10;
+                answer = answer / 10;
+                buf[idx] = '0' + lsd;
+                idx = idx + 1;
+            } while (answer);
+            buf[idx] = '\0';
 
             puts(buf);
 
