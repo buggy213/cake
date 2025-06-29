@@ -518,6 +518,9 @@ fn resolve_ast_inner(
                 &fn_declaration,
                 parser_types,
             )?;
+            resolve_state
+                .scoped_symtab
+                .end_function_parameters(begin_token, func_idx);
 
             let func_type_idx = resolve_state
                 .scoped_symtab
@@ -554,7 +557,6 @@ fn resolve_ast_inner(
             }
             resolve_state.deferred_goto_resolve.clear();
 
-            let ident = fn_declaration.name.clone();
             let fn_definition_node = ResolvedASTNode::FunctionDefinition {
                 parent,
                 symbol_idx: func_idx,

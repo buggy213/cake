@@ -663,6 +663,7 @@ pub(crate) fn resolve_function_definition(
             object_type: ty.clone(),
             linkage: Linkage::None,
         };
+
         _ = symtab.add_object(
             adjusted_type.prototype_scope,
             name.clone()

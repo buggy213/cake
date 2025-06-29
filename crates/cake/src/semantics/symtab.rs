@@ -1,4 +1,4 @@
-use std::{collections::HashMap, mem::MaybeUninit};
+use std::{collections::HashMap, mem::MaybeUninit, ops::Range};
 
 use cake_util::{add_additional_index, make_type_idx};
 use cranelift::{codegen::ir::FuncRef, module::FuncId};
@@ -72,6 +72,30 @@ pub(crate) struct Object {
 make_type_idx!(ObjectIdx, Object);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ObjectRangeRef(pub u32, pub u32);
+pub(crate) struct ObjectRangeIter(u32, u32, u32);
+impl IntoIterator for ObjectRangeRef {
+    type Item = ObjectIdx;
+
+    type IntoIter = ObjectRangeIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ObjectRangeIter(self.0, self.0, self.1)
+    }
+}
+
+impl Iterator for ObjectRangeIter {
+    type Item = ObjectIdx;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.0 < self.2 {
+            let item = ObjectIdx(self.0);
+            self.0 += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Function {
@@ -151,6 +175,9 @@ pub(crate) struct ScopedSymtab {
 
     // which objects are associated with every function vs which are global
     function_object_ranges: Vec<ObjectRangeRef>,
+    // which correspond to
+    // TODO: maybe create a new type for resolved function type?
+    function_parameter_ranges: Vec<ObjectRangeRef>,
     global_objects: Vec<ObjectIdx>,
 
     enum_types: Vec<EnumType>,
@@ -175,6 +202,7 @@ pub(crate) struct SymbolTable {
     union_types: Vec<UnionType>,
 
     function_object_ranges: Vec<ObjectRangeRef>,
+    function_parameter_ranges: Vec<ObjectRangeRef>,
     global_objects: Vec<ObjectIdx>,
 
     function_types: Vec<FunctionType>,
@@ -186,6 +214,7 @@ impl SymbolTable {
             objects,
             functions,
             function_object_ranges,
+            function_parameter_ranges,
             global_objects,
             enum_types,
             structure_types,
@@ -233,6 +262,7 @@ impl SymbolTable {
             structure_types,
             union_types,
             function_object_ranges,
+            function_parameter_ranges,
             global_objects,
             function_types,
         }
@@ -258,6 +288,10 @@ impl SymbolTable {
 
     pub(crate) fn function_object_range(&self, fn_idx: FunctionIdx) -> ObjectRangeRef {
         self.function_object_ranges[fn_idx.0 as usize]
+    }
+
+    pub(crate) fn function_parameter_range(&self, fn_idx: FunctionIdx) -> ObjectRangeRef {
+        self.function_parameter_ranges[fn_idx.0 as usize]
     }
 
     pub(crate) fn object_range(&self, object_range: ObjectRangeRef) -> &[Object] {
@@ -419,6 +453,13 @@ impl ScopedSymtab {
 
     pub(crate) fn begin_function_definition(&self) -> ObjectIdx {
         ObjectIdx(self.objects.len() as u32)
+    }
+
+    pub(crate) fn end_function_parameters(&mut self, start: ObjectIdx, fn_idx: FunctionIdx) {
+        self.function_parameter_ranges
+            .resize_with(fn_idx.get_inner() + 1, || ObjectRangeRef(0, 0));
+        self.function_parameter_ranges[fn_idx.get_inner()] =
+            ObjectRangeRef(start.0, self.objects.len() as u32);
     }
 
     pub(crate) fn end_function_definition(&mut self, start: ObjectIdx, fn_idx: FunctionIdx) {

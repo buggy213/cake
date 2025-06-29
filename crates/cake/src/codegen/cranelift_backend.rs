@@ -2,9 +2,11 @@ use core::panic;
 use std::{
     cell::RefCell,
     collections::HashMap,
-    fs,
+    ffi::CString,
+    fs, iter,
     ops::{DerefMut, Index, Range},
     path::Path,
+    str::FromStr,
 };
 
 use cranelift::{
@@ -23,7 +25,7 @@ use cranelift::{
 use crate::{
     semantics::{
         self,
-        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode},
+        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
         resolver::ResolvedAST,
         symtab::{FunctionIdx, ObjectIdx, ObjectRangeRef, Scope, SymbolTable},
     },
@@ -48,9 +50,20 @@ impl From<BasicType> for Type {
 }
 
 // TODO: support static local variables
+// We place every object onto the stack
+// using Cranelift's def_var, use_var, ... is not suitable
+// because can take address of any variable
+// a mem2reg pass could make this more efficient
 struct Frame {
     object_range: ObjectRangeRef,
     stack_slots: Vec<StackSlot>,
+}
+
+impl Frame {
+    fn get_object_stack_slot(&self, object_idx: ObjectIdx) -> StackSlot {
+        let idx = object_idx.get_inner() - self.object_range.0 as usize;
+        self.stack_slots[idx]
+    }
 }
 
 impl Frame {
@@ -68,9 +81,6 @@ struct CraneliftBackend {
     // these are used for declare_data_in_func, declare_func_in_func
     // and get cleared after each function is built
     function_refs: Vec<FuncRef>,
-
-    // interior mutability to avoid borrowck complaints
-    fn_builder_ctx: RefCell<FunctionBuilderContext>,
 }
 
 impl CraneliftBackend {
@@ -100,8 +110,6 @@ impl CraneliftBackend {
             functions: Vec::new(),
 
             function_refs: Vec::new(),
-
-            fn_builder_ctx: RefCell::new(FunctionBuilderContext::new()),
         }
     }
 
@@ -192,21 +200,30 @@ impl CraneliftBackend {
         signature
     }
 
-    pub(crate) fn lower_translation_unit(&mut self, resolved_ast: &ResolvedAST) {
+    pub(crate) fn lower_translation_unit(
+        &mut self,
+        resolved_ast: &ResolvedAST,
+        function_builder_ctx: &mut FunctionBuilderContext,
+    ) {
         let root = &resolved_ast.nodes[0];
 
         match root {
             ResolvedASTNode::TranslationUnit { children } => {
                 for fn_defn_ref_idx in children.0..children.1 {
                     let fn_defn_ref = resolved_ast.ast_indices[fn_defn_ref_idx as usize];
-                    self.lower_function(resolved_ast, fn_defn_ref);
+                    self.lower_function(resolved_ast, fn_defn_ref, function_builder_ctx);
                 }
             }
             _ => panic!("corrupted AST"),
         }
     }
 
-    fn lower_function(&mut self, resolved_ast: &ResolvedAST, function_node_ref: NodeRef) {
+    fn lower_function(
+        &mut self,
+        resolved_ast: &ResolvedAST,
+        function_node_ref: NodeRef,
+        function_builder_ctx: &mut FunctionBuilderContext,
+    ) {
         let (cranelift_id, cake_id, body) = match &resolved_ast.nodes[function_node_ref.0 as usize]
         {
             ResolvedASTNode::FunctionDefinition {
@@ -236,8 +253,7 @@ impl CraneliftBackend {
             self.function_refs.push(function_ref);
         }
 
-        let mut fn_builder_ctx = self.fn_builder_ctx.borrow_mut();
-        let mut fn_builder = FunctionBuilder::new(&mut ctx.func, fn_builder_ctx.deref_mut());
+        let mut fn_builder = FunctionBuilder::new(&mut ctx.func, function_builder_ctx);
         let object_range = resolved_ast.symtab.function_object_range(*cake_id);
         let object_frame = Self::create_frame(&mut fn_builder, &resolved_ast.symtab, object_range);
 
@@ -245,6 +261,19 @@ impl CraneliftBackend {
         fn_builder.append_block_params_for_function_params(entry);
         fn_builder.switch_to_block(entry);
         fn_builder.seal_block(entry);
+
+        // move ssa parameters into stack slots
+        let function_parameter_objects = resolved_ast.symtab.function_parameter_range(*cake_id);
+        let enumerate = function_parameter_objects.into_iter().enumerate();
+        for (i, param_idx) in enumerate {
+            let stack_slot = object_frame.get_object_stack_slot(param_idx);
+            let cranelift_params = fn_builder.block_params(entry);
+            let cranelift_param = cranelift_params[i];
+            fn_builder.ins().stack_store(cranelift_param, stack_slot, 0);
+        }
+
+        // for param
+        // fn_builder.ins().stack_store();
 
         match &resolved_ast.nodes[body.0 as usize] {
             ResolvedASTNode::CompoundStatement { parent, stmts } => {
@@ -299,7 +328,7 @@ impl CraneliftBackend {
     }
 
     fn lower_statement(
-        &self,
+        &mut self,
         fn_builder: &mut FunctionBuilder,
         resolved_ast: &ResolvedAST,
         statement_ref: NodeRef,
@@ -334,7 +363,7 @@ impl CraneliftBackend {
     }
 
     fn lower_expr(
-        &self,
+        &mut self,
         fn_builder: &mut FunctionBuilder,
         resolved_ast: &ResolvedAST,
         expr_ref: ExprRef,
@@ -444,13 +473,15 @@ impl CraneliftBackend {
                 rhs,
             ) => {
                 // LHS should produce stack slot or global value
-                let stack_slot = self.lower_lvalue(*lhs);
+                let stack_slot = self.lower_lvalue(*lhs, resolved_ast, object_frame);
                 let cranelift_type = match result_type {
                     CType::BasicType { basic_type, .. } => (*basic_type).into(),
                     CType::PointerType { .. } => self.pointer_type(),
                     _ => todo!("support other types"),
                 };
-                fn_builder.ins().stack_load(cranelift_type, stack_slot, 0)
+                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
+                fn_builder.ins().stack_store(rhs_value, stack_slot, 0);
+                rhs_value
             }
             crate::semantics::resolved_ast::TypedExpressionNode::DirectFunctionCall(
                 result_type,
@@ -469,6 +500,35 @@ impl CraneliftBackend {
                 let rvals = fn_builder.ins().call(func_id, &arg_values);
                 fn_builder.inst_results(rvals)[0]
             }
+            crate::semantics::resolved_ast::TypedExpressionNode::ObjectIdentifier(
+                object_type,
+                object_idx,
+            ) => {
+                let stack_slot = object_frame.get_object_stack_slot(*object_idx);
+                let cranelift_type = match object_type {
+                    CType::BasicType { basic_type, .. } => (*basic_type).into(),
+                    CType::PointerType { .. } => self.pointer_type(),
+                    _ => todo!("other types"),
+                };
+                fn_builder.ins().stack_load(cranelift_type, stack_slot, 0)
+            }
+
+            TypedExpressionNode::StringLiteral(_, string) => {
+                let cranelift_id = self
+                    .object
+                    .declare_anonymous_data(false, false)
+                    .expect("failed to declare string literal");
+                let mut str_contents = DataDescription::new();
+                let c_string = CString::from_str(&string).expect("unable to convert to C string");
+                str_contents.define(Box::from(c_string.as_bytes_with_nul()));
+                self.object
+                    .define_data(cranelift_id, &str_contents)
+                    .expect("failed to define string literal");
+                let str_ptr = self
+                    .object
+                    .declare_data_in_func(cranelift_id, fn_builder.func);
+                fn_builder.ins().global_value(self.pointer_type(), str_ptr)
+            }
             other => {
                 dbg!(other);
                 todo!("other expressions")
@@ -476,8 +536,19 @@ impl CraneliftBackend {
         }
     }
 
-    fn lower_lvalue(&self, lvalue_ref: ExprRef) -> StackSlot {
-        todo!()
+    fn lower_lvalue(
+        &self,
+        lvalue_ref: ExprRef,
+        resolved_ast: &ResolvedAST,
+        object_frame: &Frame,
+    ) -> StackSlot {
+        let lvalue_expr = &resolved_ast.exprs[lvalue_ref];
+        match lvalue_expr {
+            TypedExpressionNode::ObjectIdentifier(lvalue_type, object_idx) => {
+                object_frame.get_object_stack_slot(*object_idx)
+            }
+            _ => todo!("other lvalue types"),
+        }
     }
 
     // most expressions don't need qualifier, and are scalar types
@@ -498,7 +569,7 @@ impl CraneliftBackend {
 
 #[cfg(test)]
 mod cranelift_backend_tests {
-    use std::{fs, path::Path};
+    use std::{fs, path::Path, process::Command};
 
     use cranelift::{
         module::{DataDescription, Linkage, Module},
@@ -557,6 +628,10 @@ mod cranelift_backend_tests {
         ctx.func.signature.returns.push(AbiParam::new(types::I32));
 
         let hello_world_str_val = object.declare_data_in_func(hello_world_str_id, &mut ctx.func);
+        let hello_world_str_val = object.declare_data_in_func(hello_world_str_id, &mut ctx.func);
+        let hello_world_str_val = object.declare_data_in_func(hello_world_str_id, &mut ctx.func);
+        let hello_world_str_val = object.declare_data_in_func(hello_world_str_id, &mut ctx.func);
+
         let puts_ref = object.declare_func_in_func(puts_id, &mut ctx.func);
 
         let mut fn_builder = FunctionBuilder::new(&mut ctx.func, &mut fn_builder_ctx);
@@ -575,6 +650,8 @@ mod cranelift_backend_tests {
         fn_builder.seal_block(entry);
 
         fn_builder.finalize();
+        let display = ctx.func.display();
+        print!("{display}");
         ctx.verify(object.isa()).expect("verification failed");
 
         let main_id = object
@@ -595,6 +672,48 @@ mod cranelift_backend_tests {
         fs::write("test.o", bytes).expect("failed to write to object file");
     }
 
+    fn test_harness(code: &'static str, expected_stdout: &'static str, expected_exit: i32) {
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+
+        dbg!(&resolved);
+
+        let mut cranelift_backend = CraneliftBackend::new("test_compile_expr");
+        let mut function_builder_ctx = FunctionBuilderContext::new();
+        cranelift_backend.process_global_symbols(&resolved.symtab);
+        cranelift_backend.lower_translation_unit(&resolved, &mut function_builder_ctx);
+        cranelift_backend.finish_and_write(Path::new("test.o"));
+
+        let mut compile_command = Command::new("clang");
+        compile_command
+            .arg("-no-pie") // cranelift is not generating position independent relocations
+            .arg("-o")
+            .arg("test")
+            .arg("test.o");
+
+        compile_command
+            .spawn()
+            .expect("unable to launch compiler")
+            .wait()
+            .expect("it didn't run");
+
+        let mut executable_command = Command::new("./test");
+        let output = executable_command
+            .output()
+            .expect("unable to launch executable");
+
+        let stdout_string =
+            String::from_utf8(output.stdout.clone()).expect("stdout contained weird chars");
+        dbg!(stdout_string);
+        dbg!(output.status.code());
+
+        assert_eq!(output.stdout.as_slice(), expected_stdout.as_bytes());
+        assert_eq!(
+            output.status.code().expect("unexpected signal"),
+            expected_exit
+        );
+    }
+
     #[test]
     fn test_compile_expr() {
         let code = r#"
@@ -603,15 +722,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        let input = ResolveHarnessInput { code };
-        let resolved = resolve_harness(input);
-
-        dbg!(&resolved);
-
-        let mut cranelift_backend = CraneliftBackend::new("test_compile_expr");
-        cranelift_backend.process_global_symbols(&resolved.symtab);
-        cranelift_backend.lower_translation_unit(&resolved);
-        cranelift_backend.finish_and_write(Path::new("test.o"));
+        test_harness(code, "", 11);
     }
 
     #[test]
@@ -626,15 +737,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        let input = ResolveHarnessInput { code };
-        let resolved = resolve_harness(input);
-
-        dbg!(&resolved);
-
-        let mut cranelift_backend = CraneliftBackend::new("test_compile_expr");
-        cranelift_backend.process_global_symbols(&resolved.symtab);
-        cranelift_backend.lower_translation_unit(&resolved);
-        cranelift_backend.finish_and_write(Path::new("test.o"));
+        test_harness(code, "", 5);
     }
 
     #[test]
@@ -649,14 +752,20 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        let input = ResolveHarnessInput { code };
-        let resolved = resolve_harness(input);
+        test_harness(code, "", 9);
+    }
 
-        dbg!(&resolved);
+    #[test]
+    fn test_compile_string_literal() {
+        let code = r#"
+        int puts(const char *str);
 
-        let mut cranelift_backend = CraneliftBackend::new("test_compile_expr");
-        cranelift_backend.process_global_symbols(&resolved.symtab);
-        cranelift_backend.lower_translation_unit(&resolved);
-        cranelift_backend.finish_and_write(Path::new("test.o"));
+        int main(int argc, char *argv[]) {
+            puts("Hello world!");
+            return 0;
+        }
+        "#;
+
+        test_harness(code, "Hello world!\n", 0);
     }
 }
