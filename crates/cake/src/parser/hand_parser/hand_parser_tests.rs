@@ -51,10 +51,8 @@ fn test_parse_expr_basic() {
         Box::new(ExpressionNode::Add(lhs, Box::new(rhs)))
     };
 
-    assert_eq!(
-        parse_expr(&mut toks, &mut state),
-        Ok(ExpressionNode::SimpleAssign(lhs, rhs))
-    );
+    let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
+    assert_eq!(parsed, ExpressionNode::SimpleAssign(lhs, rhs));
 }
 
 #[test]
@@ -82,7 +80,8 @@ fn test_parse_expr_precedence() {
         make_expr!(ExpressionNode::LogicalOr, a, rhs)
     };
 
-    assert_eq!(parse_expr(&mut toks, &mut state), Ok(expr));
+    let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
+    assert_eq!(parsed, expr);
 }
 
 #[test]
@@ -102,7 +101,8 @@ fn test_parse_expr_parenthesized() {
         make_expr!(ExpressionNode::Multiply, a, rhs)
     };
 
-    assert_eq!(parse_expr(&mut toks, &mut state), Ok(expr));
+    let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
+    assert_eq!(parsed, expr);
 }
 
 #[test]
@@ -132,7 +132,8 @@ fn test_parse_expr_cast() {
         ExpressionNode::Cast(Box::new(casted_expr), cast_target_type)
     };
 
-    assert_eq!(parse_expr(&mut toks, &mut state), Ok(expr));
+    let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
+    assert_eq!(parsed, expr);
 }
 
 #[test]
@@ -155,7 +156,8 @@ fn test_parse_subscript_expr() {
         make_expr!(ExpressionNode::SimpleAssign, lhs, rhs)
     };
 
-    assert_eq!(parse_expr(&mut toks, &mut state), Ok(expr));
+    let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
+    assert_eq!(parsed, expr);
 }
 
 #[test]
@@ -788,8 +790,6 @@ fn parse_bad_switch() {
     let _dummy_state = ParserState::new();
     let (mut toks, mut state) = text_test_harness(&bad_switch);
     let res = parse_statement(&mut toks, &mut state);
-
-    eprintln!("{:?}", res);
 
     assert!(res.is_err(), "Bad switch statement");
 }
