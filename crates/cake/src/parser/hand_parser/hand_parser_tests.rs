@@ -136,6 +136,29 @@ fn test_parse_expr_cast() {
 }
 
 #[test]
+fn test_parse_subscript_expr() {
+    let basic_expr = r#"buf[0] = 'a'"#;
+    let (mut toks, mut state) = text_test_harness(basic_expr);
+
+    let expr = {
+        let lhs = {
+            let buf = make_identifier(&mut state, "buf");
+            let index = make_constant!(Constant::Int, 0);
+            make_expr!(ExpressionNode::ArraySubscript, buf, index)
+        };
+
+        let rhs = {
+            let a = c"a".to_bytes()[0] as i32;
+            make_constant!(Constant::Int, a)
+        };
+
+        make_expr!(ExpressionNode::SimpleAssign, lhs, rhs)
+    };
+
+    assert_eq!(parse_expr(&mut toks, &mut state), Ok(expr));
+}
+
+#[test]
 fn test_parse_hello_world() {
     let hello_world = r#"
     int main(int argc, char **argv) {

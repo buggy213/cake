@@ -645,6 +645,9 @@ pub(super) fn resolve_expr(
 
             let a_ptr_b_int = a_type.is_object_pointer() && b_type.is_integer_type();
             let a_int_b_ptr = a_type.is_integer_type() && b_type.is_object_pointer();
+            dbg!(a_type);
+            dbg!(b_type);
+            dbg!(&resolved_expr_vec);
             if !a_ptr_b_int && !a_int_b_ptr {
                 return Err(ResolveExprError::BadSubscriptOperands);
             }
@@ -783,6 +786,22 @@ pub(super) fn resolve_expr(
                     let Object { object_type, .. } = symtab.get_object(*idx);
 
                     let object_type = object_type.clone();
+
+                    // handle array decay
+                    match object_type {
+                        CType::ArrayType { element_type, .. } => {
+                            let pointer_type = CType::PointerType {
+                                pointee_type: element_type,
+                                qualifier: TypeQualifier::empty(),
+                            };
+
+                            let array_decay = TypedExpressionNode::ArrayDecay(pointer_type, *idx);
+                            let array_decay_ref =
+                                ExprRef::from_push(resolved_expr_vec, array_decay);
+                            return Ok(array_decay_ref);
+                        }
+                        _ => (),
+                    }
 
                     let object = TypedExpressionNode::ObjectIdentifier(object_type, *idx);
                     let object_ref = ExprRef::from_push(resolved_expr_vec, object);
@@ -958,8 +977,17 @@ fn assignment_type_conversion(
     }
 
     match (base_type, target) {
-        // 2. converting void* to any pointer type and vise-versa (except function pointers)
-        (CType::PointerType { .. }, CType::PointerType { .. }) => {
+        (
+            CType::PointerType {
+                pointee_type: base_pointee,
+                ..
+            },
+            CType::PointerType {
+                pointee_type: target_pointee,
+                ..
+            },
+        ) => {
+            // 2. converting void* to any pointer type and vise-versa (except function pointers)
             if base_type.is_void_pointer() && !target.is_function_pointer() {
                 return Ok(insert_cast(target, base_ref, resolved_expr_vec));
             }
@@ -967,11 +995,21 @@ fn assignment_type_conversion(
             if !base_type.is_function_pointer() && target.is_void_pointer() {
                 return Ok(insert_cast(target, base_ref, resolved_expr_vec));
             }
+
+            // 3. up-converting a pointer (i.e. making it more qualified)
+            if CType::unqualified_equal(&base_pointee, &target_pointee) {
+                if target_pointee
+                    .qualifier()
+                    .contains(base_pointee.qualifier())
+                {
+                    return Ok(insert_cast(target, base_ref, resolved_expr_vec));
+                }
+            }
         }
         _ => (),
     }
 
-    // 3. converting 0 to any pointer type
+    // 4. converting 0 to any pointer type
     match (base, target) {
         (TypedExpressionNode::Constant(_, Constant::Int(0)), CType::PointerType { .. }) => {
             return Ok(insert_cast(target, base_ref, resolved_expr_vec));
@@ -979,8 +1017,10 @@ fn assignment_type_conversion(
         _ => (),
     }
 
-    // 4. converting any pointer type to bool
+    // 5. converting any pointer type to bool
     // (TODO: support native bool type?)
+    dbg!(base_type);
+    dbg!(target);
     return Err(ResolveExprError::InvalidAssignmentConversion);
 }
 

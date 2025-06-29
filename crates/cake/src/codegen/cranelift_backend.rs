@@ -15,8 +15,8 @@ use cranelift::{
     module::{DataDescription, DataId, FuncId, Module},
     object::ObjectModule,
     prelude::{
-        AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature, StackSlotData,
-        StackSlotKind, Type, Value,
+        AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, Signature,
+        StackSlotData, StackSlotKind, Type, Value,
         settings::{self, Flags},
         types,
     },
@@ -71,6 +71,11 @@ impl Frame {
         let stack_slot = self.stack_slots[object_idx.get_inner() - self.object_range.0 as usize];
         ins.stack_load(value_type, stack_slot, 0)
     }
+}
+
+enum StackOrMemory {
+    Stack(StackSlot),
+    Memory(Value),
 }
 
 struct CraneliftBackend {
@@ -255,7 +260,7 @@ impl CraneliftBackend {
 
         let mut fn_builder = FunctionBuilder::new(&mut ctx.func, function_builder_ctx);
         let object_range = resolved_ast.symtab.function_object_range(*cake_id);
-        let object_frame = Self::create_frame(&mut fn_builder, &resolved_ast.symtab, object_range);
+        let object_frame = self.create_frame(&mut fn_builder, &resolved_ast.symtab, object_range);
 
         let entry = fn_builder.create_block();
         fn_builder.append_block_params_for_function_params(entry);
@@ -296,6 +301,7 @@ impl CraneliftBackend {
     }
 
     fn create_frame(
+        &self,
         fn_builder: &mut FunctionBuilder,
         symtab: &SymbolTable,
         object_range: ObjectRangeRef,
@@ -304,11 +310,26 @@ impl CraneliftBackend {
         let mut stack_slots = Vec::new();
 
         for local_var in locals {
-            let (size, align) = match local_var.object_type {
+            let (size, align) = match &local_var.object_type {
                 CType::BasicType { basic_type, .. } => {
                     (basic_type.bytes(), basic_type.align().ilog2() as u8)
                 }
-                CType::PointerType { .. } => (8, 3),
+                CType::PointerType { .. } => (
+                    self.pointer_type().bytes(),
+                    self.pointer_type().bytes().ilog2() as u8,
+                ),
+                CType::ArrayType {
+                    size, element_type, ..
+                } => match element_type.as_ref() {
+                    CType::BasicType { basic_type, .. } => {
+                        (basic_type.bytes() * size, basic_type.align().ilog2() as u8)
+                    }
+                    CType::PointerType { .. } => (
+                        self.pointer_type().bytes(),
+                        self.pointer_type().bytes().ilog2() as u8,
+                    ),
+                    _ => todo!(),
+                },
                 _ => todo!(),
             };
 
@@ -473,14 +494,24 @@ impl CraneliftBackend {
                 rhs,
             ) => {
                 // LHS should produce stack slot or global value
-                let stack_slot = self.lower_lvalue(*lhs, resolved_ast, object_frame);
+                let location = self.lower_lvalue(fn_builder, *lhs, resolved_ast, object_frame);
                 let cranelift_type = match result_type {
                     CType::BasicType { basic_type, .. } => (*basic_type).into(),
                     CType::PointerType { .. } => self.pointer_type(),
                     _ => todo!("support other types"),
                 };
                 let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
-                fn_builder.ins().stack_store(rhs_value, stack_slot, 0);
+
+                match location {
+                    StackOrMemory::Stack(stack_slot) => {
+                        fn_builder.ins().stack_store(rhs_value, stack_slot, 0)
+                    }
+                    StackOrMemory::Memory(pointer) => {
+                        fn_builder
+                            .ins()
+                            .store(MemFlags::trusted(), rhs_value, pointer, 0)
+                    }
+                };
                 rhs_value
             }
             crate::semantics::resolved_ast::TypedExpressionNode::DirectFunctionCall(
@@ -529,6 +560,34 @@ impl CraneliftBackend {
                     .declare_data_in_func(cranelift_id, fn_builder.func);
                 fn_builder.ins().global_value(self.pointer_type(), str_ptr)
             }
+
+            TypedExpressionNode::PointerAdd(pointer_type, ptr_ref, int_ref) => {
+                let size = match pointer_type {
+                    CType::PointerType { pointee_type, .. } => match pointee_type.as_ref() {
+                        CType::BasicType { basic_type, .. } => basic_type.bytes(),
+                        _ => todo!(),
+                    },
+                    _ => unreachable!("corrupted resolvedastnode"),
+                };
+                let base = self.lower_expr(fn_builder, resolved_ast, *ptr_ref, object_frame);
+                let offset = self.lower_expr(fn_builder, resolved_ast, *int_ref, object_frame);
+                let offset = fn_builder.ins().imul_imm(offset, size as i64);
+                let offset = fn_builder.ins().sextend(self.pointer_type(), offset);
+                fn_builder.ins().iadd(base, offset)
+            }
+
+            TypedExpressionNode::ArrayDecay(_, object_idx) => {
+                let stack_slot = object_frame.get_object_stack_slot(*object_idx);
+                fn_builder
+                    .ins()
+                    .stack_addr(self.pointer_type(), stack_slot, 0)
+            }
+
+            TypedExpressionNode::Cast(_, expr, _) => {
+                // bruh
+                self.lower_expr(fn_builder, resolved_ast, *expr, object_frame)
+            }
+
             other => {
                 dbg!(other);
                 todo!("other expressions")
@@ -537,15 +596,21 @@ impl CraneliftBackend {
     }
 
     fn lower_lvalue(
-        &self,
+        &mut self,
+        fn_builder: &mut FunctionBuilder,
         lvalue_ref: ExprRef,
         resolved_ast: &ResolvedAST,
         object_frame: &Frame,
-    ) -> StackSlot {
+    ) -> StackOrMemory {
         let lvalue_expr = &resolved_ast.exprs[lvalue_ref];
         match lvalue_expr {
             TypedExpressionNode::ObjectIdentifier(lvalue_type, object_idx) => {
-                object_frame.get_object_stack_slot(*object_idx)
+                StackOrMemory::Stack(object_frame.get_object_stack_slot(*object_idx))
+            }
+            TypedExpressionNode::Dereference(lvalue_type, pointer) => {
+                let pointer_value =
+                    self.lower_expr(fn_builder, resolved_ast, *pointer, object_frame);
+                StackOrMemory::Memory(pointer_value)
             }
             _ => todo!("other lvalue types"),
         }
@@ -569,7 +634,12 @@ impl CraneliftBackend {
 
 #[cfg(test)]
 mod cranelift_backend_tests {
-    use std::{fs, path::Path, process::Command};
+    use std::{
+        fs,
+        io::Write,
+        path::Path,
+        process::{Command, Stdio},
+    };
 
     use cranelift::{
         module::{DataDescription, Linkage, Module},
@@ -672,7 +742,7 @@ mod cranelift_backend_tests {
         fs::write("test.o", bytes).expect("failed to write to object file");
     }
 
-    fn test_harness(code: &'static str, expected_stdout: &'static str, expected_exit: i32) {
+    fn compile_code(code: &'static str) {
         let input = ResolveHarnessInput { code };
         let resolved = resolve_harness(input);
 
@@ -696,11 +766,26 @@ mod cranelift_backend_tests {
             .expect("unable to launch compiler")
             .wait()
             .expect("it didn't run");
+    }
 
+    // TODO: support interactive input
+    fn run_code(stdin: &'static str, expected_stdout: &'static str, expected_exit: i32) {
         let mut executable_command = Command::new("./test");
-        let output = executable_command
-            .output()
+        let mut child = executable_command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
             .expect("unable to launch executable");
+
+        child
+            .stdin
+            .take()
+            .expect("child has no stdin")
+            .write(stdin.as_bytes())
+            .expect("failed to write to stdin");
+
+        let output = child.wait_with_output().expect("failed to wait on child");
 
         let stdout_string =
             String::from_utf8(output.stdout.clone()).expect("stdout contained weird chars");
@@ -712,6 +797,11 @@ mod cranelift_backend_tests {
             output.status.code().expect("unexpected signal"),
             expected_exit
         );
+    }
+
+    fn test_harness(code: &'static str, expected_stdout: &'static str, expected_exit: i32) {
+        compile_code(code);
+        run_code("", expected_stdout, expected_exit);
     }
 
     #[test]
@@ -767,5 +857,33 @@ mod cranelift_backend_tests {
         "#;
 
         test_harness(code, "Hello world!\n", 0);
+    }
+
+    #[test]
+    fn test_array() {
+        let code = r#"
+        int puts(const char *str);
+
+        int main(int argc, char *argv[]) {
+            char buf[8];
+            buf[0] = 'a';
+            buf[1] = 'r';
+            buf[2] = 'g';
+            buf[3] = 'c';
+            buf[4] = ':';
+            buf[5] = ' ';
+            buf[6] = '0' + argc;
+            buf[7] = '\0';
+
+            puts(buf);
+            
+            return 0;
+        }
+        "#;
+
+        /*
+
+        */
+        test_harness(code, "argc: 1\n", 0);
     }
 }

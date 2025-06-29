@@ -197,6 +197,7 @@ pub(crate) enum TypedExpressionNode {
 
     // TODO: add support for compound initializers
     // CompoundInitializer
+    ArrayDecay(CType, ObjectIdx),
     ObjectIdentifier(CType, ObjectIdx),
     FunctionIdentifier(CType, FunctionIdx),
 
@@ -259,6 +260,7 @@ impl TypedExpressionNode {
             | TypedExpressionNode::IndirectFunctionCall(qualified_type, _, _)
             | TypedExpressionNode::DotAccess(qualified_type, _, _)
             | TypedExpressionNode::ArrowAccess(qualified_type, _, _)
+            | TypedExpressionNode::ArrayDecay(qualified_type, _)
             | TypedExpressionNode::ObjectIdentifier(qualified_type, _)
             | TypedExpressionNode::FunctionIdentifier(qualified_type, _)
             | TypedExpressionNode::Constant(qualified_type, _)

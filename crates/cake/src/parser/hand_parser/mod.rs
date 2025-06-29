@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     parser::ast::Constant,
-    scanner::{lexeme_sets::c_lexemes::CLexemes, TokenStream},
+    scanner::{TokenStream, lexeme_sets::c_lexemes::CLexemes},
     semantics::symtab::{Scope, ScopeType, StorageClass, SymtabError},
     types::{
         EnumType, EnumTypeIdx, FunctionTypeIdx, StructureType, StructureTypeIdx, UnionType,
@@ -33,7 +33,10 @@ macro_rules! eat_or_error {
                 Ok(())
             }
             Some((other, _, _)) => Err(ParseError::UnexpectedToken(other)),
-            None => Err(ParseError::UnexpectedEOF),
+            None => {
+                panic!();
+                Err(ParseError::UnexpectedEOF)
+            }
         }
     };
 }
@@ -111,6 +114,9 @@ pub(crate) enum ParseError {
 
     #[error("redeclared typedef")]
     RedeclaredTypedef,
+
+    #[error("unable to parse character const")]
+    BadCharConst,
 }
 
 pub(crate) struct ParserState {
@@ -418,6 +424,51 @@ fn parse_integer_const(text: &str) -> Result<Constant, ParseError> {
     Err(ParseError::BadInt)
 }
 
+fn parse_char_const(text: &str) -> Constant {
+    let text = text
+        .strip_prefix('\'')
+        .and_then(|t| t.strip_suffix('\''))
+        .expect("lexer should ensure it is valid");
+
+    Constant::Int(text.as_bytes()[0] as i32)
+}
+
+fn parse_octal_char_const(text: &str) -> Constant {
+    let text = text
+        .strip_prefix("\'\\")
+        .and_then(|t| t.strip_suffix('\''))
+        .expect("lexer should ensure it is valid");
+
+    let result = i32::from_str_radix(text, 8).expect("lexer should ensure it is valid");
+
+    Constant::Int(result)
+}
+
+fn parse_escaped_char_const(text: &str) -> Result<Constant, ParseError> {
+    let text = text.strip_prefix("\'\\").and_then(|t| t.strip_suffix('\''));
+    if let Some(Some(char)) = text.map(|t| t.chars().next()) {
+        match char {
+            '\'' => todo!(),
+            '"' => todo!(),
+            '?' => todo!(),
+            'a' => todo!(),
+            'b' => todo!(),
+            'f' => todo!(),
+            'n' => todo!(),
+            'r' => todo!(),
+            't' => todo!(),
+            'v' => todo!(),
+            _ => {
+                debug_assert!(false, "lexer should ensure this doesn't occur");
+                Err(ParseError::BadCharConst)
+            }
+        }
+    } else {
+        debug_assert!(false, "lexer should ensure this doesn't occur");
+        Err(ParseError::BadCharConst)
+    }
+}
+
 fn parse_float_const(text: &str) -> Result<Constant, ParseError> {
     // TODO: support binary floating point numbers
     let mut text = text;
@@ -497,6 +548,16 @@ fn to_expr_part(
         CLexemes::IntegerConst => {
             let int_const = parse_integer_const(text)?;
             ExprPart::Atom(Atom::Constant(int_const))
+        }
+
+        CLexemes::CharConst => {
+            let char_const = parse_char_const(text);
+            ExprPart::Atom(Atom::Constant(char_const))
+        }
+
+        CLexemes::OctalCharConst => {
+            let char_const = parse_octal_char_const(text);
+            ExprPart::Atom(Atom::Constant(char_const))
         }
 
         CLexemes::FloatConst => {
@@ -733,6 +794,7 @@ fn parse_expr_rec(
                             _ => unreachable!(),
                         }
                     } else {
+                        panic!();
                         return Err(ParseError::UnexpectedToken(lexeme));
                     }
                 }
@@ -1079,8 +1141,10 @@ fn parse_declaration(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
+    dbg!(toks.peek());
     let declaration_specifiers = parse_declaration_specifiers(toks, state)?;
     // handle empty declaration case, see parse_external_declaration
+
     if matches!(toks.peek(), Some((CLexemes::Semicolon, _, _))) {
         eat_or_error!(toks, CLexemes::Semicolon)?;
         let empty_declaration =
@@ -1225,19 +1289,23 @@ fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CTy
         [BasicTypeLexeme::Short]
         | [BasicTypeLexeme::Signed, BasicTypeLexeme::Short]
         | [BasicTypeLexeme::Short, BasicTypeLexeme::Int]
-        | [BasicTypeLexeme::Signed, BasicTypeLexeme::Short, BasicTypeLexeme::Int] => {
-            Ok(CType::BasicType {
-                qualifier: TypeQualifier::empty(),
-                basic_type: BasicType::Short,
-            })
-        }
+        | [
+            BasicTypeLexeme::Signed,
+            BasicTypeLexeme::Short,
+            BasicTypeLexeme::Int,
+        ] => Ok(CType::BasicType {
+            qualifier: TypeQualifier::empty(),
+            basic_type: BasicType::Short,
+        }),
         [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Short]
-        | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Short, BasicTypeLexeme::Int] => {
-            Ok(CType::BasicType {
-                qualifier: TypeQualifier::empty(),
-                basic_type: BasicType::UShort,
-            })
-        }
+        | [
+            BasicTypeLexeme::Unsigned,
+            BasicTypeLexeme::Short,
+            BasicTypeLexeme::Int,
+        ] => Ok(CType::BasicType {
+            qualifier: TypeQualifier::empty(),
+            basic_type: BasicType::UShort,
+        }),
         [BasicTypeLexeme::Int]
         | [BasicTypeLexeme::Signed]
         | [BasicTypeLexeme::Signed, BasicTypeLexeme::Int] => Ok(CType::BasicType {
@@ -1253,25 +1321,51 @@ fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CTy
         [BasicTypeLexeme::Long]
         | [BasicTypeLexeme::Signed, BasicTypeLexeme::Long]
         | [BasicTypeLexeme::Long, BasicTypeLexeme::Int]
-        | [BasicTypeLexeme::Signed, BasicTypeLexeme::Long, BasicTypeLexeme::Int]
+        | [
+            BasicTypeLexeme::Signed,
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Int,
+        ]
         | [BasicTypeLexeme::Long, BasicTypeLexeme::Long]
-        | [BasicTypeLexeme::Signed, BasicTypeLexeme::Long, BasicTypeLexeme::Long]
-        | [BasicTypeLexeme::Long, BasicTypeLexeme::Long, BasicTypeLexeme::Int]
-        | [BasicTypeLexeme::Signed, BasicTypeLexeme::Long, BasicTypeLexeme::Long, BasicTypeLexeme::Int] => {
-            Ok(CType::BasicType {
-                qualifier: TypeQualifier::empty(),
-                basic_type: BasicType::Long,
-            })
-        }
+        | [
+            BasicTypeLexeme::Signed,
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Long,
+        ]
+        | [
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Int,
+        ]
+        | [
+            BasicTypeLexeme::Signed,
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Int,
+        ] => Ok(CType::BasicType {
+            qualifier: TypeQualifier::empty(),
+            basic_type: BasicType::Long,
+        }),
         [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long]
-        | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long, BasicTypeLexeme::Int]
-        | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long, BasicTypeLexeme::Long]
-        | [BasicTypeLexeme::Unsigned, BasicTypeLexeme::Long, BasicTypeLexeme::Long, BasicTypeLexeme::Int] => {
-            Ok(CType::BasicType {
-                qualifier: TypeQualifier::empty(),
-                basic_type: BasicType::ULong,
-            })
-        }
+        | [
+            BasicTypeLexeme::Unsigned,
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Int,
+        ]
+        | [
+            BasicTypeLexeme::Unsigned,
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Long,
+        ]
+        | [
+            BasicTypeLexeme::Unsigned,
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Long,
+            BasicTypeLexeme::Int,
+        ] => Ok(CType::BasicType {
+            qualifier: TypeQualifier::empty(),
+            basic_type: BasicType::ULong,
+        }),
         [BasicTypeLexeme::Double] | [BasicTypeLexeme::Long, BasicTypeLexeme::Double] => {
             Ok(CType::BasicType {
                 qualifier: TypeQualifier::empty(),
@@ -2151,7 +2245,7 @@ fn parse_array_declarator(
             }
             Some((CLexemes::IntegerConst, i, _)) => {
                 let size = i.parse::<u32>().map_err(|e| ParseError::BadArrayBound(e))?;
-
+                eat_or_error!(toks, CLexemes::IntegerConst)?;
                 eat_or_error!(toks, CLexemes::RBracket)?;
                 return Ok(ArrayDeclarator(qualifier, Some(size)));
             }
@@ -2323,6 +2417,7 @@ fn parse_statement(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode, ParseError> {
+    dbg!(toks.peek());
     // only 1-2 token lookahead required to check for what type of statement it is
     if is_lookahead_label(toks, state) {
         return parse_labeled_statement(toks, state);

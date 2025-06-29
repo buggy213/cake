@@ -222,7 +222,7 @@ fn resolve_declaration_type(
         // `void x;` is not a valid declaration
         CType::Void { .. } => return Ok(TypeCategory::Incomplete),
 
-        CType::IncompleteArrayType { element_type, .. } | CType::ArrayType { element_type, .. } => {
+        CType::IncompleteArrayType { element_type, .. } => {
             let element_type_category =
                 resolve_declaration_type(symtab, element_type, scope, parser_types)?;
 
@@ -232,6 +232,17 @@ fn resolve_declaration_type(
             }
 
             return Ok(TypeCategory::Incomplete);
+        }
+        CType::ArrayType { element_type, .. } => {
+            let element_type_category =
+                resolve_declaration_type(symtab, element_type, scope, parser_types)?;
+
+            // element type must be an object (not function, not incomplete)
+            if !matches!(element_type_category, TypeCategory::Object) {
+                return Err(ASTResolveError::ObjectTypeRequired);
+            }
+
+            return Ok(TypeCategory::Object);
         }
         CType::PointerType { pointee_type, .. } => {
             resolve_declaration_type(symtab, pointee_type, scope, parser_types)?;

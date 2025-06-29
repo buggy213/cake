@@ -6,16 +6,16 @@ use std::iter;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::parser::hand_parser::parse_expr;
 use crate::parser::hand_parser::ParserState;
+use crate::parser::hand_parser::parse_expr;
 use crate::platform::Platform;
 use crate::semantics::constexpr::preprocessor_constant_eval;
 
+use super::TokenStream;
 use super::lexeme_sets::c_lexemes::CLexemes;
 use super::lexeme_sets::c_preprocessor::CPreprocessor;
 use super::lexemes::LexemeSet;
 use super::table_scanner::DFAScanner;
-use super::TokenStream;
 
 use bumpalo::Bump;
 
@@ -1402,6 +1402,7 @@ impl Preprocessor {
                 self.perform_macro_substitution(owned_buffer, macro_stack);
 
             for item in fully_substituted {
+                dbg!(&item);
                 self.convert_pp_token_to_clexeme(item);
             }
         }

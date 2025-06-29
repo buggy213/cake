@@ -320,6 +320,7 @@ impl CType {
     }
 
     pub(crate) fn unqualified_equal(lhs: &CType, rhs: &CType) -> bool {
+        // TODO: make this more performant
         let mut lhs = lhs.clone();
         let mut rhs = rhs.clone();
         *lhs.qualifier_mut() = TypeQualifier::empty();
