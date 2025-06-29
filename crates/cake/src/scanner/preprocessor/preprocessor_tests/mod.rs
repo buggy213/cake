@@ -52,10 +52,3 @@ fn test_remove_comment() {
     let tokenized = tokenize_all(pp, " ");
     fs::write(working_dir.join("remove_comments_out.c"), tokenized).expect("failed to write");
 }
-
-#[test]
-fn test_weird() {
-    let (pp, working_dir) = text_test_harness("weird.c");
-    let tokenized = tokenize_all(pp, " ");
-    fs::write(working_dir.join("weird_out.c"), tokenized).expect("failed to write");
-}

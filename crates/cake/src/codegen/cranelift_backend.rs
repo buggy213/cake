@@ -15,7 +15,7 @@ use cranelift::{
     module::{DataDescription, DataId, FuncId, Module},
     object::ObjectModule,
     prelude::{
-        AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, Signature,
+        AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, Signature,
         StackSlotData, StackSlotKind, Type, Value,
         settings::{self, Flags},
         types,
@@ -198,6 +198,7 @@ impl CraneliftBackend {
             crate::types::CType::PointerType { .. } => {
                 signature.returns.push(AbiParam::new(self.pointer_type()));
             }
+            crate::types::CType::Void { .. } => (),
             _ => todo!("support non-scalar return types"),
         }
 
@@ -248,6 +249,7 @@ impl CraneliftBackend {
             .declarations()
             .get_function_decl(cranelift_id)
             .signature;
+        let is_void = declared_signature.returns.is_empty();
 
         let mut ctx = self.object.make_context();
         ctx.func.signature = declared_signature.clone();
@@ -277,17 +279,9 @@ impl CraneliftBackend {
             fn_builder.ins().stack_store(cranelift_param, stack_slot, 0);
         }
 
-        // for param
-        // fn_builder.ins().stack_store();
-
-        match &resolved_ast.nodes[body.0 as usize] {
-            ResolvedASTNode::CompoundStatement { parent, stmts } => {
-                for stmt_ref_idx in stmts.0..stmts.1 {
-                    let stmt_ref = resolved_ast.ast_indices[stmt_ref_idx as usize];
-                    self.lower_statement(&mut fn_builder, resolved_ast, stmt_ref, &object_frame);
-                }
-            }
-            _ => panic!("bad function defn body node reference"),
+        self.lower_statement(&mut fn_builder, resolved_ast, body, &object_frame);
+        if is_void {
+            fn_builder.ins().return_(&[]);
         }
 
         fn_builder.finalize();
@@ -379,7 +373,87 @@ impl CraneliftBackend {
                 fn_builder.ins().return_(returns);
             }
 
-            _ => todo!("other statement types"),
+            ResolvedASTNode::IfStatement {
+                parent,
+                condition,
+                taken,
+                not_taken,
+            } => {
+                let taken_block = fn_builder.create_block();
+                let not_taken_block = fn_builder.create_block();
+                let postdominator = fn_builder.create_block();
+
+                let condition = self.lower_expr(fn_builder, resolved_ast, *condition, object_frame);
+
+                fn_builder
+                    .ins()
+                    .brif(condition, taken_block, &[], not_taken_block, &[]);
+                fn_builder.seal_block(taken_block);
+                fn_builder.seal_block(not_taken_block);
+
+                fn_builder.switch_to_block(taken_block);
+                self.lower_statement(fn_builder, resolved_ast, *taken, object_frame);
+                fn_builder.ins().jump(postdominator, &[]);
+
+                fn_builder.switch_to_block(not_taken_block);
+                if let Some(not_taken_node) = *not_taken {
+                    self.lower_statement(fn_builder, resolved_ast, not_taken_node, object_frame);
+                }
+                fn_builder.ins().jump(postdominator, &[]);
+
+                fn_builder.seal_block(postdominator);
+                fn_builder.switch_to_block(postdominator);
+            }
+
+            ResolvedASTNode::CompoundStatement { parent, stmts } => {
+                for stmt_ref_idx in stmts.0..stmts.1 {
+                    let stmt_ref = resolved_ast.ast_indices[stmt_ref_idx as usize];
+                    self.lower_statement(fn_builder, resolved_ast, stmt_ref, &object_frame);
+                }
+            }
+
+            while_stmt @ ResolvedASTNode::WhileStatement {
+                parent,
+                condition,
+                body,
+            }
+            | while_stmt @ ResolvedASTNode::DoWhileStatement {
+                parent,
+                condition,
+                body,
+            } => {
+                let body_block = fn_builder.create_block();
+                let after_block = fn_builder.create_block();
+
+                if matches!(while_stmt, ResolvedASTNode::WhileStatement { .. }) {
+                    let controlling_value =
+                        self.lower_expr(fn_builder, resolved_ast, *condition, object_frame);
+
+                    fn_builder
+                        .ins()
+                        .brif(controlling_value, body_block, &[], after_block, &[]);
+                } else {
+                    fn_builder.ins().jump(body_block, &[]);
+                }
+
+                fn_builder.switch_to_block(body_block);
+
+                self.lower_statement(fn_builder, resolved_ast, *body, object_frame);
+                let controlling_value =
+                    self.lower_expr(fn_builder, resolved_ast, *condition, object_frame);
+                fn_builder
+                    .ins()
+                    .brif(controlling_value, body_block, &[], after_block, &[]);
+
+                fn_builder.seal_block(body_block);
+                fn_builder.seal_block(after_block);
+                fn_builder.switch_to_block(after_block);
+            }
+
+            statement => {
+                dbg!(statement);
+                todo!("other statement types")
+            }
         }
     }
 
@@ -529,7 +603,12 @@ impl CraneliftBackend {
                 }
 
                 let rvals = fn_builder.ins().call(func_id, &arg_values);
-                fn_builder.inst_results(rvals)[0]
+                if result_type.is_void() {
+                    // TODO: fix this. void expressions should be allowed
+                    fn_builder.ins().iconst(self.pointer_type(), 0)
+                } else {
+                    fn_builder.inst_results(rvals)[0]
+                }
             }
             crate::semantics::resolved_ast::TypedExpressionNode::ObjectIdentifier(
                 object_type,
@@ -586,6 +665,26 @@ impl CraneliftBackend {
             TypedExpressionNode::Cast(_, expr, _) => {
                 // bruh
                 self.lower_expr(fn_builder, resolved_ast, *expr, object_frame)
+            }
+
+            TypedExpressionNode::Equal(_, lhs, rhs) => {
+                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
+                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
+
+                fn_builder.ins().icmp(IntCC::Equal, lhs_value, rhs_value)
+            }
+
+            TypedExpressionNode::Dereference(value_type, pointer) => {
+                let pointer_value =
+                    self.lower_expr(fn_builder, resolved_ast, *pointer, object_frame);
+                let cranelift_type = match value_type {
+                    CType::BasicType { basic_type, .. } => (*basic_type).into(),
+                    CType::PointerType { .. } => self.pointer_type(),
+                    _ => todo!(),
+                };
+                fn_builder
+                    .ins()
+                    .load(cranelift_type, MemFlags::trusted(), pointer_value, 0)
             }
 
             other => {
@@ -769,8 +868,14 @@ mod cranelift_backend_tests {
     }
 
     // TODO: support interactive input
-    fn run_code(stdin: &'static str, expected_stdout: &'static str, expected_exit: i32) {
+    fn run_code(
+        stdin: &'static str,
+        args: &'static [&'static str],
+        expected_stdout: &'static str,
+        expected_exit: i32,
+    ) {
         let mut executable_command = Command::new("./test");
+        let executable_command = executable_command.args(args);
         let mut child = executable_command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -801,7 +906,7 @@ mod cranelift_backend_tests {
 
     fn test_harness(code: &'static str, expected_stdout: &'static str, expected_exit: i32) {
         compile_code(code);
-        run_code("", expected_stdout, expected_exit);
+        run_code("", &[], expected_stdout, expected_exit);
     }
 
     #[test]
@@ -880,10 +985,86 @@ mod cranelift_backend_tests {
             return 0;
         }
         "#;
-
-        /*
-
-        */
         test_harness(code, "argc: 1\n", 0);
+    }
+
+    #[test]
+    fn test_conditional() {
+        let code = r#"
+        int puts(const char *str);
+        char *strcpy(char *dest, const char *src);
+
+        int main(int argc, char *argv[]) {
+            char buf[64];
+            strcpy(buf, "argc=4? x");
+            
+            if (argc == 4) {
+                buf[8] = 'y';
+            }
+            else {
+                buf[8] = 'n';
+            }
+            puts(buf);
+            return 0;
+        }
+        "#;
+
+        compile_code(code);
+        run_code("", &[], "argc=4? n\n", 0);
+        run_code("", &["x", "x", "x"], "argc=4? y\n", 0);
+    }
+
+    #[test]
+    fn test_while() {
+        let code = r#"
+        int puts(const char *str);
+        void my_strcpy(char *dest, const char *src) {
+            while (*src) {
+                *dest = *src;
+                dest = dest + 1;
+                src = src + 1;
+            }
+        }
+
+        int main(int argc, char *argv[]) {
+            char buf[32];
+            my_strcpy(buf, "hello from my_strcpy");
+            puts(buf);
+            return 0;
+        }
+        "#;
+
+        test_harness(code, "hello from my_strcpy\n", 0);
+    }
+
+    #[test]
+    fn test_calculator() {
+        let code = r#"
+        int puts(const char *str);
+        char *gets(char *str);
+        char *strcpy(char *dest, const char *src);
+        int atoi(const char *str);
+
+        int main(int argc, char *argv[]) {
+            char buf[32];
+            int a;
+            int b;
+            puts("Enter first number: ");
+            gets(buf);
+            a = atoi(buf);
+            puts("Enter second number: ");
+            gets(buf);
+            b = atoi(buf);
+            strcpy(buf, "The answer is: ");
+            buf[15] = '0' + a + b;
+            buf[16] = '\0';
+
+            puts(buf);
+
+            return 0;
+        }
+        "#;
+
+        compile_code(code);
     }
 }

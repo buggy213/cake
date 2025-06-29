@@ -871,13 +871,13 @@ fn resolve_ast_inner(
             let while_statement_node = if matches!(ast, ASTNode::WhileStatement(_, _, _)) {
                 ResolvedASTNode::WhileStatement {
                     parent,
-                    condition: todo!(),
+                    condition: controlling_expr_ref,
                     body: body_ref,
                 }
             } else {
                 ResolvedASTNode::DoWhileStatement {
                     parent,
-                    condition: todo!(),
+                    condition: controlling_expr_ref,
                     body: body_ref,
                 }
             };
