@@ -1,5 +1,5 @@
 use resolve_decls::{resolve_declaration, resolve_empty_declaration, resolve_function_definition};
-use resolve_exprs::{resolve_expr, resolve_integer_constant_expression, ResolveExprError};
+use resolve_exprs::{ResolveExprError, resolve_expr, resolve_integer_constant_expression};
 use std::mem::MaybeUninit;
 use thiserror::Error;
 
@@ -307,7 +307,9 @@ impl ResolverState {
             }
             _ => {
                 // Internal compiler error
-                panic!("Cannot close iteration statement when current context is not an iteration statement");
+                panic!(
+                    "Cannot close iteration statement when current context is not an iteration statement"
+                );
             }
         }
     }
@@ -510,6 +512,7 @@ fn resolve_ast_inner(
     match ast {
         ASTNode::TranslationUnit(_, _) => unreachable!("Must call resolve_ast_top"),
         ASTNode::FunctionDefinition(fn_declaration, body) => {
+            let begin_token = resolve_state.scoped_symtab.begin_function_definition();
             let func_idx = resolve_function_definition(
                 &mut resolve_state.scoped_symtab,
                 &fn_declaration,
@@ -558,7 +561,9 @@ fn resolve_ast_inner(
                 body: body_ref,
             };
             intermediate_ast.nodes[node_idx].write(fn_definition_node);
-
+            resolve_state
+                .scoped_symtab
+                .end_function_definition(begin_token, func_idx);
             Ok(node_ref)
         }
         ASTNode::Declaration(declaration_list) => unreachable!("call resolve_ast_declaration"),
@@ -583,7 +588,7 @@ fn resolve_ast_inner(
                 labelee_node,
             ) {
                 Err(e @ SymtabError::LabelAlreadyDeclared(_)) => {
-                    return Err(ASTResolveError::RedeclaredLabel(e))
+                    return Err(ASTResolveError::RedeclaredLabel(e));
                 }
                 Err(e) => return Err(ASTResolveError::SymtabError(e)),
 
@@ -1086,11 +1091,11 @@ mod resolve_exprs;
 #[cfg(test)]
 pub(crate) mod resolve_ast_tests {
     use crate::{
-        parser::hand_parser::{parse_translation_unit, CTokenStream, ParserState},
+        parser::hand_parser::{CTokenStream, ParserState, parse_translation_unit},
         scanner::{lexeme_sets::c_lexemes::CLexemes, table_scanner::DFAScanner},
     };
 
-    use super::{resolve_ast, ResolvedAST};
+    use super::{ResolvedAST, resolve_ast};
 
     pub(crate) struct ResolveHarnessInput {
         pub(crate) code: &'static str,
@@ -1109,7 +1114,6 @@ pub(crate) mod resolve_ast_tests {
 
         // compare
         dbg!(&resolve_result);
-        panic!();
 
         resolve_result
     }

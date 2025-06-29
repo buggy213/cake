@@ -653,10 +653,22 @@ pub(crate) fn resolve_function_definition(
     let adjusted_type = adjust_function_type(symtab, parser_type_idx, parser_types)?;
 
     // parameter types must not be incomplete at definition time
-    for (_, ty) in &adjusted_type.parameter_types {
+    for (name, ty) in &adjusted_type.parameter_types {
         if ty.type_category(symtab) == TypeCategory::Incomplete {
             return Err(ASTResolveError::IncompleteParameter);
         }
+
+        // need to put formal parameters into symbol table
+        let parameter = Object {
+            object_type: ty.clone(),
+            linkage: Linkage::None,
+        };
+        _ = symtab.add_object(
+            adjusted_type.prototype_scope,
+            name.clone()
+                .expect("TODO: unnamed parameters should be allowed, technically, i guess"),
+            parameter,
+        );
     }
 
     // see resolve_declaration function path, same issue
@@ -664,7 +676,7 @@ pub(crate) fn resolve_function_definition(
         StorageClass::Extern | StorageClass::None => false,
         StorageClass::Static => true,
         StorageClass::Auto | StorageClass::Register => {
-            return Err(ASTResolveError::BadFunctionStorageClass)
+            return Err(ASTResolveError::BadFunctionStorageClass);
         }
     };
 

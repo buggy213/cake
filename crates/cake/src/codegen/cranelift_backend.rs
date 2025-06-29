@@ -1,24 +1,33 @@
 use core::panic;
-use std::{cell::RefCell, collections::HashMap, fs, path::Path};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fs,
+    ops::{DerefMut, Index, Range},
+    path::Path,
+};
 
 use cranelift::{
+    codegen::ir::{FuncRef, StackSlot},
+    frontend::FuncInstBuilder,
     module::{DataDescription, DataId, FuncId, Module},
     object::ObjectModule,
     prelude::{
-        AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature, Type, Value,
+        AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature, StackSlotData,
+        StackSlotKind, Type, Value,
         settings::{self, Flags},
         types,
     },
 };
 
 use crate::{
-    semantics::resolved_ast::{ExprRef, NodeRef, ResolvedASTNode},
     semantics::{
         self,
+        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode},
         resolver::ResolvedAST,
-        symtab::{Scope, SymbolTable},
+        symtab::{FunctionIdx, ObjectIdx, ObjectRangeRef, Scope, SymbolTable},
     },
-    types::{BasicType, FunctionType, TypeQualifier},
+    types::{BasicType, CType, FunctionType, TypeQualifier},
 };
 
 impl From<BasicType> for Type {
@@ -38,12 +47,30 @@ impl From<BasicType> for Type {
     }
 }
 
+// TODO: support static local variables
+struct Frame {
+    object_range: ObjectRangeRef,
+    stack_slots: Vec<StackSlot>,
+}
+
+impl Frame {
+    fn value(&self, ins: FuncInstBuilder, value_type: Type, object_idx: ObjectIdx) -> Value {
+        let stack_slot = self.stack_slots[object_idx.get_inner() - self.object_range.0 as usize];
+        ins.stack_load(value_type, stack_slot, 0)
+    }
+}
+
 struct CraneliftBackend {
     object: ObjectModule,
     data: HashMap<String, DataId>,
-    functions: HashMap<String, FuncId>,
+    functions: Vec<FuncId>,
 
-    fn_builder_ctx: FunctionBuilderContext,
+    // these are used for declare_data_in_func, declare_func_in_func
+    // and get cleared after each function is built
+    function_refs: Vec<FuncRef>,
+
+    // interior mutability to avoid borrowck complaints
+    fn_builder_ctx: RefCell<FunctionBuilderContext>,
 }
 
 impl CraneliftBackend {
@@ -70,9 +97,11 @@ impl CraneliftBackend {
         CraneliftBackend {
             object,
             data: HashMap::new(),
-            functions: HashMap::new(),
+            functions: Vec::new(),
 
-            fn_builder_ctx: FunctionBuilderContext::new(),
+            function_refs: Vec::new(),
+
+            fn_builder_ctx: RefCell::new(FunctionBuilderContext::new()),
         }
     }
 
@@ -104,116 +133,59 @@ impl CraneliftBackend {
                 .expect("failed to declare data");
 
             // TODO: support initializer
-            let init = DataDescription::new();
-            init.define_zeroinit(size);
         }
 
-        /*
-        for (name, global_symbol) in symtab.all_symbols_at_scope(Scope::new_file_scope()) {
-            match global_symbol {
-                semantics::symtab::Symbol::Constant(_) => (), // no-op, as these are folded into resolved expressions
-                semantics::symtab::Symbol::Object {
-                    object_type,
-                    linkage,
-                } => {
-                    let linkage = match linkage {
-                        semantics::symtab::Linkage::External => cranelift::module::Linkage::Export,
-                        semantics::symtab::Linkage::Internal => cranelift::module::Linkage::Local,
-                        semantics::symtab::Linkage::None => {
-                            panic!("top-level decls should have defined linkage")
-                        }
-                    };
-
-                    // TODO: support initializer
-                    let object_type = symtab.get_qualified_type(*object_type);
-                    let object_type_cranelift: Type = match &object_type.base_type {
-                        semantics::types::CType::BasicType { basic_type } => (*basic_type).into(),
-                        semantics::types::CType::PointerType { pointee_type } => {
-                            self.pointer_type()
-                        }
-                        _ => todo!("support non-scalar global objects"),
-                    };
-
-                    let writable = !object_type.qualifier.contains(TypeQualifier::Const);
-                    let object_id = self
-                        .object
-                        .declare_data(&name, linkage, writable, false)
-                        .expect("failed to insert data (ADD ERROR)");
-
-                    // TODO: consider alignment
-                    let mut init = DataDescription::new();
-                    init.define_zeroinit(object_type_cranelift.bytes() as usize);
-                    self.object
-                        .define_data(object_id, &init)
-                        .expect("failed to define data (ADD ERROR)");
-
-                    self.data.insert(name.clone(), object_id);
+        let functions = symtab.functions();
+        let function_names = symtab.function_names();
+        for (function, function_name) in std::iter::zip(functions, function_names) {
+            let linkage = if function.internal_linkage {
+                cranelift::module::Linkage::Local
+            } else {
+                if function.defined {
+                    cranelift::module::Linkage::Export
+                } else {
+                    cranelift::module::Linkage::Import
                 }
-                semantics::symtab::Symbol::Function {
-                    function_type,
-                    internal_linkage,
-                    defined,
-                } => {
-                    let linkage;
-                    if *internal_linkage {
-                        linkage = cranelift::module::Linkage::Local;
-                    } else {
-                        if *defined {
-                            linkage = cranelift::module::Linkage::Export;
-                        } else {
-                            linkage = cranelift::module::Linkage::Import;
-                        }
-                    }
+            };
 
-                    let fn_type = match symtab.get_canonical_type(*function_type) {
-                        CanonicalType::FunctionType(inner) => inner,
-                        _ => panic!("corrupted symtab type table"),
-                    };
+            let fn_type = symtab.get_function_type(function.function_type);
+            let signature = self.lower_function_signature(fn_type);
 
-                    let signature = self.lower_function_signature(fn_type);
-                    let fn_id = self
-                        .object
-                        .declare_function(name, linkage, &signature)
-                        .expect("unable to insert function (ADD ERROR)");
+            let fn_id = self
+                .object
+                .declare_function(&function_name, linkage, &signature)
+                .expect("failed to declare function");
 
-                    self.functions.insert(name.clone(), fn_id);
-                }
-            }
+            self.functions.push(fn_id);
         }
-        */
     }
 
-    fn lower_function_signature(&self, fn_type: &FunctionTypeInner) -> Signature {
+    fn lower_function_signature(&self, fn_type: &FunctionType) -> Signature {
         let mut signature = self.object.make_signature();
 
         // TODO: non-scalar return / parameter types
-        match fn_type.return_type.base_type {
-            semantics::types::CType::Void => (),
-            semantics::types::CType::PointerType { .. } => {
-                signature.returns.push(AbiParam::new(self.pointer_type()));
-            }
-            semantics::types::CType::BasicType { basic_type } => {
-                let cranelift_type = basic_type.into();
-                signature.returns.push(AbiParam::new(cranelift_type));
-            }
-            _ => {
-                todo!("support non-scalar return types")
+        for (_, param_type) in &fn_type.parameter_types {
+            match param_type {
+                crate::types::CType::BasicType { basic_type, .. } => {
+                    let cranelift_type = (*basic_type).into();
+                    signature.params.push(AbiParam::new(cranelift_type));
+                }
+                crate::types::CType::PointerType { .. } => {
+                    signature.params.push(AbiParam::new(self.pointer_type()));
+                }
+                _ => todo!("support non-scalar parameter types"),
             }
         }
 
-        for (_, param_type) in &fn_type.parameter_types {
-            match param_type.base_type {
-                semantics::types::CType::PointerType { .. } => {
-                    signature.params.push(AbiParam::new(self.pointer_type()));
-                }
-                semantics::types::CType::BasicType { basic_type } => {
-                    let cranelift_type = basic_type.into();
-                    signature.params.push(AbiParam::new(cranelift_type));
-                }
-                _ => {
-                    todo!("support non-scalar parameter types")
-                }
+        match fn_type.return_type {
+            crate::types::CType::BasicType { basic_type, .. } => {
+                let cranelift_type = basic_type.into();
+                signature.returns.push(AbiParam::new(cranelift_type));
             }
+            crate::types::CType::PointerType { .. } => {
+                signature.returns.push(AbiParam::new(self.pointer_type()));
+            }
+            _ => todo!("support non-scalar return types"),
         }
 
         dbg!(&signature);
@@ -224,7 +196,7 @@ impl CraneliftBackend {
         let root = &resolved_ast.nodes[0];
 
         match root {
-            ResolvedASTNode::TranslationUnit { children, scope } => {
+            ResolvedASTNode::TranslationUnit { children } => {
                 for fn_defn_ref_idx in children.0..children.1 {
                     let fn_defn_ref = resolved_ast.ast_indices[fn_defn_ref_idx as usize];
                     self.lower_function(resolved_ast, fn_defn_ref);
@@ -235,14 +207,15 @@ impl CraneliftBackend {
     }
 
     fn lower_function(&mut self, resolved_ast: &ResolvedAST, function_node_ref: NodeRef) {
-        let (cranelift_id, body) = match &resolved_ast.nodes[function_node_ref.0 as usize] {
+        let (cranelift_id, cake_id, body) = match &resolved_ast.nodes[function_node_ref.0 as usize]
+        {
             ResolvedASTNode::FunctionDefinition {
                 parent,
-                ident,
                 body,
+                symbol_idx,
             } => {
-                let cranelift_id = self.functions[&ident.name];
-                (cranelift_id, *body)
+                let cranelift_id = self.functions[*symbol_idx];
+                (cranelift_id, symbol_idx, *body)
             }
             _ => panic!("bad node reference"),
         };
@@ -257,7 +230,16 @@ impl CraneliftBackend {
         let mut ctx = self.object.make_context();
         ctx.func.signature = declared_signature.clone();
 
-        let mut fn_builder = FunctionBuilder::new(&mut ctx.func, &mut self.fn_builder_ctx);
+        self.function_refs.clear();
+        for func_id in &self.functions {
+            let function_ref = self.object.declare_func_in_func(*func_id, &mut ctx.func);
+            self.function_refs.push(function_ref);
+        }
+
+        let mut fn_builder_ctx = self.fn_builder_ctx.borrow_mut();
+        let mut fn_builder = FunctionBuilder::new(&mut ctx.func, fn_builder_ctx.deref_mut());
+        let object_range = resolved_ast.symtab.function_object_range(*cake_id);
+        let object_frame = Self::create_frame(&mut fn_builder, &resolved_ast.symtab, object_range);
 
         let entry = fn_builder.create_block();
         fn_builder.append_block_params_for_function_params(entry);
@@ -265,16 +247,10 @@ impl CraneliftBackend {
         fn_builder.seal_block(entry);
 
         match &resolved_ast.nodes[body.0 as usize] {
-            ResolvedASTNode::CompoundStatement {
-                parent,
-                stmts,
-                scope,
-            } => {
-                // TODO: declare variables in scope
-
+            ResolvedASTNode::CompoundStatement { parent, stmts } => {
                 for stmt_ref_idx in stmts.0..stmts.1 {
                     let stmt_ref = resolved_ast.ast_indices[stmt_ref_idx as usize];
-                    Self::lower_statement(&mut fn_builder, resolved_ast, stmt_ref);
+                    self.lower_statement(&mut fn_builder, resolved_ast, stmt_ref, &object_frame);
                 }
             }
             _ => panic!("bad function defn body node reference"),
@@ -290,25 +266,60 @@ impl CraneliftBackend {
             .expect("failed to compile function");
     }
 
+    fn create_frame(
+        fn_builder: &mut FunctionBuilder,
+        symtab: &SymbolTable,
+        object_range: ObjectRangeRef,
+    ) -> Frame {
+        let locals = symtab.object_range(object_range);
+        let mut stack_slots = Vec::new();
+
+        for local_var in locals {
+            let (size, align) = match local_var.object_type {
+                CType::BasicType { basic_type, .. } => {
+                    (basic_type.bytes(), basic_type.align().ilog2() as u8)
+                }
+                CType::PointerType { .. } => (8, 3),
+                _ => todo!(),
+            };
+
+            let stack_slot_data = StackSlotData {
+                kind: StackSlotKind::ExplicitSlot,
+                size,
+                align_shift: align,
+            };
+            let stack_slot = fn_builder.create_sized_stack_slot(stack_slot_data);
+            stack_slots.push(stack_slot);
+        }
+
+        Frame {
+            object_range,
+            stack_slots,
+        }
+    }
+
     fn lower_statement(
+        &self,
         fn_builder: &mut FunctionBuilder,
         resolved_ast: &ResolvedAST,
         statement_ref: NodeRef,
+
+        object_frame: &Frame,
     ) {
         match &resolved_ast.nodes[statement_ref.0 as usize] {
-            crate::parser::ast::ResolvedASTNode::ExpressionStatement {
+            crate::semantics::resolved_ast::ResolvedASTNode::ExpressionStatement {
                 parent,
                 expr,
-                scope,
             } => {
-                Self::lower_expr(fn_builder, resolved_ast, *expr);
+                self.lower_expr(fn_builder, resolved_ast, *expr, object_frame);
             }
-            crate::parser::ast::ResolvedASTNode::ReturnStatement {
+            crate::semantics::resolved_ast::ResolvedASTNode::ReturnStatement {
                 parent,
                 return_value,
             } => {
                 let returns: &[Value] = if let Some(return_value) = return_value {
-                    let cranelift_value = Self::lower_expr(fn_builder, resolved_ast, *return_value);
+                    let cranelift_value =
+                        self.lower_expr(fn_builder, resolved_ast, *return_value, object_frame);
                     dbg!(cranelift_value);
                     &[cranelift_value]
                 } else {
@@ -323,14 +334,21 @@ impl CraneliftBackend {
     }
 
     fn lower_expr(
+        &self,
         fn_builder: &mut FunctionBuilder,
         resolved_ast: &ResolvedAST,
         expr_ref: ExprRef,
+
+        object_frame: &Frame,
     ) -> Value {
-        match &resolved_ast.exprs[expr_ref.0 as usize] {
-            crate::parser::ast::TypedExpressionNode::Multiply(result_type, lhs, rhs) => {
-                let lhs_value = Self::lower_expr(fn_builder, resolved_ast, *lhs);
-                let rhs_value = Self::lower_expr(fn_builder, resolved_ast, *rhs);
+        match &resolved_ast.exprs[expr_ref] {
+            crate::semantics::resolved_ast::TypedExpressionNode::Multiply(
+                result_type,
+                lhs,
+                rhs,
+            ) => {
+                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
+                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -344,9 +362,9 @@ impl CraneliftBackend {
 
                 product
             }
-            crate::parser::ast::TypedExpressionNode::Divide(result_type, lhs, rhs) => {
-                let lhs_value = Self::lower_expr(fn_builder, resolved_ast, *lhs);
-                let rhs_value = Self::lower_expr(fn_builder, resolved_ast, *rhs);
+            crate::semantics::resolved_ast::TypedExpressionNode::Divide(result_type, lhs, rhs) => {
+                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
+                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -360,9 +378,9 @@ impl CraneliftBackend {
 
                 quotient
             }
-            crate::parser::ast::TypedExpressionNode::Modulo(result_type, lhs, rhs) => {
-                let lhs_value = Self::lower_expr(fn_builder, resolved_ast, *lhs);
-                let rhs_value = Self::lower_expr(fn_builder, resolved_ast, *rhs);
+            crate::semantics::resolved_ast::TypedExpressionNode::Modulo(result_type, lhs, rhs) => {
+                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
+                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -374,9 +392,9 @@ impl CraneliftBackend {
 
                 rem
             }
-            crate::parser::ast::TypedExpressionNode::Add(result_type, lhs, rhs) => {
-                let lhs_value = Self::lower_expr(fn_builder, resolved_ast, *lhs);
-                let rhs_value = Self::lower_expr(fn_builder, resolved_ast, *rhs);
+            crate::semantics::resolved_ast::TypedExpressionNode::Add(result_type, lhs, rhs) => {
+                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
+                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -387,12 +405,14 @@ impl CraneliftBackend {
                 };
 
                 sum
-
-                // TODO: pointer arithmetic
             }
-            crate::parser::ast::TypedExpressionNode::Subtract(result_type, lhs, rhs) => {
-                let lhs_value = Self::lower_expr(fn_builder, resolved_ast, *lhs);
-                let rhs_value = Self::lower_expr(fn_builder, resolved_ast, *rhs);
+            crate::semantics::resolved_ast::TypedExpressionNode::Subtract(
+                result_type,
+                lhs,
+                rhs,
+            ) => {
+                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
+                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -403,10 +423,8 @@ impl CraneliftBackend {
                 };
 
                 difference
-
-                // TODO: pointer arithmetic
             }
-            crate::parser::ast::TypedExpressionNode::Constant(result_type, constant) => {
+            crate::semantics::resolved_ast::TypedExpressionNode::Constant(.., constant) => {
                 let ins = fn_builder.ins();
                 match constant {
                     crate::parser::ast::Constant::Int(int) => ins.iconst(types::I32, *int as i64),
@@ -419,14 +437,53 @@ impl CraneliftBackend {
                     crate::parser::ast::Constant::Double(double) => ins.f64const(*double),
                 }
             }
-            _ => todo!("other expressions"),
+
+            crate::semantics::resolved_ast::TypedExpressionNode::SimpleAssign(
+                result_type,
+                lhs,
+                rhs,
+            ) => {
+                // LHS should produce stack slot or global value
+                let stack_slot = self.lower_lvalue(*lhs);
+                let cranelift_type = match result_type {
+                    CType::BasicType { basic_type, .. } => (*basic_type).into(),
+                    CType::PointerType { .. } => self.pointer_type(),
+                    _ => todo!("support other types"),
+                };
+                fn_builder.ins().stack_load(cranelift_type, stack_slot, 0)
+            }
+            crate::semantics::resolved_ast::TypedExpressionNode::DirectFunctionCall(
+                result_type,
+                function,
+                arguments,
+            ) => {
+                let func_id = self.function_refs[*function];
+                let arg_range: Range<usize> = (*arguments).into();
+                let mut arg_values = Vec::with_capacity(arg_range.len());
+                for arg_expr in &resolved_ast.expr_indices[arg_range] {
+                    let arg_value =
+                        self.lower_expr(fn_builder, resolved_ast, *arg_expr, object_frame);
+                    arg_values.push(arg_value);
+                }
+
+                let rvals = fn_builder.ins().call(func_id, &arg_values);
+                fn_builder.inst_results(rvals)[0]
+            }
+            other => {
+                dbg!(other);
+                todo!("other expressions")
+            }
         }
     }
 
+    fn lower_lvalue(&self, lvalue_ref: ExprRef) -> StackSlot {
+        todo!()
+    }
+
     // most expressions don't need qualifier, and are scalar types
-    fn get_basic_type(expr_type: &QualifiedType) -> BasicType {
-        match expr_type.base_type {
-            semantics::types::CType::BasicType { basic_type } => basic_type,
+    fn get_basic_type(expr_type: &CType) -> BasicType {
+        match expr_type {
+            crate::types::CType::BasicType { basic_type, .. } => *basic_type,
             _ => panic!("expression should have basic type"),
         }
     }
@@ -558,8 +615,48 @@ mod cranelift_backend_tests {
     }
 
     #[test]
-    fn test_compile_variables() {}
+    fn test_compile_variables() {
+        let code = r#"
+        int main(int argc, char *argv[]) {
+            int two;
+            int three;
+            two = 2;
+            three = 3;
+            return two + three;
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+
+        dbg!(&resolved);
+
+        let mut cranelift_backend = CraneliftBackend::new("test_compile_expr");
+        cranelift_backend.process_global_symbols(&resolved.symtab);
+        cranelift_backend.lower_translation_unit(&resolved);
+        cranelift_backend.finish_and_write(Path::new("test.o"));
+    }
 
     #[test]
-    fn test_compile_function_call() {}
+    fn test_compile_function_call() {
+        let code = r#"
+        int square_three() {
+            return 3 * 3;
+        }
+
+        int main(int argc, char *argv[]) {
+            return square_three();
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+
+        dbg!(&resolved);
+
+        let mut cranelift_backend = CraneliftBackend::new("test_compile_expr");
+        cranelift_backend.process_global_symbols(&resolved.symtab);
+        cranelift_backend.lower_translation_unit(&resolved);
+        cranelift_backend.finish_and_write(Path::new("test.o"));
+    }
 }

@@ -668,6 +668,13 @@ pub(super) fn resolve_expr(
             // either a pointer to a function, or a "function designator" directly
             let fn_expr_ref = resolve_expr(&fn_expr, resolved_expr_vec, expr_indices, symtab)?;
 
+            // optimization for direct calls
+            let fn_idx = match resolved_expr_vec[fn_expr_ref] {
+                TypedExpressionNode::FunctionIdentifier(_, fn_idx) => Some(fn_idx),
+                _ => None,
+            };
+
+            // TODO: support (*fn)(arg1, arg2) syntax
             let fn_expr_type = resolved_expr_vec[fn_expr_ref].expr_type();
             let fn_expr_type_idx = match fn_expr_type {
                 CType::FunctionTypeRef { symtab_idx } => *symtab_idx,
@@ -704,7 +711,11 @@ pub(super) fn resolve_expr(
             let arg_range_end = expr_indices.len();
 
             let fn_args_ref = ExprRangeRef(arg_range_start as u32, arg_range_end as u32);
-            let fn_call = TypedExpressionNode::FunctionCall(return_type, fn_expr_ref, fn_args_ref);
+            let fn_call = if let Some(fn_idx) = fn_idx {
+                TypedExpressionNode::DirectFunctionCall(return_type, fn_idx, fn_args_ref)
+            } else {
+                TypedExpressionNode::IndirectFunctionCall(return_type, fn_expr_ref, fn_args_ref)
+            };
             let fn_call_ref = ExprRef::from_push(resolved_expr_vec, fn_call);
 
             Ok(fn_call_ref)

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, mem::MaybeUninit};
 
-use cake_util::make_type_idx;
+use cake_util::{add_additional_index, make_type_idx};
+use cranelift::{codegen::ir::FuncRef, module::FuncId};
 use thiserror::Error;
 
 use crate::{
@@ -85,6 +86,8 @@ pub(crate) struct Function {
 }
 
 make_type_idx!(FunctionIdx, Function);
+add_additional_index!(FunctionIdx, FuncId);
+add_additional_index!(FunctionIdx, FuncRef);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Symbol {
@@ -204,7 +207,7 @@ impl SymbolTable {
         for symbols_at_scope in symbols {
             for (symbol_name, symbol) in symbols_at_scope {
                 match symbol {
-                    Symbol::Constant(constant) => (), // no-op, inlined into expressions
+                    Symbol::Constant(_) => (), // no-op, inlined into expressions
                     Symbol::Object(object_idx) => {
                         object_names[object_idx.0 as usize].write(symbol_name);
                     }
@@ -251,6 +254,18 @@ impl SymbolTable {
 
     pub(crate) fn function_names(&self) -> &[String] {
         &self.function_names
+    }
+
+    pub(crate) fn function_object_range(&self, fn_idx: FunctionIdx) -> ObjectRangeRef {
+        self.function_object_ranges[fn_idx.0 as usize]
+    }
+
+    pub(crate) fn object_range(&self, object_range: ObjectRangeRef) -> &[Object] {
+        &self.objects[object_range.0 as usize..object_range.1 as usize]
+    }
+
+    pub(crate) fn get_function_type(&self, function_type: FunctionTypeIdx) -> &FunctionType {
+        &self.function_types[function_type]
     }
 }
 
@@ -400,6 +415,17 @@ impl ScopedSymtab {
         let object_symbol = Symbol::Object(object_idx);
         self.symbols[scope.index].insert(name, object_symbol);
         Ok(object_idx)
+    }
+
+    pub(crate) fn begin_function_definition(&self) -> ObjectIdx {
+        ObjectIdx(self.objects.len() as u32)
+    }
+
+    pub(crate) fn end_function_definition(&mut self, start: ObjectIdx, fn_idx: FunctionIdx) {
+        self.function_object_ranges
+            .resize_with(fn_idx.get_inner() + 1, || ObjectRangeRef(0, 0));
+        self.function_object_ranges[fn_idx.get_inner()] =
+            ObjectRangeRef(start.0, self.objects.len() as u32);
     }
 
     pub(crate) fn add_function(

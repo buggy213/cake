@@ -1,3 +1,5 @@
+use std::{ops::Range, slice::SliceIndex};
+
 use cake_util::make_type_idx;
 
 use crate::{
@@ -19,6 +21,11 @@ pub(crate) struct ContextRef(pub u32);
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) struct ExprRangeRef(pub u32, pub u32);
+impl From<ExprRangeRef> for Range<usize> {
+    fn from(value: ExprRangeRef) -> Self {
+        value.0 as usize..value.1 as usize
+    }
+}
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) struct MemberRef(pub u32);
@@ -182,7 +189,9 @@ pub(crate) enum TypedExpressionNode {
     PostIncrement(CType, ExprRef),
     PostDecrement(CType, ExprRef),
 
-    FunctionCall(CType, ExprRef, ExprRangeRef),
+    DirectFunctionCall(CType, FunctionIdx, ExprRangeRef),
+    IndirectFunctionCall(CType, ExprRef, ExprRangeRef),
+
     DotAccess(CType, ExprRef, MemberRef),
     ArrowAccess(CType, ExprRef, MemberRef),
 
@@ -246,7 +255,8 @@ impl TypedExpressionNode {
             | TypedExpressionNode::Not(qualified_type, _)
             | TypedExpressionNode::PostIncrement(qualified_type, _)
             | TypedExpressionNode::PostDecrement(qualified_type, _)
-            | TypedExpressionNode::FunctionCall(qualified_type, _, _)
+            | TypedExpressionNode::DirectFunctionCall(qualified_type, _, _)
+            | TypedExpressionNode::IndirectFunctionCall(qualified_type, _, _)
             | TypedExpressionNode::DotAccess(qualified_type, _, _)
             | TypedExpressionNode::ArrowAccess(qualified_type, _, _)
             | TypedExpressionNode::ObjectIdentifier(qualified_type, _)
