@@ -900,16 +900,19 @@ fn resolve_ast_inner(
                     )?;
                     None
                 }
-                Some(expr) if matches!(&**expr, ASTNode::ExpressionStatement(_, _)) => {
-                    let expr_ref = resolve_ast_inner(
-                        node_ref,
-                        intermediate_ast,
-                        expr,
-                        parser_types,
-                        resolve_state,
-                    )?;
-
-                    Some(expr_ref)
+                Some(expr_node) if matches!(&**expr_node, ASTNode::ExpressionStatement(_, _)) => {
+                    match expr_node.as_ref() {
+                        ASTNode::ExpressionStatement(expr, scope) => {
+                            let expr_ref = resolve_expr(
+                                expr,
+                                &mut intermediate_ast.exprs,
+                                &mut intermediate_ast.expr_indices,
+                                &resolve_state.scoped_symtab,
+                            )?;
+                            Some(expr_ref)
+                        }
+                        _ => unreachable!("see above"),
+                    }
                 }
                 Some(_) => unreachable!("prohibited by grammar"),
             };
@@ -917,14 +920,26 @@ fn resolve_ast_inner(
             let second_clause: Option<ExprRef> = match condition {
                 None => None,
                 Some(expr) => {
-                    todo!("resolve expr");
+                    let expr_ref = resolve_expr(
+                        expr,
+                        &mut intermediate_ast.exprs,
+                        &mut intermediate_ast.expr_indices,
+                        &resolve_state.scoped_symtab,
+                    )?;
+                    Some(expr_ref)
                 }
             };
 
             let third_clause: Option<ExprRef> = match post_loop {
                 None => None,
                 Some(expr) => {
-                    todo!("resolve expr");
+                    let expr_ref = resolve_expr(
+                        expr,
+                        &mut intermediate_ast.exprs,
+                        &mut intermediate_ast.expr_indices,
+                        &resolve_state.scoped_symtab,
+                    )?;
+                    Some(expr_ref)
                 }
             };
 

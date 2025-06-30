@@ -3,6 +3,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     ffi::CString,
+    fmt::Debug,
     fs, iter,
     ops::{DerefMut, Index, Range},
     path::Path,
@@ -10,13 +11,13 @@ use std::{
 };
 
 use cranelift::{
-    codegen::ir::{FuncRef, StackSlot},
+    codegen::ir::{BlockArg, FuncRef, StackSlot, ValueLabel},
     frontend::FuncInstBuilder,
     module::{DataDescription, DataId, FuncId, Module},
     object::ObjectModule,
     prelude::{
-        AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, Signature,
-        StackSlotData, StackSlotKind, Type, Value,
+        AbiParam, Block, FloatCC, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC,
+        MemFlags, Signature, StackSlotData, StackSlotKind, Type, Value,
         settings::{self, Flags},
         types,
     },
@@ -89,6 +90,12 @@ struct CraneliftBackend {
 
     // these are used for function declarations
     function_signatures: Vec<Signature>,
+}
+
+struct LowerFunctionContext {
+    break_target: Option<Block>,
+    continue_target: Option<Block>,
+    goto_target: Vec<Block>,
 }
 
 impl CraneliftBackend {
@@ -262,6 +269,7 @@ impl CraneliftBackend {
 
         let mut ctx = self.object.make_context();
         ctx.func.signature = declared_signature.clone();
+        ctx.func.collect_debug_info();
 
         self.function_refs.clear();
         for func_id in &self.functions {
@@ -285,10 +293,23 @@ impl CraneliftBackend {
             let stack_slot = object_frame.get_object_stack_slot(param_idx);
             let cranelift_params = fn_builder.block_params(entry);
             let cranelift_param = cranelift_params[i];
+
             fn_builder.ins().stack_store(cranelift_param, stack_slot, 0);
         }
 
-        self.lower_statement(&mut fn_builder, resolved_ast, body, &object_frame);
+        let mut lower_fn_ctx = LowerFunctionContext {
+            break_target: None,
+            continue_target: None,
+            goto_target: Vec::new(),
+        };
+
+        self.lower_statement(
+            &mut fn_builder,
+            resolved_ast,
+            body,
+            &object_frame,
+            &mut lower_fn_ctx,
+        );
         if is_void {
             fn_builder.ins().return_(&[]);
         }
@@ -358,21 +379,27 @@ impl CraneliftBackend {
         statement_ref: NodeRef,
 
         object_frame: &Frame,
+        lower_fn_ctx: &mut LowerFunctionContext,
     ) {
         match &resolved_ast.nodes[statement_ref.0 as usize] {
             crate::semantics::resolved_ast::ResolvedASTNode::ExpressionStatement {
                 parent,
                 expr,
             } => {
-                self.lower_expr(fn_builder, resolved_ast, *expr, object_frame);
+                self.lower_expr(fn_builder, resolved_ast, *expr, object_frame, lower_fn_ctx);
             }
             crate::semantics::resolved_ast::ResolvedASTNode::ReturnStatement {
                 parent,
                 return_value,
             } => {
                 let returns: &[Value] = if let Some(return_value) = return_value {
-                    let cranelift_value =
-                        self.lower_expr(fn_builder, resolved_ast, *return_value, object_frame);
+                    let cranelift_value = self.lower_expr(
+                        fn_builder,
+                        resolved_ast,
+                        *return_value,
+                        object_frame,
+                        lower_fn_ctx,
+                    );
                     dbg!(cranelift_value);
                     &[cranelift_value]
                 } else {
@@ -380,6 +407,11 @@ impl CraneliftBackend {
                 };
 
                 fn_builder.ins().return_(returns);
+
+                // create block with no predecessors, represents that `return` diverges
+                let after_return = fn_builder.create_block();
+                fn_builder.seal_block(after_return);
+                fn_builder.switch_to_block(after_return);
             }
 
             ResolvedASTNode::IfStatement {
@@ -392,7 +424,13 @@ impl CraneliftBackend {
                 let not_taken_block = fn_builder.create_block();
                 let postdominator = fn_builder.create_block();
 
-                let condition = self.lower_expr(fn_builder, resolved_ast, *condition, object_frame);
+                let condition = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *condition,
+                    object_frame,
+                    lower_fn_ctx,
+                );
 
                 fn_builder
                     .ins()
@@ -401,12 +439,18 @@ impl CraneliftBackend {
                 fn_builder.seal_block(not_taken_block);
 
                 fn_builder.switch_to_block(taken_block);
-                self.lower_statement(fn_builder, resolved_ast, *taken, object_frame);
+                self.lower_statement(fn_builder, resolved_ast, *taken, object_frame, lower_fn_ctx);
                 fn_builder.ins().jump(postdominator, &[]);
 
                 fn_builder.switch_to_block(not_taken_block);
                 if let Some(not_taken_node) = *not_taken {
-                    self.lower_statement(fn_builder, resolved_ast, not_taken_node, object_frame);
+                    self.lower_statement(
+                        fn_builder,
+                        resolved_ast,
+                        not_taken_node,
+                        object_frame,
+                        lower_fn_ctx,
+                    );
                 }
 
                 fn_builder.ins().jump(postdominator, &[]);
@@ -418,7 +462,13 @@ impl CraneliftBackend {
             ResolvedASTNode::CompoundStatement { parent, stmts } => {
                 for stmt_ref_idx in stmts.0..stmts.1 {
                     let stmt_ref = resolved_ast.ast_indices[stmt_ref_idx as usize];
-                    self.lower_statement(fn_builder, resolved_ast, stmt_ref, &object_frame);
+                    self.lower_statement(
+                        fn_builder,
+                        resolved_ast,
+                        stmt_ref,
+                        &object_frame,
+                        lower_fn_ctx,
+                    );
                 }
             }
 
@@ -433,11 +483,17 @@ impl CraneliftBackend {
                 body,
             } => {
                 let body_block = fn_builder.create_block();
+                let loop_continuation = fn_builder.create_block();
                 let after_block = fn_builder.create_block();
 
                 if matches!(while_stmt, ResolvedASTNode::WhileStatement { .. }) {
-                    let controlling_value =
-                        self.lower_expr(fn_builder, resolved_ast, *condition, object_frame);
+                    let controlling_value = self.lower_expr(
+                        fn_builder,
+                        resolved_ast,
+                        *condition,
+                        object_frame,
+                        lower_fn_ctx,
+                    );
 
                     fn_builder
                         .ins()
@@ -448,9 +504,23 @@ impl CraneliftBackend {
 
                 fn_builder.switch_to_block(body_block);
 
-                self.lower_statement(fn_builder, resolved_ast, *body, object_frame);
-                let controlling_value =
-                    self.lower_expr(fn_builder, resolved_ast, *condition, object_frame);
+                lower_fn_ctx.continue_target = Some(loop_continuation);
+                lower_fn_ctx.break_target = Some(after_block);
+                self.lower_statement(fn_builder, resolved_ast, *body, object_frame, lower_fn_ctx);
+                lower_fn_ctx.continue_target = Some(loop_continuation);
+                lower_fn_ctx.break_target = Some(after_block);
+
+                fn_builder.ins().jump(loop_continuation, &[]);
+                fn_builder.seal_block(loop_continuation);
+                fn_builder.switch_to_block(loop_continuation);
+
+                let controlling_value = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *condition,
+                    object_frame,
+                    lower_fn_ctx,
+                );
                 fn_builder
                     .ins()
                     .brif(controlling_value, body_block, &[], after_block, &[]);
@@ -458,6 +528,109 @@ impl CraneliftBackend {
                 fn_builder.seal_block(body_block);
                 fn_builder.seal_block(after_block);
                 fn_builder.switch_to_block(after_block);
+            }
+
+            ResolvedASTNode::ForStatement {
+                parent,
+                init,
+                condition,
+                post_body,
+                body,
+            } => {
+                match init {
+                    Some(init_expr) => {
+                        _ = self.lower_expr(
+                            fn_builder,
+                            resolved_ast,
+                            *init_expr,
+                            object_frame,
+                            lower_fn_ctx,
+                        );
+                    }
+                    None => (),
+                }
+
+                let loop_start = fn_builder.create_block();
+                let loop_body = fn_builder.create_block();
+                let loop_end = fn_builder.create_block();
+                let loop_continuation = fn_builder.create_block();
+
+                fn_builder.ins().jump(loop_start, &[]);
+                fn_builder.switch_to_block(loop_start);
+
+                match condition {
+                    Some(condition_expr) => {
+                        let condition_value = self.lower_expr(
+                            fn_builder,
+                            resolved_ast,
+                            *condition_expr,
+                            object_frame,
+                            lower_fn_ctx,
+                        );
+
+                        fn_builder
+                            .ins()
+                            .brif(condition_value, loop_body, &[], loop_end, &[]);
+                        fn_builder.seal_block(loop_body);
+                    }
+                    None => {
+                        fn_builder.ins().jump(loop_body, &[]);
+                        fn_builder.seal_block(loop_body);
+                    }
+                }
+
+                fn_builder.switch_to_block(loop_body);
+
+                lower_fn_ctx.break_target = Some(loop_end);
+                lower_fn_ctx.continue_target = Some(loop_continuation);
+                self.lower_statement(fn_builder, resolved_ast, *body, object_frame, lower_fn_ctx);
+                lower_fn_ctx.break_target = Some(loop_end);
+                lower_fn_ctx.continue_target = Some(loop_continuation);
+
+                fn_builder.ins().jump(loop_continuation, &[]);
+                fn_builder.seal_block(loop_continuation);
+                fn_builder.seal_block(loop_end);
+                fn_builder.switch_to_block(loop_continuation);
+
+                match post_body {
+                    Some(post_body_expr) => {
+                        _ = self.lower_expr(
+                            fn_builder,
+                            resolved_ast,
+                            *post_body_expr,
+                            object_frame,
+                            lower_fn_ctx,
+                        );
+                    }
+                    None => (),
+                }
+
+                fn_builder.ins().jump(loop_start, &[]);
+                fn_builder.seal_block(loop_start);
+
+                fn_builder.switch_to_block(loop_end);
+            }
+
+            ResolvedASTNode::BreakStatement { .. } => {
+                let break_target = lower_fn_ctx
+                    .break_target
+                    .expect("should be required by resolver");
+                fn_builder.ins().jump(break_target, &[]);
+
+                let unreachable_block = fn_builder.create_block();
+                fn_builder.seal_block(unreachable_block);
+                fn_builder.switch_to_block(unreachable_block);
+            }
+
+            ResolvedASTNode::ContinueStatement { .. } => {
+                let continue_target = lower_fn_ctx
+                    .continue_target
+                    .expect("should be required by resolver");
+                fn_builder.ins().jump(continue_target, &[]);
+
+                let unreachable_block = fn_builder.create_block();
+                fn_builder.seal_block(unreachable_block);
+                fn_builder.switch_to_block(unreachable_block);
             }
 
             statement => {
@@ -474,6 +647,7 @@ impl CraneliftBackend {
         expr_ref: ExprRef,
 
         object_frame: &Frame,
+        lower_fn_ctx: &mut LowerFunctionContext,
     ) -> Value {
         match &resolved_ast.exprs[expr_ref] {
             crate::semantics::resolved_ast::TypedExpressionNode::Multiply(
@@ -481,8 +655,10 @@ impl CraneliftBackend {
                 lhs,
                 rhs,
             ) => {
-                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
-                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
+                let lhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame, lower_fn_ctx);
+                let rhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame, lower_fn_ctx);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -497,8 +673,10 @@ impl CraneliftBackend {
                 product
             }
             crate::semantics::resolved_ast::TypedExpressionNode::Divide(result_type, lhs, rhs) => {
-                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
-                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
+                let lhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame, lower_fn_ctx);
+                let rhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame, lower_fn_ctx);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -513,8 +691,10 @@ impl CraneliftBackend {
                 quotient
             }
             crate::semantics::resolved_ast::TypedExpressionNode::Modulo(result_type, lhs, rhs) => {
-                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
-                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
+                let lhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame, lower_fn_ctx);
+                let rhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame, lower_fn_ctx);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -527,8 +707,10 @@ impl CraneliftBackend {
                 rem
             }
             crate::semantics::resolved_ast::TypedExpressionNode::Add(result_type, lhs, rhs) => {
-                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
-                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
+                let lhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame, lower_fn_ctx);
+                let rhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame, lower_fn_ctx);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -545,8 +727,10 @@ impl CraneliftBackend {
                 lhs,
                 rhs,
             ) => {
-                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
-                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
+                let lhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame, lower_fn_ctx);
+                let rhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame, lower_fn_ctx);
 
                 let result_type = Self::get_basic_type(result_type);
 
@@ -578,13 +762,15 @@ impl CraneliftBackend {
                 rhs,
             ) => {
                 // LHS should produce stack slot or global value
-                let location = self.lower_lvalue(fn_builder, *lhs, resolved_ast, object_frame);
+                let location =
+                    self.lower_lvalue(fn_builder, *lhs, resolved_ast, object_frame, lower_fn_ctx);
                 let cranelift_type = match result_type {
                     CType::BasicType { basic_type, .. } => (*basic_type).into(),
                     CType::PointerType { .. } => self.pointer_type(),
                     _ => todo!("support other types"),
                 };
-                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
+                let rhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame, lower_fn_ctx);
 
                 match location {
                     StackOrMemory::Stack(stack_slot) => {
@@ -607,8 +793,13 @@ impl CraneliftBackend {
                 let arg_range: Range<usize> = (*arguments).into();
                 let mut arg_values = Vec::with_capacity(arg_range.len());
                 for arg_expr in &resolved_ast.expr_indices[arg_range] {
-                    let arg_value =
-                        self.lower_expr(fn_builder, resolved_ast, *arg_expr, object_frame);
+                    let arg_value = self.lower_expr(
+                        fn_builder,
+                        resolved_ast,
+                        *arg_expr,
+                        object_frame,
+                        lower_fn_ctx,
+                    );
                     arg_values.push(arg_value);
                 }
 
@@ -622,8 +813,13 @@ impl CraneliftBackend {
             }
 
             TypedExpressionNode::IndirectFunctionCall(result_type, function_expr, arguments) => {
-                let func_ptr_value =
-                    self.lower_expr(fn_builder, resolved_ast, *function_expr, object_frame);
+                let func_ptr_value = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *function_expr,
+                    object_frame,
+                    lower_fn_ctx,
+                );
 
                 let func_ptr_type = resolved_ast.exprs[*function_expr].expr_type();
                 let func_signature = match func_ptr_type {
@@ -640,8 +836,13 @@ impl CraneliftBackend {
                 let arg_range: Range<usize> = (*arguments).into();
                 let mut arg_values = Vec::with_capacity(arg_range.len());
                 for arg_expr in &resolved_ast.expr_indices[arg_range] {
-                    let arg_value =
-                        self.lower_expr(fn_builder, resolved_ast, *arg_expr, object_frame);
+                    let arg_value = self.lower_expr(
+                        fn_builder,
+                        resolved_ast,
+                        *arg_expr,
+                        object_frame,
+                        lower_fn_ctx,
+                    );
                     arg_values.push(arg_value);
                 }
                 let rvals =
@@ -706,10 +907,29 @@ impl CraneliftBackend {
                     },
                     _ => unreachable!("corrupted resolvedastnode"),
                 };
-                let base = self.lower_expr(fn_builder, resolved_ast, *ptr_ref, object_frame);
-                let offset = self.lower_expr(fn_builder, resolved_ast, *int_ref, object_frame);
+                let base = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *ptr_ref,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+                let offset = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *int_ref,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+
+                let needs_extension = fn_builder.func.dfg.value_type(offset) != self.pointer_type();
+                let offset = if needs_extension {
+                    fn_builder.ins().sextend(self.pointer_type(), offset)
+                } else {
+                    offset
+                };
+
                 let offset = fn_builder.ins().imul_imm(offset, size as i64);
-                let offset = fn_builder.ins().sextend(self.pointer_type(), offset);
                 fn_builder.ins().iadd(base, offset)
             }
 
@@ -720,21 +940,70 @@ impl CraneliftBackend {
                     .stack_addr(self.pointer_type(), stack_slot, 0)
             }
 
-            TypedExpressionNode::Cast(_, expr, _) => {
+            TypedExpressionNode::Cast(dest_type, expr, source_type) => {
                 // bruh
-                self.lower_expr(fn_builder, resolved_ast, *expr, object_frame)
-            }
+                let (signed, cranelift_dest_type) = match dest_type {
+                    CType::BasicType { basic_type, .. } => {
+                        (basic_type.is_signed(), (*basic_type).into())
+                    }
+                    CType::PointerType { .. } => (false, self.pointer_type()),
+                    _ => todo!(),
+                };
 
-            TypedExpressionNode::Equal(_, lhs, rhs) => {
-                let lhs_value = self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame);
-                let rhs_value = self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame);
+                let cranelift_src_type = match source_type {
+                    CType::BasicType { basic_type, .. } => (*basic_type).into(),
+                    CType::PointerType { .. } => self.pointer_type(),
+                    _ => todo!(),
+                };
 
-                fn_builder.ins().icmp(IntCC::Equal, lhs_value, rhs_value)
+                let src =
+                    self.lower_expr(fn_builder, resolved_ast, *expr, object_frame, lower_fn_ctx);
+
+                if cranelift_dest_type.is_int() && cranelift_src_type.is_float() {
+                    if signed {
+                        fn_builder.ins().fcvt_to_sint(cranelift_dest_type, src)
+                    } else {
+                        fn_builder.ins().fcvt_to_uint(cranelift_dest_type, src)
+                    }
+                } else if cranelift_dest_type.is_float() && cranelift_src_type.is_int() {
+                    if signed {
+                        fn_builder.ins().fcvt_from_sint(cranelift_dest_type, src)
+                    } else {
+                        fn_builder.ins().fcvt_from_uint(cranelift_dest_type, src)
+                    }
+                } else if cranelift_dest_type.is_float() && cranelift_src_type.is_float() {
+                    if cranelift_dest_type.bits() < cranelift_src_type.bits() {
+                        fn_builder.ins().fdemote(cranelift_dest_type, src)
+                    } else if cranelift_dest_type.bits() > cranelift_src_type.bits() {
+                        fn_builder.ins().fpromote(cranelift_dest_type, src)
+                    } else {
+                        src
+                    }
+                } else if cranelift_dest_type.is_int() && cranelift_src_type.is_int() {
+                    if cranelift_dest_type.bits() < cranelift_src_type.bits() {
+                        fn_builder.ins().ireduce(cranelift_dest_type, src)
+                    } else if cranelift_dest_type.bits() > cranelift_src_type.bits() {
+                        if signed {
+                            fn_builder.ins().sextend(cranelift_dest_type, src)
+                        } else {
+                            fn_builder.ins().uextend(cranelift_dest_type, src)
+                        }
+                    } else {
+                        src
+                    }
+                } else {
+                    unreachable!("this should not happen")
+                }
             }
 
             TypedExpressionNode::Dereference(value_type, pointer) => {
-                let pointer_value =
-                    self.lower_expr(fn_builder, resolved_ast, *pointer, object_frame);
+                let pointer_value = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *pointer,
+                    object_frame,
+                    lower_fn_ctx,
+                );
                 let cranelift_type = match value_type {
                     CType::BasicType { basic_type, .. } => (*basic_type).into(),
                     CType::PointerType { .. } => self.pointer_type(),
@@ -743,6 +1012,174 @@ impl CraneliftBackend {
                 fn_builder
                     .ins()
                     .load(cranelift_type, MemFlags::trusted(), pointer_value, 0)
+            }
+
+            TypedExpressionNode::LogicalAnd(_, lhs, rhs) => {
+                let lhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame, lower_fn_ctx);
+
+                let rhs_block = fn_builder.create_block();
+                let after_block = fn_builder.create_block();
+                fn_builder.append_block_param(after_block, BasicType::Int.into());
+
+                let const_zero = fn_builder.ins().iconst(BasicType::Int.into(), 0);
+                let const_one = fn_builder.ins().iconst(BasicType::Int.into(), 1);
+
+                // short circuit
+                fn_builder
+                    .ins()
+                    .brif(lhs_value, rhs_block, &[], after_block, &[const_zero.into()]);
+                fn_builder.seal_block(rhs_block);
+                fn_builder.switch_to_block(rhs_block);
+
+                let rhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame, lower_fn_ctx);
+                let zero_or_one = fn_builder.ins().select(rhs_value, const_one, const_zero);
+                fn_builder.ins().jump(after_block, &[zero_or_one.into()]);
+
+                fn_builder.seal_block(after_block);
+                fn_builder.switch_to_block(after_block);
+                fn_builder.block_params(after_block)[0]
+            }
+
+            TypedExpressionNode::LogicalOr(_, lhs, rhs) => {
+                let lhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *lhs, object_frame, lower_fn_ctx);
+
+                let rhs_block = fn_builder.create_block();
+                let after_block = fn_builder.create_block();
+                fn_builder.append_block_param(after_block, BasicType::Int.into());
+
+                let const_zero = fn_builder.ins().iconst(BasicType::Int.into(), 0);
+                let const_one = fn_builder.ins().iconst(BasicType::Int.into(), 1);
+
+                // short circuit
+                fn_builder
+                    .ins()
+                    .brif(lhs_value, after_block, &[const_one.into()], rhs_block, &[]);
+                fn_builder.seal_block(rhs_block);
+                fn_builder.switch_to_block(rhs_block);
+
+                let rhs_value =
+                    self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame, lower_fn_ctx);
+                let zero_or_one = fn_builder.ins().select(rhs_value, const_one, const_zero);
+                fn_builder.ins().jump(after_block, &[zero_or_one.into()]);
+
+                fn_builder.seal_block(after_block);
+                fn_builder.switch_to_block(after_block);
+                fn_builder.block_params(after_block)[0]
+            }
+
+            TypedExpressionNode::CommaExpr(_, expr_range) => {
+                let expr_range: Range<usize> = (*expr_range).into();
+                let mut subexpr_value = None;
+                for subexpr_ref in &resolved_ast.expr_indices[expr_range] {
+                    subexpr_value = Some(self.lower_expr(
+                        fn_builder,
+                        resolved_ast,
+                        *subexpr_ref,
+                        object_frame,
+                        lower_fn_ctx,
+                    ));
+                }
+
+                subexpr_value.expect("grammar prohibits empty comma expression")
+            }
+
+            TypedExpressionNode::GreaterThan(_, a, b) => {
+                let common_type = resolved_ast.exprs[*a].expr_type();
+                let a = self.lower_expr(fn_builder, resolved_ast, *a, object_frame, lower_fn_ctx);
+                let b = self.lower_expr(fn_builder, resolved_ast, *b, object_frame, lower_fn_ctx);
+
+                compare_op(
+                    fn_builder,
+                    a,
+                    b,
+                    common_type,
+                    IntCC::SignedGreaterThan,
+                    IntCC::UnsignedGreaterThan,
+                    FloatCC::GreaterThan,
+                )
+            }
+
+            TypedExpressionNode::GreaterThanOrEqual(_, a, b) => {
+                let common_type = resolved_ast.exprs[*a].expr_type();
+                let a = self.lower_expr(fn_builder, resolved_ast, *a, object_frame, lower_fn_ctx);
+                let b = self.lower_expr(fn_builder, resolved_ast, *b, object_frame, lower_fn_ctx);
+
+                compare_op(
+                    fn_builder,
+                    a,
+                    b,
+                    common_type,
+                    IntCC::SignedGreaterThanOrEqual,
+                    IntCC::UnsignedGreaterThanOrEqual,
+                    FloatCC::GreaterThanOrEqual,
+                )
+            }
+
+            TypedExpressionNode::LessThan(_, a, b) => {
+                let common_type = resolved_ast.exprs[*a].expr_type();
+                let a = self.lower_expr(fn_builder, resolved_ast, *a, object_frame, lower_fn_ctx);
+                let b = self.lower_expr(fn_builder, resolved_ast, *b, object_frame, lower_fn_ctx);
+
+                compare_op(
+                    fn_builder,
+                    a,
+                    b,
+                    common_type,
+                    IntCC::SignedLessThan,
+                    IntCC::UnsignedLessThan,
+                    FloatCC::LessThan,
+                )
+            }
+
+            TypedExpressionNode::LessThanOrEqual(_, a, b) => {
+                let common_type = resolved_ast.exprs[*a].expr_type();
+                let a = self.lower_expr(fn_builder, resolved_ast, *a, object_frame, lower_fn_ctx);
+                let b = self.lower_expr(fn_builder, resolved_ast, *b, object_frame, lower_fn_ctx);
+
+                compare_op(
+                    fn_builder,
+                    a,
+                    b,
+                    common_type,
+                    IntCC::SignedLessThanOrEqual,
+                    IntCC::UnsignedLessThanOrEqual,
+                    FloatCC::LessThanOrEqual,
+                )
+            }
+
+            TypedExpressionNode::Equal(_, a, b) => {
+                let common_type = resolved_ast.exprs[*a].expr_type();
+                let a = self.lower_expr(fn_builder, resolved_ast, *a, object_frame, lower_fn_ctx);
+                let b = self.lower_expr(fn_builder, resolved_ast, *b, object_frame, lower_fn_ctx);
+
+                compare_op(
+                    fn_builder,
+                    a,
+                    b,
+                    common_type,
+                    IntCC::Equal,
+                    IntCC::Equal,
+                    FloatCC::Equal,
+                )
+            }
+
+            TypedExpressionNode::NotEqual(_, a, b) => {
+                let common_type = resolved_ast.exprs[*a].expr_type();
+                let a = self.lower_expr(fn_builder, resolved_ast, *a, object_frame, lower_fn_ctx);
+                let b = self.lower_expr(fn_builder, resolved_ast, *b, object_frame, lower_fn_ctx);
+
+                compare_op(
+                    fn_builder,
+                    a,
+                    b,
+                    common_type,
+                    IntCC::NotEqual,
+                    IntCC::NotEqual,
+                    FloatCC::NotEqual,
+                )
             }
 
             other => {
@@ -757,7 +1194,9 @@ impl CraneliftBackend {
         fn_builder: &mut FunctionBuilder,
         lvalue_ref: ExprRef,
         resolved_ast: &ResolvedAST,
+
         object_frame: &Frame,
+        lower_fn_ctx: &mut LowerFunctionContext,
     ) -> StackOrMemory {
         let lvalue_expr = &resolved_ast.exprs[lvalue_ref];
         match lvalue_expr {
@@ -765,8 +1204,13 @@ impl CraneliftBackend {
                 StackOrMemory::Stack(object_frame.get_object_stack_slot(*object_idx))
             }
             TypedExpressionNode::Dereference(lvalue_type, pointer) => {
-                let pointer_value =
-                    self.lower_expr(fn_builder, resolved_ast, *pointer, object_frame);
+                let pointer_value = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *pointer,
+                    object_frame,
+                    lower_fn_ctx,
+                );
                 StackOrMemory::Memory(pointer_value)
             }
             _ => todo!("other lvalue types"),
@@ -786,6 +1230,30 @@ impl CraneliftBackend {
         let bytes = finished_object.emit().expect("failed to emit object file");
 
         fs::write(path, bytes).expect("failed to write to object file");
+    }
+}
+
+fn compare_op(
+    fn_builder: &mut FunctionBuilder,
+    a: Value,
+    b: Value,
+    common_type: &CType,
+    signed_int: IntCC,
+    unsigned_int: IntCC,
+    float: FloatCC,
+) -> Value {
+    let (signed_cmp, float_cmp) = match common_type {
+        CType::BasicType { basic_type, .. } => (basic_type.is_signed(), basic_type.is_fp()),
+        CType::PointerType { pointee_type, .. } => (false, false),
+        _ => unreachable!("prohibited by resolver"),
+    };
+
+    if float_cmp {
+        fn_builder.ins().fcmp(float, a, b)
+    } else if signed_cmp {
+        fn_builder.ins().icmp(signed_int, a, b)
+    } else {
+        fn_builder.ins().icmp(unsigned_int, a, b)
     }
 }
 
@@ -1076,11 +1544,12 @@ mod cranelift_backend_tests {
     fn test_complicated_conditional() {
         let code = r#"
         int main(int argc, char *argv[]) {
-            if (1) {
+            if (0) {
             }
-            else if (2) {
+            else if (1) {
             }
             else {
+                return 15;
             }
             return 0;
         }
@@ -1151,13 +1620,6 @@ mod cranelift_backend_tests {
             puts("Choose operation (+, -, *, /): ");
             gets(buf);
 
-            if (1) {
-            }
-            else if (2) {
-            }
-            else {
-            }
-
             if (strcmp(buf, "+") == 0) {
                 calc = &add;
             }
@@ -1197,5 +1659,121 @@ mod cranelift_backend_tests {
         "#;
 
         compile_code(code);
+    }
+
+    #[test]
+    fn test_short_circuit() {
+        let code = r#"
+        int puts(const char *str);
+        int return_false_and_print() {
+            puts("false");
+            return 0;
+        }
+
+        int return_true_and_print() {
+            puts("true");
+            return 1;
+        }
+
+        int main(int argc, char *argv[]) {
+            if (return_false_and_print() && return_true_and_print()) {
+            }
+            puts("sep");
+            if (return_true_and_print() || return_false_and_print()) {
+            }
+            return 0;
+        }
+        "#;
+
+        compile_code(code);
+        run_code("", &[], "false\nsep\ntrue\n", 0);
+    }
+
+    #[test]
+    fn test_for_loop() {
+        let code = r#"
+        int puts(const char *str);
+        void my_strcpy_for(char *dest, char *src) {
+            char *tmp;
+            for (tmp = src; *tmp != '\0'; tmp = tmp + 1, dest = dest + 1) {
+                *dest = *tmp;
+            }
+            *dest = '\0';
+        }
+
+        int main(int argc, char *argv[]) {
+            char buf[32];
+
+            my_strcpy_for(buf, "Hello world!");
+            puts(buf);
+            return 0;
+        }
+        "#;
+
+        compile_code(code);
+        run_code("", &[], "Hello world!\n", 0);
+    }
+
+    #[test]
+    fn test_continue_break() {
+        let code = r#"
+        int puts(const char *str);
+        void itoa(int value, char *buf) {
+            int value_copy;
+            value_copy = value;
+            
+            int digits;
+            digits = 0;
+
+            do {
+                value_copy = value_copy / 10;
+                digits = digits + 1;
+            } while (value_copy);
+
+            buf[digits] = '\0';
+            do {
+                int lsd;
+                lsd = value % 10;
+                value = value / 10;
+                buf[digits - 1] = '0' + lsd;
+                digits = digits - 1;
+            } while (value);
+        }
+
+        int main(int argc, char *argv[]) {
+            int i;
+            char buf[32];
+            i = 0;
+            while (1) {
+                itoa(i, buf);
+                if (i > 10) {
+                    break;
+                }
+
+                if (i % 2 == 1) {
+                    continue;
+                }
+
+                puts(buf);
+                i = i + 1;
+            }
+
+            for (i = 0;; i = i + 1) {
+                itoa(i, buf);
+                if (i > 10) {
+                    break;
+                }
+                
+                if (i % 2 == 0) {
+                    continue;
+                }
+
+                puts(buf);
+            }
+        }
+        "#;
+
+        compile_code(code);
+        run_code("", &[], "Hello world!\n", 0);
     }
 }

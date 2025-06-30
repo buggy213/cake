@@ -294,6 +294,11 @@ impl SymbolTable {
         self.function_parameter_ranges[fn_idx.0 as usize]
     }
 
+    pub(crate) fn function_parameter_names(&self, fn_idx: FunctionIdx) -> &[String] {
+        let fn_params = self.function_parameter_range(fn_idx);
+        &self.function_names[fn_params.0 as usize..fn_params.1 as usize]
+    }
+
     pub(crate) fn object_range(&self, object_range: ObjectRangeRef) -> &[Object] {
         &self.objects[object_range.0 as usize..object_range.1 as usize]
     }

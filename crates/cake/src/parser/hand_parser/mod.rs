@@ -2519,6 +2519,15 @@ fn parse_compound_statement(
     state.open_scope(ScopeType::BlockScope);
     let mut items = Vec::new();
     loop {
+        match toks.peek() {
+            Some((CLexemes::RBrace, _, _)) => {
+                break;
+            }
+            Some((_, _, _)) => (),
+            None => {
+                return Err(ParseError::UnexpectedEOF.into());
+            }
+        }
         let ast_node = if is_lookahead_declaration(toks, state) {
             // upcoming tokens must be declaration
             parse_declaration(toks, state)?
@@ -2527,17 +2536,6 @@ fn parse_compound_statement(
             parse_statement(toks, state)?
         };
         items.push(ast_node);
-        match toks.peek() {
-            Some((CLexemes::RBrace, _, _)) => {
-                break;
-            }
-            Some((_, _, _)) => {
-                continue;
-            }
-            None => {
-                return Err(ParseError::UnexpectedEOF.into());
-            }
-        }
     }
     state.close_scope()?;
     eat_or_error!(toks, CLexemes::RBrace)?;

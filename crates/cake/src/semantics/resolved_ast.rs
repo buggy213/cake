@@ -90,7 +90,7 @@ pub(crate) enum ResolvedASTNode {
     },
     ForStatement {
         parent: NodeRef,
-        init: Option<NodeRef>,
+        init: Option<ExprRef>,
         condition: Option<ExprRef>,
         post_body: Option<ExprRef>,
         body: NodeRef,
