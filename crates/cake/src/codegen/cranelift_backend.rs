@@ -486,6 +486,10 @@ impl CraneliftBackend {
                 let loop_continuation = fn_builder.create_block();
                 let after_block = fn_builder.create_block();
 
+                dbg!(body_block);
+                dbg!(loop_continuation);
+                dbg!(after_block);
+
                 if matches!(while_stmt, ResolvedASTNode::WhileStatement { .. }) {
                     let controlling_value = self.lower_expr(
                         fn_builder,
@@ -1751,6 +1755,7 @@ mod cranelift_backend_tests {
                 }
 
                 if (i % 2 == 1) {
+                    i = i + 1;
                     continue;
                 }
 
@@ -1770,10 +1775,12 @@ mod cranelift_backend_tests {
 
                 puts(buf);
             }
+
+            return 0;
         }
         "#;
 
         compile_code(code);
-        run_code("", &[], "Hello world!\n", 0);
+        run_code("", &[], "0\n2\n4\n6\n8\n10\n1\n3\n5\n7\n9\n", 0);
     }
 }
