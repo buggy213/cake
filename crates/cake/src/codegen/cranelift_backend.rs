@@ -18,6 +18,7 @@ use cranelift::{
     prelude::{
         AbiParam, Block, FloatCC, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC,
         MemFlags, Signature, StackSlotData, StackSlotKind, Type, Value,
+        isa::TargetFrontendConfig,
         settings::{self, Flags},
         types,
     },
@@ -27,7 +28,7 @@ use crate::{
     semantics::{
         self,
         resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
-        resolver::ResolvedAST,
+        resolver::{ResolvedAST, ResolverContext},
         symtab::{FunctionIdx, ObjectIdx, ObjectRangeRef, Scope, SymbolTable},
     },
     types::{BasicType, CType, FunctionType, TypeQualifier},
@@ -96,6 +97,9 @@ struct LowerFunctionContext {
     break_target: Option<Block>,
     continue_target: Option<Block>,
     goto_target: Vec<Block>,
+
+    switch_cases: Vec<Block>,
+    current_case: usize,
 }
 
 impl CraneliftBackend {
@@ -301,6 +305,9 @@ impl CraneliftBackend {
             break_target: None,
             continue_target: None,
             goto_target: Vec::new(),
+
+            switch_cases: Vec::new(),
+            current_case: 0,
         };
 
         self.lower_statement(
@@ -508,11 +515,13 @@ impl CraneliftBackend {
 
                 fn_builder.switch_to_block(body_block);
 
+                let old_continue_target = lower_fn_ctx.continue_target;
+                let old_break_target = lower_fn_ctx.break_target;
                 lower_fn_ctx.continue_target = Some(loop_continuation);
                 lower_fn_ctx.break_target = Some(after_block);
                 self.lower_statement(fn_builder, resolved_ast, *body, object_frame, lower_fn_ctx);
-                lower_fn_ctx.continue_target = Some(loop_continuation);
-                lower_fn_ctx.break_target = Some(after_block);
+                lower_fn_ctx.continue_target = old_continue_target;
+                lower_fn_ctx.break_target = old_break_target;
 
                 fn_builder.ins().jump(loop_continuation, &[]);
                 fn_builder.seal_block(loop_continuation);
@@ -585,11 +594,13 @@ impl CraneliftBackend {
 
                 fn_builder.switch_to_block(loop_body);
 
+                let old_break_target = lower_fn_ctx.break_target;
+                let old_continue_target = lower_fn_ctx.continue_target;
                 lower_fn_ctx.break_target = Some(loop_end);
                 lower_fn_ctx.continue_target = Some(loop_continuation);
                 self.lower_statement(fn_builder, resolved_ast, *body, object_frame, lower_fn_ctx);
-                lower_fn_ctx.break_target = Some(loop_end);
-                lower_fn_ctx.continue_target = Some(loop_continuation);
+                lower_fn_ctx.break_target = old_break_target;
+                lower_fn_ctx.continue_target = old_continue_target;
 
                 fn_builder.ins().jump(loop_continuation, &[]);
                 fn_builder.seal_block(loop_continuation);
@@ -635,6 +646,120 @@ impl CraneliftBackend {
                 let unreachable_block = fn_builder.create_block();
                 fn_builder.seal_block(unreachable_block);
                 fn_builder.switch_to_block(unreachable_block);
+            }
+
+            ResolvedASTNode::NullStatement { parent } => (),
+
+            ResolvedASTNode::SwitchStatement {
+                parent,
+                controlling_expr,
+                body,
+                context,
+            } => {
+                let controlling_expr_value = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *controlling_expr,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+
+                let switch_context = match &resolved_ast.resolve_contexts[context.0 as usize] {
+                    ResolverContext::Switch(switch_ctx) => switch_ctx,
+                    _ => unreachable!("corrupted resolve context table"),
+                };
+
+                let switch_body = fn_builder.create_block();
+                let after_switch = fn_builder.create_block();
+
+                fn_builder.seal_block(switch_body);
+
+                let num_targets = if switch_context.default_idx.is_some() {
+                    switch_context.case_values.len() + 1
+                } else {
+                    switch_context.case_values.len()
+                };
+
+                lower_fn_ctx
+                    .switch_cases
+                    .resize_with(num_targets, || fn_builder.create_block());
+                lower_fn_ctx.current_case = 0;
+
+                let mut cranelift_switch = cranelift::frontend::Switch::new();
+                let fallback = if let Some(idx) = switch_context.default_idx {
+                    lower_fn_ctx.switch_cases[idx]
+                } else {
+                    after_switch
+                };
+
+                for (i, case_value) in switch_context.case_values.iter().copied().enumerate() {
+                    let case_value = match case_value {
+                        crate::parser::ast::Constant::Int(i) => i as u128,
+                        crate::parser::ast::Constant::LongInt(i) => i as u128,
+                        crate::parser::ast::Constant::UInt(i) => i as u128,
+                        crate::parser::ast::Constant::ULongInt(i) => i as u128,
+                        crate::parser::ast::Constant::Float(_) => unreachable!(),
+                        crate::parser::ast::Constant::Double(_) => unreachable!(),
+                    };
+
+                    let block_idx = if let Some(idx) = switch_context.default_idx {
+                        if i >= idx { i + 1 } else { i }
+                    } else {
+                        i
+                    };
+                    cranelift_switch.set_entry(case_value, lower_fn_ctx.switch_cases[block_idx]);
+                }
+
+                cranelift_switch.emit(fn_builder, controlling_expr_value, fallback);
+                fn_builder.switch_to_block(switch_body);
+
+                let old_break_target = lower_fn_ctx.break_target;
+                lower_fn_ctx.break_target = Some(after_switch);
+                self.lower_statement(fn_builder, resolved_ast, *body, object_frame, lower_fn_ctx);
+                lower_fn_ctx.break_target = old_break_target;
+
+                for target in lower_fn_ctx.switch_cases.iter().copied() {
+                    fn_builder.seal_block(target);
+                }
+
+                fn_builder.ins().jump(after_switch, &[]);
+                fn_builder.seal_block(after_switch);
+                fn_builder.switch_to_block(after_switch);
+
+                lower_fn_ctx.switch_cases.clear();
+                lower_fn_ctx.current_case = 0;
+            }
+
+            ResolvedASTNode::CaseLabel {
+                parent,
+                labelee,
+                case_index,
+            } => {
+                // fallthrough
+                let my_block = lower_fn_ctx.switch_cases[lower_fn_ctx.current_case];
+                lower_fn_ctx.current_case += 1;
+                fn_builder.ins().jump(my_block, &[]);
+                fn_builder.switch_to_block(my_block);
+                self.lower_statement(
+                    fn_builder,
+                    resolved_ast,
+                    *labelee,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+            }
+
+            ResolvedASTNode::DefaultLabel { parent, labelee } => {
+                let my_block = lower_fn_ctx.switch_cases[lower_fn_ctx.current_case];
+                fn_builder.ins().jump(my_block, &[]);
+                fn_builder.switch_to_block(my_block);
+                self.lower_statement(
+                    fn_builder,
+                    resolved_ast,
+                    *labelee,
+                    object_frame,
+                    lower_fn_ctx,
+                );
             }
 
             statement => {
@@ -1782,5 +1907,98 @@ mod cranelift_backend_tests {
 
         compile_code(code);
         run_code("", &[], "0\n2\n4\n6\n8\n10\n1\n3\n5\n7\n9\n", 0);
+    }
+
+    #[test]
+    fn test_nested_continue() {
+        let code = r#"
+        int puts(const char *str);
+        void itoa(int value, char *buf) {
+            int value_copy;
+            value_copy = value;
+            
+            int digits;
+            digits = 0;
+
+            do {
+                value_copy = value_copy / 10;
+                digits = digits + 1;
+            } while (value_copy);
+
+            buf[digits] = '\0';
+            do {
+                int lsd;
+                lsd = value % 10;
+                value = value / 10;
+                buf[digits - 1] = '0' + lsd;
+                digits = digits - 1;
+            } while (value);
+        }
+
+        int main(int argc, char *argv[]) {
+            char buf[16];
+            int sum;
+            sum = 0;
+            
+            int i, j;
+            for (i = 0; i < 10; i = i + 1) {
+                if (i % 2 == 0) {
+                    continue;
+                }
+                for (j = 0; j < 10; j = j + 1) {
+                    if (j % 2 == 0) {
+                        continue;
+                    }
+                    sum = sum + i * 10 + j;
+                }
+            }
+
+            itoa(sum, buf);
+            puts(buf);
+            return 0;
+        }
+        "#;
+
+        compile_code(code);
+        run_code("", &[], "1375\n", 0);
+    }
+
+    #[test]
+    fn test_switch() {
+        let code = r#"
+        int puts(const char *str);
+        char *gets(char *str);
+
+        int main() {
+            char buf[16];
+            gets(buf);
+
+            int n;
+            n = buf[0] - '0';
+
+            switch (n) {
+                case 1:
+                    puts("one!");
+                    break;
+                case 2:
+                    puts("two!");
+                    break;
+                case 3:
+                    puts("three!");
+                    break;
+                default:
+                    puts("nope");
+                    break;
+            }
+
+            return 0;
+        }
+        "#;
+
+        compile_code(code);
+        run_code("1\n", &[], "one!\n", 0);
+        run_code("2\n", &[], "two!\n", 0);
+        run_code("3\n", &[], "three!\n", 0);
+        run_code("4\n", &[], "nope\n", 0);
     }
 }

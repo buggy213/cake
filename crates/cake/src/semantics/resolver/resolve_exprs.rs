@@ -63,10 +63,10 @@ pub(super) fn resolve_integer_constant_expression(
     let constant = integer_constant_eval(symtab, expr);
     match constant {
         Ok(c) => match c {
-            Constant::Int(_) => todo!(),
-            Constant::LongInt(_) => todo!(),
-            Constant::UInt(_) => todo!(),
-            Constant::ULongInt(_) => todo!(),
+            Constant::Int(_) => Ok(c),
+            Constant::LongInt(_) => Ok(c),
+            Constant::UInt(_) => Ok(c),
+            Constant::ULongInt(_) => Ok(c),
             Constant::Float(_) => Err(ASTResolveError::IntegerConstantExprError),
             Constant::Double(_) => Err(ASTResolveError::IntegerConstantExprError),
         },

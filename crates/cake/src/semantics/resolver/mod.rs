@@ -72,13 +72,14 @@ pub(crate) enum ASTResolveError {
     BadReturnValue,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct ResolvedAST {
     pub(crate) nodes: Vec<ResolvedASTNode>,
     pub(crate) ast_indices: Vec<NodeRef>,
     pub(crate) exprs: Vec<TypedExpressionNode>,
     pub(crate) expr_indices: Vec<ExprRef>,
     pub(crate) symtab: SymbolTable,
+    pub(crate) resolve_contexts: Vec<ResolverContext>,
 }
 
 // during postorder walk, need to have uninitialized values
@@ -104,7 +105,11 @@ impl ResolvedAST {
             expr_indices,
         } = intermediate;
 
-        let ResolverState { scoped_symtab, .. } = resolve_state;
+        let ResolverState {
+            scoped_symtab,
+            context_stack,
+            ..
+        } = resolve_state;
 
         // relies on "in-place collect" optimization for efficiency
         // MaybeUninit<T> is guaranteed to have same size and alignment as T
@@ -115,35 +120,40 @@ impl ResolvedAST {
             ast_indices,
             exprs,
             expr_indices,
+            resolve_contexts: context_stack,
             symtab: SymbolTable::from_scoped_symtab(scoped_symtab),
         }
     }
 }
 
 // Needed for tracking target of case / default labels, break statements
-struct SwitchStatementContext {
+#[derive(Debug)]
+pub(crate) struct SwitchStatementContext {
     node: NodeRef, // node in AST that this switch statement corresponds to
     enclosing_context: Option<usize>,
 
-    value_type: BasicType, // type of controlling expression, case values are promoted to it
-    case_values: Vec<Constant>,
-    has_default: bool,
+    pub(crate) value_type: BasicType, // type of controlling expression, case values are promoted to it
+    pub(crate) case_values: Vec<Constant>,
+    pub(crate) default_idx: Option<usize>,
 }
 
 // Needed for tracking target of break / continue statements (for, while, do-while loops)
+
+#[derive(Debug)]
 struct IterationStatementContext {
     node: NodeRef, // node in AST that this while statement corresponds to
     enclosing_context: Option<usize>,
 }
 
 // Needed for typechecking return statements
+#[derive(Debug)]
 struct FunctionDefinitionContext {
     node: NodeRef,
-
     func_type: FunctionTypeIdx,
 }
 
-enum ResolverContext {
+#[derive(Debug)]
+pub(crate) enum ResolverContext {
     Switch(SwitchStatementContext),
     Iteration(IterationStatementContext),
     Function(FunctionDefinitionContext),
@@ -195,7 +205,7 @@ impl ResolverState {
 
             value_type,
             case_values: Default::default(),
-            has_default: false,
+            default_idx: None,
         };
         let new_switch_idx = self.context_stack.len();
         self.context_stack.push(ResolverContext::Switch(new_switch));
@@ -629,7 +639,6 @@ fn resolve_ast_inner(
             );
 
             let expr_ref = ExprRef::from_push(&mut intermediate_ast.exprs, case_expr);
-
             let current_switch = match resolve_state.current_switch_mut() {
                 Some(switch) => switch,
                 None => return Err(ASTResolveError::UnexpectedCaseLabel),
@@ -640,6 +649,7 @@ fn resolve_ast_inner(
                 return Err(ASTResolveError::DuplicateCaseLabel);
             }
 
+            let case_index = current_switch.case_values.len() as u32;
             current_switch.case_values.push(value);
 
             let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
@@ -656,19 +666,22 @@ fn resolve_ast_inner(
             let case_label_node = ResolvedASTNode::CaseLabel {
                 parent,
                 labelee: labelee_ref,
-                case_value: expr_ref,
+                case_index,
             };
             intermediate_ast.nodes[node_idx].write(case_label_node);
 
             Ok(node_ref)
         }
         ASTNode::DefaultLabel(labelee) => match resolve_state.current_switch_mut() {
-            Some(SwitchStatementContext { has_default, .. }) => {
-                if *has_default {
-                    return Err(ASTResolveError::MultipleDefaultLabels);
+            Some(SwitchStatementContext {
+                default_idx,
+                case_values,
+                ..
+            }) => {
+                match default_idx {
+                    Some(_) => return Err(ASTResolveError::MultipleDefaultLabels),
+                    None => *default_idx = Some(case_values.len()),
                 }
-
-                *has_default = true;
 
                 let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
                 let labelee_ref = resolve_ast_inner(
@@ -813,7 +826,7 @@ fn resolve_ast_inner(
                 return Err(ASTResolveError::BadControllingExprType);
             }
 
-            let value_type = todo!();
+            let value_type = BasicType::Int; // TODO: make this correct
             let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
 
             resolve_state.add_switch(value_type, node_ref);
