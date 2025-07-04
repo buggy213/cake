@@ -303,6 +303,10 @@ impl SymbolTable {
         &self.objects[object_range.0 as usize..object_range.1 as usize]
     }
 
+    pub(crate) fn get_function(&self, function: FunctionIdx) -> &Function {
+        &self.functions[function]
+    }
+
     pub(crate) fn get_function_type(&self, function_type: FunctionTypeIdx) -> &FunctionType {
         &self.function_types[function_type]
     }

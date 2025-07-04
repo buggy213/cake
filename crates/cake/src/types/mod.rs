@@ -421,4 +421,18 @@ impl CType {
             qualifier: TypeQualifier::empty(),
         }
     }
+
+    pub(crate) fn float() -> CType {
+        CType::BasicType {
+            basic_type: BasicType::Float,
+            qualifier: TypeQualifier::empty(),
+        }
+    }
+
+    pub(crate) fn double() -> CType {
+        CType::BasicType {
+            basic_type: BasicType::Double,
+            qualifier: TypeQualifier::empty(),
+        }
+    }
 }

@@ -11,7 +11,7 @@ use std::{
 };
 
 use cranelift::{
-    codegen::ir::{BlockArg, FuncRef, StackSlot, ValueLabel},
+    codegen::ir::{ArgumentExtension, ArgumentPurpose, BlockArg, FuncRef, StackSlot, ValueLabel},
     frontend::FuncInstBuilder,
     module::{DataDescription, DataId, FuncId, Module},
     object::ObjectModule,
@@ -921,7 +921,8 @@ impl CraneliftBackend {
                 let func_id = self.function_refs[*function];
                 let arg_range: Range<usize> = (*arguments).into();
                 let mut arg_values = Vec::with_capacity(arg_range.len());
-                for arg_expr in &resolved_ast.expr_indices[arg_range] {
+                let arg_range = &resolved_ast.expr_indices[arg_range];
+                for arg_expr in arg_range {
                     let arg_value = self.lower_expr(
                         fn_builder,
                         resolved_ast,
@@ -932,7 +933,42 @@ impl CraneliftBackend {
                     arg_values.push(arg_value);
                 }
 
-                let rvals = fn_builder.ins().call(func_id, &arg_values);
+                let function_symbol = resolved_ast.symtab.get_function(*function);
+                let function_type = resolved_ast
+                    .symtab
+                    .get_function_type(function_symbol.function_type);
+
+                let rvals = if function_type.varargs {
+                    // direct function call won't work, since we need to massage the signature
+                    let func_ref = self.function_refs[*function];
+                    let vararg_fn_ptr = fn_builder.ins().func_addr(self.pointer_type(), func_ref);
+                    let mut signature =
+                        self.function_signatures[function_symbol.function_type].clone();
+
+                    // mangle the signature to fit call site
+                    let formal_param_count = function_type.parameter_types.len();
+                    for arg_expr in &arg_range[formal_param_count..] {
+                        let arg_type = resolved_ast.exprs[*arg_expr].expr_type();
+                        match arg_type {
+                            CType::BasicType { basic_type, .. } => {
+                                let cranelift_type = (*basic_type).into();
+                                signature.params.push(AbiParam::new(cranelift_type))
+                            }
+                            CType::PointerType { .. } => {
+                                signature.params.push(AbiParam::new(self.pointer_type()))
+                            }
+                            _ => todo!(),
+                        }
+                    }
+
+                    let sig_ref = fn_builder.import_signature(signature);
+                    fn_builder
+                        .ins()
+                        .call_indirect(sig_ref, vararg_fn_ptr, &arg_values)
+                } else {
+                    fn_builder.ins().call(func_id, &arg_values)
+                };
+
                 if result_type.is_void() {
                     // TODO: fix this. void expressions should be allowed
                     fn_builder.ins().iconst(self.pointer_type(), 0)
@@ -1032,6 +1068,7 @@ impl CraneliftBackend {
                 let size = match pointer_type {
                     CType::PointerType { pointee_type, .. } => match pointee_type.as_ref() {
                         CType::BasicType { basic_type, .. } => basic_type.bytes(),
+                        CType::PointerType { .. } => self.pointer_type().bytes(),
                         _ => todo!(),
                     },
                     _ => unreachable!("corrupted resolvedastnode"),
@@ -2000,5 +2037,38 @@ mod cranelift_backend_tests {
         run_code("2\n", &[], "two!\n", 0);
         run_code("3\n", &[], "three!\n", 0);
         run_code("4\n", &[], "nope\n", 0);
+    }
+
+    #[test]
+    fn test_varargs_call() {
+        let code = r#"
+        int printf(const char *fmt, ...);
+        int main(int argc, char *argv[]) {
+            printf("argc: %d, argv[0]: %s", argc, argv[0]);
+            return 0;
+        }
+        "#;
+
+        test_harness(code, "argc: 1, argv[0]: ./test", 0);
+    }
+
+    #[test]
+    fn test_struct() {
+        let code = r#"
+        struct data {
+            int a;
+            float b;
+        };
+        
+        int main() {
+            struct data x;
+            x.a = 5;
+            x.b = 2.0f;
+
+            return 0;
+        }
+        "#;
+
+        compile_code(code);
     }
 }

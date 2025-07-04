@@ -694,12 +694,7 @@ pub(super) fn resolve_expr(
             let fn_canonical_type = symtab.get_function_type(fn_expr_type_idx);
             let return_type = fn_canonical_type.return_type.clone();
 
-            // TODO: deal with varargs
             let mut argument_expr_refs = Vec::new();
-            if fn_canonical_type.parameter_types.len() != argument_exprs.len() {
-                return Err(ResolveExprError::IncorrectNumberOfArguments);
-            }
-
             for ((_, formal_arg_type), actual_arg) in
                 iter::zip(fn_canonical_type.parameter_types.iter(), argument_exprs)
             {
@@ -707,6 +702,24 @@ pub(super) fn resolve_expr(
                 let converted_arg_ref =
                     assignment_type_conversion(formal_arg_type, fn_arg_ref, resolved_expr_vec)?;
                 argument_expr_refs.push(converted_arg_ref);
+            }
+
+            if fn_canonical_type.varargs {
+                if fn_canonical_type.parameter_types.len() > argument_exprs.len() {
+                    return Err(ResolveExprError::IncorrectNumberOfArguments);
+                }
+                // apply default argument promotions to remaining varargs
+                let varargs = &argument_exprs[fn_canonical_type.parameter_types.len()..];
+                for vararg in varargs {
+                    let vararg_ref = resolve_expr(vararg, resolved_expr_vec, expr_indices, symtab)?;
+                    let converted_vararg_ref =
+                        default_argument_promotions(vararg_ref, resolved_expr_vec)?;
+                    argument_expr_refs.push(converted_vararg_ref);
+                }
+            } else {
+                if fn_canonical_type.parameter_types.len() != argument_exprs.len() {
+                    return Err(ResolveExprError::IncorrectNumberOfArguments);
+                }
             }
 
             let arg_range_start = expr_indices.len();
@@ -1028,9 +1041,23 @@ fn assignment_type_conversion(
     return Err(ResolveExprError::InvalidAssignmentConversion);
 }
 
-// used for varargs primarily
-fn promote_argument() {
-    todo!()
+// used for varargs primarily, as we don't support K&R style parameter passing
+fn default_argument_promotions(
+    expr_ref: ExprRef,
+    resolved_expr_vec: &mut Vec<TypedExpressionNode>,
+) -> Result<ExprRef, ResolveExprError> {
+    // integer promotions on integral types, float -> double
+    let expr_ref_type = resolved_expr_vec[expr_ref].expr_type();
+    match expr_ref_type {
+        CType::BasicType { basic_type, .. } if basic_type.is_integral() => {
+            integer_promotion(expr_ref, resolved_expr_vec)
+        }
+        CType::BasicType {
+            basic_type: BasicType::Float,
+            ..
+        } => Ok(insert_cast(&CType::double(), expr_ref, resolved_expr_vec)),
+        _ => Ok(expr_ref),
+    }
 }
 
 // ensures that an expression is an l-value. caller should check if its const as well.
