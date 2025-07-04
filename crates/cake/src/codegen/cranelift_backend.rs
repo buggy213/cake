@@ -1439,7 +1439,7 @@ mod cranelift_backend_tests {
     use std::{
         fs,
         io::Write,
-        path::Path,
+        path::{Path, PathBuf},
         process::{Command, Stdio},
     };
 
@@ -1457,111 +1457,61 @@ mod cranelift_backend_tests {
 
     use super::CraneliftBackend;
 
-    #[test]
-    fn test_create_object() {
-        let isa_builder =
-            cranelift::native::builder_with_options(true).expect("failed to make isa builder");
-        let flags_builder = settings::builder();
-        let isa = isa_builder
-            .finish(Flags::new(flags_builder))
-            .expect("failed to make isa");
-        let object_builder = cranelift::object::ObjectBuilder::new(
-            isa,
-            "test_object",
-            cranelift::module::default_libcall_names(),
-        )
-        .expect("failed to make builder");
-
-        let mut object = ObjectModule::new(object_builder);
-        let ptr_type = object.target_config().pointer_type();
-
-        let mut puts_signature = object.make_signature();
-        puts_signature.params.push(AbiParam::new(ptr_type));
-
-        let hello_world_str_id = object
-            .declare_data("hello_world_str", Linkage::Local, false, false)
-            .expect("failed to declare hello_world_str");
-        let mut hello_world_str_contents = DataDescription::new();
-        hello_world_str_contents.define(Box::from(c"Hello world".to_bytes()));
-        object
-            .define_data(hello_world_str_id, &hello_world_str_contents)
-            .expect("failed to define hello_world_str");
-
-        let puts_id = object
-            .declare_function("puts", Linkage::Import, &puts_signature)
-            .expect("failed to declare puts");
-
-        // same context should be reused for multiple functions
-        let mut fn_builder_ctx = FunctionBuilderContext::new();
-        let mut ctx = object.make_context();
-        ctx.func.signature.params.push(AbiParam::new(types::I32));
-        ctx.func.signature.params.push(AbiParam::new(ptr_type));
-
-        ctx.func.signature.returns.push(AbiParam::new(types::I32));
-
-        let hello_world_str_val = object.declare_data_in_func(hello_world_str_id, &mut ctx.func);
-        let hello_world_str_val = object.declare_data_in_func(hello_world_str_id, &mut ctx.func);
-        let hello_world_str_val = object.declare_data_in_func(hello_world_str_id, &mut ctx.func);
-        let hello_world_str_val = object.declare_data_in_func(hello_world_str_id, &mut ctx.func);
-
-        let puts_ref = object.declare_func_in_func(puts_id, &mut ctx.func);
-
-        let mut fn_builder = FunctionBuilder::new(&mut ctx.func, &mut fn_builder_ctx);
-
-        let entry = fn_builder.create_block();
-
-        fn_builder.append_block_params_for_function_params(entry);
-        fn_builder.switch_to_block(entry);
-
-        let ptr_to_hello_world = fn_builder.ins().global_value(ptr_type, hello_world_str_val);
-        fn_builder.ins().call(puts_ref, &[ptr_to_hello_world]);
-
-        let five = fn_builder.ins().iconst(types::I32, 5);
-        fn_builder.ins().return_(&[five]);
-
-        fn_builder.seal_block(entry);
-
-        fn_builder.finalize();
-        let display = ctx.func.display();
-        print!("{display}");
-        ctx.verify(object.isa()).expect("verification failed");
-
-        let main_id = object
-            .declare_function(
-                "main",
-                cranelift::module::Linkage::Export,
-                &ctx.func.signature,
-            )
-            .expect("failed to declare function");
-
-        object
-            .define_function(main_id, &mut ctx)
-            .expect("failed to define function");
-
-        let finished_object = object.finish();
-        let bytes = finished_object.emit().expect("failed to emit object file");
-
-        fs::write("test.o", bytes).expect("failed to write to object file");
+    fn test_artifact_dir(test_name: &'static str) -> PathBuf {
+        let workspace = PathBuf::from(
+            std::env::var("CARGO_MANIFEST_DIR").expect("workspace directory not set"),
+        );
+        let test_artifacts = workspace.join("test_artifacts");
+        let test_artifact = test_artifacts.join(test_name);
+        // error is expected if it already exists
+        _ = std::fs::create_dir_all(&test_artifact);
+        test_artifact
     }
 
-    fn compile_code(code: &'static str) {
+    fn compile_code(test_name: &'static str, code: &'static str) {
+        let working_dir = test_artifact_dir(test_name);
+
         let input = ResolveHarnessInput { code };
         let resolved = resolve_harness(input);
 
+        let resolved_ast_file = working_dir.join("resolved_ast");
         dbg!(&resolved);
+        std::fs::write(&resolved_ast_file, format!("{:#?}", &resolved))
+            .expect("failed to write resolved AST to file");
 
         let mut cranelift_backend = CraneliftBackend::new("test_compile_expr");
         let mut function_builder_ctx = FunctionBuilderContext::new();
         cranelift_backend.process_global_symbols(&resolved.symtab);
         cranelift_backend.lower_translation_unit(&resolved, &mut function_builder_ctx);
-        cranelift_backend.finish_and_write(Path::new("test.o"));
 
+        let object_file_name = format!("{test_name}.o");
+        let object_file = working_dir.join(object_file_name);
+        cranelift_backend.finish_and_write(&object_file);
+
+        let binary_file = working_dir.join(test_name);
         let mut compile_command = Command::new("clang");
         compile_command
-            .arg("-no-pie") // cranelift is not generating position independent relocations
+            .arg("-no-pie") // cranelift is not generating position independent assembly
             .arg("-o")
-            .arg("test")
-            .arg("test.o");
+            .arg(binary_file)
+            .arg(object_file);
+
+        compile_command
+            .spawn()
+            .expect("unable to launch compiler")
+            .wait()
+            .expect("it didn't run");
+
+        // generate reference binary using clang, for differential testing
+        let code_file = working_dir.join("code.c");
+        let binary_file_name_clang = format!("{test_name}.clang");
+        let binary_file_clang = working_dir.join(binary_file_name_clang);
+        let mut compile_command = Command::new("clang");
+        compile_command
+            .arg("-no-pie") // cranelift is not generating position independent assembly
+            .arg("-o")
+            .arg(binary_file_clang)
+            .arg(code_file);
 
         compile_command
             .spawn()
@@ -1572,12 +1522,16 @@ mod cranelift_backend_tests {
 
     // TODO: support interactive input
     fn run_code(
+        test_name: &'static str,
         stdin: &'static str,
         args: &'static [&'static str],
         expected_stdout: &'static str,
         expected_exit: i32,
     ) {
-        let mut executable_command = Command::new("./test");
+        let working_dir = test_artifact_dir(test_name);
+        let executable = working_dir.join(test_name);
+
+        let mut executable_command = Command::new(executable);
         let executable_command = executable_command.args(args);
         let mut child = executable_command
             .stdout(Stdio::piped())
@@ -1607,9 +1561,14 @@ mod cranelift_backend_tests {
         );
     }
 
-    fn test_harness(code: &'static str, expected_stdout: &'static str, expected_exit: i32) {
-        compile_code(code);
-        run_code("", &[], expected_stdout, expected_exit);
+    fn test_harness(
+        test_name: &'static str,
+        code: &'static str,
+        expected_stdout: &'static str,
+        expected_exit: i32,
+    ) {
+        compile_code(test_name, code);
+        run_code(test_name, "", &[], expected_stdout, expected_exit);
     }
 
     #[test]
@@ -1620,7 +1579,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        test_harness(code, "", 11);
+        test_harness("expr", code, "", 11);
     }
 
     #[test]
@@ -1635,7 +1594,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        test_harness(code, "", 5);
+        test_harness("variables", code, "", 5);
     }
 
     #[test]
@@ -1650,7 +1609,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        test_harness(code, "", 9);
+        test_harness("function_call", code, "", 9);
     }
 
     #[test]
@@ -1664,7 +1623,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        test_harness(code, "Hello world!\n", 0);
+        test_harness("string_literal", code, "Hello world!\n", 0);
     }
 
     #[test]
@@ -1688,7 +1647,7 @@ mod cranelift_backend_tests {
             return 0;
         }
         "#;
-        test_harness(code, "argc: 1\n", 0);
+        test_harness("array", code, "argc: 1\n", 0);
     }
 
     #[test]
@@ -1712,9 +1671,10 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        compile_code(code);
-        run_code("", &[], "argc=4? n\n", 0);
-        run_code("", &["x", "x", "x"], "argc=4? y\n", 0);
+        let test_name = "conditional";
+        compile_code(test_name, code);
+        run_code(test_name, "", &[], "argc=4? n\n", 0);
+        run_code(test_name, "", &["x", "x", "x"], "argc=4? y\n", 0);
     }
 
     #[test]
@@ -1732,7 +1692,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        compile_code(code);
+        compile_code("complicated_conditional", code);
     }
 
     #[test]
@@ -1755,7 +1715,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        test_harness(code, "hello from my_strcpy\n", 0);
+        test_harness("while", code, "hello from my_strcpy\n", 0);
     }
 
     #[test]
@@ -1835,7 +1795,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        compile_code(code);
+        compile_code("calculator", code);
     }
 
     #[test]
@@ -1862,8 +1822,9 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        compile_code(code);
-        run_code("", &[], "false\nsep\ntrue\n", 0);
+        let test_name = "short_circuit";
+        compile_code(test_name, code);
+        run_code(test_name, "", &[], "false\nsep\ntrue\n", 0);
     }
 
     #[test]
@@ -1887,8 +1848,9 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        compile_code(code);
-        run_code("", &[], "Hello world!\n", 0);
+        let test_name = "for_loop";
+        compile_code(test_name, code);
+        run_code(test_name, "", &[], "Hello world!\n", 0);
     }
 
     #[test]
@@ -1953,8 +1915,9 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        compile_code(code);
-        run_code("", &[], "0\n2\n4\n6\n8\n10\n1\n3\n5\n7\n9\n", 0);
+        let test_name = "continue_break";
+        compile_code(test_name, code);
+        run_code(test_name, "", &[], "0\n2\n4\n6\n8\n10\n1\n3\n5\n7\n9\n", 0);
     }
 
     #[test]
@@ -2007,8 +1970,9 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        compile_code(code);
-        run_code("", &[], "1375\n", 0);
+        let test_name = "nested_continue";
+        compile_code(test_name, code);
+        run_code(test_name, "", &[], "1375\n", 0);
     }
 
     #[test]
@@ -2043,11 +2007,12 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        compile_code(code);
-        run_code("1\n", &[], "one!\n", 0);
-        run_code("2\n", &[], "two!\n", 0);
-        run_code("3\n", &[], "three!\n", 0);
-        run_code("4\n", &[], "nope\n", 0);
+        let test_name = "switch";
+        compile_code(test_name, code);
+        run_code(test_name, "1\n", &[], "one!\n", 0);
+        run_code(test_name, "2\n", &[], "two!\n", 0);
+        run_code(test_name, "3\n", &[], "three!\n", 0);
+        run_code(test_name, "4\n", &[], "nope\n", 0);
     }
 
     #[test]
@@ -2055,12 +2020,14 @@ mod cranelift_backend_tests {
         let code = r#"
         int printf(const char *fmt, ...);
         int main(int argc, char *argv[]) {
-            printf("argc: %d, argv[0]: %s", argc, argv[0]);
+            const char *hello;
+            hello = "hello!";
+            printf("argc: %d, %s", argc, hello);
             return 0;
         }
         "#;
 
-        test_harness(code, "argc: 1, argv[0]: ./test", 0);
+        test_harness("varargs_call", code, "argc: 1, hello!", 0);
     }
 
     #[test]
@@ -2086,7 +2053,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        test_harness(code, "x: 0\nx: 1\n", 0);
+        test_harness("globals", code, "x: 0\nx: 1\n", 0);
     }
 
     #[test]
@@ -2102,7 +2069,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        test_harness(code, "11 11 ", 12);
+        test_harness("augmented_assignment", code, "11 11 ", 12);
     }
 
     fn test_initializer() {
@@ -2113,7 +2080,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        test_harness(code, "argc: 1, argv[0]: ./test", 0);
+        test_harness("initializer", code, "argc: 1, argv[0]: ./test", 0);
     }
 
     #[test]
@@ -2133,6 +2100,6 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        compile_code(code);
+        compile_code("struct", code);
     }
 }
