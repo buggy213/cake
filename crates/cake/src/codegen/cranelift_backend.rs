@@ -82,7 +82,7 @@ enum StackOrMemory {
 
 struct CraneliftBackend {
     object: ObjectModule,
-    data: HashMap<String, DataId>,
+    data: Vec<DataId>,
     functions: Vec<FuncId>,
 
     // these are used for declare_data_in_func, declare_func_in_func
@@ -125,7 +125,7 @@ impl CraneliftBackend {
 
         CraneliftBackend {
             object,
-            data: HashMap::new(),
+            data: Vec::new(),
             functions: Vec::new(),
 
             function_refs: Vec::new(),
@@ -137,8 +137,6 @@ impl CraneliftBackend {
     pub(crate) fn process_global_symbols(&mut self, symtab: &SymbolTable) {
         let global_objects = symtab.global_objects();
         let global_object_names = symtab.global_object_names();
-
-        let global_functions = symtab.functions();
 
         for (global_object, global_object_name) in
             std::iter::zip(global_objects, global_object_names)
@@ -162,6 +160,19 @@ impl CraneliftBackend {
                 .expect("failed to declare data");
 
             // TODO: support initializer
+            let mut zero_init = DataDescription::new();
+            let bytes = match &global_object.object_type {
+                CType::BasicType { basic_type, .. } => basic_type.bytes(),
+                CType::PointerType { .. } => self.pointer_type().bytes(),
+                _ => todo!(),
+            };
+            zero_init.define_zeroinit(bytes as usize);
+
+            self.object
+                .define_data(object_id, &zero_init)
+                .expect("failed to define data");
+
+            self.data.push(object_id);
         }
 
         let functions = symtab.functions();
@@ -2046,6 +2057,59 @@ mod cranelift_backend_tests {
         int main(int argc, char *argv[]) {
             printf("argc: %d, argv[0]: %s", argc, argv[0]);
             return 0;
+        }
+        "#;
+
+        test_harness(code, "argc: 1, argv[0]: ./test", 0);
+    }
+
+    #[test]
+    fn test_globals() {
+        let code = r#"
+        int printf(const char *fmt, ...);
+        int counter;
+        
+        int fetch_add() {
+            int old_counter;
+            old_counter = counter;
+            counter = counter + 1;
+            return old_counter;
+        }
+
+        int main(int argc, char *argv[]) {
+            int x;
+            x = fetch_add();
+            printf("x: %d\n", x);
+            x = fetch_add();
+            printf("x: %d\n", x);
+            return 0;
+        }
+        "#;
+
+        test_harness(code, "x: 0\nx: 1\n", 0);
+    }
+
+    #[test]
+    fn test_augmented_assignment() {
+        let code = r#"
+        int printf(const char *fmt, ...);
+        int main(int argc, char *argv[]) {
+            int x;
+            x = 10;
+            printf("%d ", ++x);
+            printf("%d ", x++);
+            return x;
+        }
+        "#;
+
+        test_harness(code, "11 11 ", 12);
+    }
+
+    fn test_initializer() {
+        let code = r#"
+        int main(int argc, char *argv[]) {
+            int inited = 7;
+            return inited;
         }
         "#;
 
