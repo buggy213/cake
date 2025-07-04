@@ -314,6 +314,12 @@ impl SymbolTable {
     pub(crate) fn function_types(&self) -> &[FunctionType] {
         &self.function_types
     }
+
+    pub(crate) fn global_index(&self, object_idx: ObjectIdx) -> usize {
+        self.global_objects
+            .binary_search(&object_idx)
+            .expect("global not found")
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -458,9 +464,14 @@ impl ScopedSymtab {
             return Err(SymtabError::AlreadyDeclared(name));
         }
 
+        let is_global = object.linkage != Linkage::None;
         let object_idx = ObjectIdx::from_push(&mut self.objects, object);
         let object_symbol = Symbol::Object(object_idx);
         self.symbols[scope.index].insert(name, object_symbol);
+        if is_global {
+            self.global_objects.push(object_idx);
+        }
+
         Ok(object_idx)
     }
 

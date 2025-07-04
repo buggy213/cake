@@ -62,13 +62,16 @@ struct Frame {
 }
 
 impl Frame {
+    fn contains(&self, object_idx: ObjectIdx) -> bool {
+        self.object_range.0 as usize <= object_idx.get_inner()
+            && object_idx.get_inner() < self.object_range.1 as usize
+    }
+
     fn get_object_stack_slot(&self, object_idx: ObjectIdx) -> StackSlot {
         let idx = object_idx.get_inner() - self.object_range.0 as usize;
         self.stack_slots[idx]
     }
-}
 
-impl Frame {
     fn value(&self, ins: FuncInstBuilder, value_type: Type, object_idx: ObjectIdx) -> Value {
         let stack_slot = self.stack_slots[object_idx.get_inner() - self.object_range.0 as usize];
         ins.stack_load(value_type, stack_slot, 0)
@@ -1034,11 +1037,23 @@ impl CraneliftBackend {
             }
 
             TypedExpressionNode::AddressOf(_, addressee) => match &resolved_ast.exprs[*addressee] {
-                TypedExpressionNode::ObjectIdentifier(_, object_idx) => {
-                    let stack_slot = object_frame.get_object_stack_slot(*object_idx);
-                    fn_builder
-                        .ins()
-                        .stack_addr(self.pointer_type(), stack_slot, 0)
+                TypedExpressionNode::ObjectIdentifier(_, _) => {
+                    let location = self.lower_lvalue(
+                        fn_builder,
+                        *addressee,
+                        resolved_ast,
+                        object_frame,
+                        lower_fn_ctx,
+                    );
+
+                    match location {
+                        StackOrMemory::Stack(stack_slot) => {
+                            fn_builder
+                                .ins()
+                                .stack_addr(self.pointer_type(), stack_slot, 0)
+                        }
+                        StackOrMemory::Memory(value) => value,
+                    }
                 }
                 TypedExpressionNode::FunctionIdentifier(_, fn_idx) => fn_builder
                     .ins()
@@ -1049,13 +1064,30 @@ impl CraneliftBackend {
                 object_type,
                 object_idx,
             ) => {
-                let stack_slot = object_frame.get_object_stack_slot(*object_idx);
+                let location = self.lower_lvalue(
+                    fn_builder,
+                    expr_ref,
+                    resolved_ast,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+
                 let cranelift_type = match object_type {
                     CType::BasicType { basic_type, .. } => (*basic_type).into(),
                     CType::PointerType { .. } => self.pointer_type(),
                     _ => todo!("other types"),
                 };
-                fn_builder.ins().stack_load(cranelift_type, stack_slot, 0)
+
+                match location {
+                    StackOrMemory::Stack(stack_slot) => {
+                        fn_builder.ins().stack_load(cranelift_type, stack_slot, 0)
+                    }
+                    StackOrMemory::Memory(value) => {
+                        fn_builder
+                            .ins()
+                            .load(cranelift_type, MemFlags::trusted(), value, 0)
+                    }
+                }
             }
 
             TypedExpressionNode::StringLiteral(_, string) => {
@@ -1111,10 +1143,21 @@ impl CraneliftBackend {
             }
 
             TypedExpressionNode::ArrayDecay(_, object_idx) => {
-                let stack_slot = object_frame.get_object_stack_slot(*object_idx);
-                fn_builder
-                    .ins()
-                    .stack_addr(self.pointer_type(), stack_slot, 0)
+                let location = self.lower_lvalue(
+                    fn_builder,
+                    expr_ref,
+                    resolved_ast,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+                match location {
+                    StackOrMemory::Stack(stack_slot) => {
+                        fn_builder
+                            .ins()
+                            .stack_addr(self.pointer_type(), stack_slot, 0)
+                    }
+                    StackOrMemory::Memory(value) => value,
+                }
             }
 
             TypedExpressionNode::Cast(dest_type, expr, source_type) => {
@@ -1377,8 +1420,20 @@ impl CraneliftBackend {
     ) -> StackOrMemory {
         let lvalue_expr = &resolved_ast.exprs[lvalue_ref];
         match lvalue_expr {
-            TypedExpressionNode::ObjectIdentifier(lvalue_type, object_idx) => {
-                StackOrMemory::Stack(object_frame.get_object_stack_slot(*object_idx))
+            TypedExpressionNode::ObjectIdentifier(_, object_idx)
+            | TypedExpressionNode::ArrayDecay(_, object_idx) => {
+                if object_frame.contains(*object_idx) {
+                    StackOrMemory::Stack(object_frame.get_object_stack_slot(*object_idx))
+                } else {
+                    // must be a global / static variable
+                    let global_index: usize = resolved_ast.symtab.global_index(*object_idx);
+                    let data_id = self.data[global_index];
+                    let global_value = self.object.declare_data_in_func(data_id, fn_builder.func);
+                    let global_address = fn_builder
+                        .ins()
+                        .global_value(self.pointer_type(), global_value);
+                    StackOrMemory::Memory(global_address)
+                }
             }
             TypedExpressionNode::Dereference(lvalue_type, pointer) => {
                 let pointer_value = self.lower_expr(
@@ -1390,6 +1445,7 @@ impl CraneliftBackend {
                 );
                 StackOrMemory::Memory(pointer_value)
             }
+
             _ => todo!("other lvalue types"),
         }
     }
@@ -2046,14 +2102,14 @@ mod cranelift_backend_tests {
         int main(int argc, char *argv[]) {
             int x;
             x = fetch_add();
-            printf("x: %d\n", x);
+            printf("x: %d, ", x);
             x = fetch_add();
-            printf("x: %d\n", x);
+            printf("x: %d, ", x);
             return 0;
         }
         "#;
 
-        test_harness("globals", code, "x: 0\nx: 1\n", 0);
+        test_harness("globals", code, "x: 0, x: 1, ", 0);
     }
 
     #[test]
@@ -2061,6 +2117,14 @@ mod cranelift_backend_tests {
         let code = r#"
         int printf(const char *fmt, ...);
         int main(int argc, char *argv[]) {
+            int i;
+            int j;
+            j = 1;
+            for (i = 0; i < 10; i += 1) {
+                j *= 2;
+            }
+            printf("%d ", j);
+            
             int x;
             x = 10;
             printf("%d ", ++x);
@@ -2069,7 +2133,7 @@ mod cranelift_backend_tests {
         }
         "#;
 
-        test_harness("augmented_assignment", code, "11 11 ", 12);
+        test_harness("augmented_assignment", code, "1024 11 11", 12);
     }
 
     fn test_initializer() {

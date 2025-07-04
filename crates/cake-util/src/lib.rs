@@ -22,7 +22,7 @@ impl Mul for RangeUInt {
 macro_rules! make_type_idx {
     ($type_idx_name:tt, $type_name:tt) => {
         // TODO: consider newtyping Vec and adding push which returns type_idx
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub(crate) struct $type_idx_name(u32);
 
         impl $type_idx_name {
