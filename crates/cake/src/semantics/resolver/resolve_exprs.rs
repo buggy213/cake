@@ -129,7 +129,6 @@ pub(super) fn resolve_expr(
             augmented_assign_op(
                 a_ref,
                 b_ref,
-                TypedExpressionNode::MultiplyAssign,
                 TypedExpressionNode::Multiply,
                 Conversions::Arithmetic,
                 resolved_expr_vec,
@@ -141,7 +140,6 @@ pub(super) fn resolve_expr(
             augmented_assign_op(
                 a_ref,
                 b_ref,
-                TypedExpressionNode::DivideAssign,
                 TypedExpressionNode::Divide,
                 Conversions::Arithmetic,
                 resolved_expr_vec,
@@ -153,7 +151,6 @@ pub(super) fn resolve_expr(
             augmented_assign_op(
                 a_ref,
                 b_ref,
-                TypedExpressionNode::ModuloAssign,
                 TypedExpressionNode::Modulo,
                 Conversions::Arithmetic,
                 resolved_expr_vec,
@@ -177,7 +174,6 @@ pub(super) fn resolve_expr(
                 augmented_assign_op(
                     ptr_ref,
                     int_ref,
-                    TypedExpressionNode::PtrAddAssign,
                     TypedExpressionNode::PointerAdd,
                     Conversions::None,
                     resolved_expr_vec,
@@ -187,7 +183,6 @@ pub(super) fn resolve_expr(
                 augmented_assign_op(
                     a_ref,
                     b_ref,
-                    TypedExpressionNode::AddAssign,
                     TypedExpressionNode::Add,
                     Conversions::Arithmetic,
                     resolved_expr_vec,
@@ -211,7 +206,6 @@ pub(super) fn resolve_expr(
                 augmented_assign_op(
                     ptr_ref,
                     int_ref,
-                    TypedExpressionNode::PtrSubAssign,
                     TypedExpressionNode::PointerSub,
                     Conversions::None,
                     resolved_expr_vec,
@@ -221,7 +215,6 @@ pub(super) fn resolve_expr(
                 augmented_assign_op(
                     a_ref,
                     b_ref,
-                    TypedExpressionNode::SubAssign,
                     TypedExpressionNode::Subtract,
                     Conversions::Arithmetic,
                     resolved_expr_vec,
@@ -234,7 +227,6 @@ pub(super) fn resolve_expr(
             augmented_assign_op(
                 a_ref,
                 b_ref,
-                TypedExpressionNode::LShiftAssign,
                 TypedExpressionNode::LShift,
                 Conversions::Promotion,
                 resolved_expr_vec,
@@ -246,7 +238,6 @@ pub(super) fn resolve_expr(
             augmented_assign_op(
                 a_ref,
                 b_ref,
-                TypedExpressionNode::RShiftAssign,
                 TypedExpressionNode::RShift,
                 Conversions::Promotion,
                 resolved_expr_vec,
@@ -259,7 +250,6 @@ pub(super) fn resolve_expr(
             augmented_assign_op(
                 a_ref,
                 b_ref,
-                TypedExpressionNode::AndAssign,
                 TypedExpressionNode::BitwiseAnd,
                 Conversions::Arithmetic,
                 resolved_expr_vec,
@@ -272,7 +262,6 @@ pub(super) fn resolve_expr(
             augmented_assign_op(
                 a_ref,
                 b_ref,
-                TypedExpressionNode::XorAssign,
                 TypedExpressionNode::BitwiseXor,
                 Conversions::Arithmetic,
                 resolved_expr_vec,
@@ -285,7 +274,6 @@ pub(super) fn resolve_expr(
             augmented_assign_op(
                 a_ref,
                 b_ref,
-                TypedExpressionNode::OrAssign,
                 TypedExpressionNode::BitwiseOr,
                 Conversions::Arithmetic,
                 resolved_expr_vec,
@@ -542,8 +530,70 @@ pub(super) fn resolve_expr(
             let cast_ref = ExprRef::from_push(resolved_expr_vec, cast);
             Ok(cast_ref)
         }
-        ExpressionNode::PreIncrement(expression_node) => todo!(),
-        ExpressionNode::PreDecrement(expression_node) => todo!(),
+        ExpressionNode::PreIncrement(expression_node) => {
+            // fully equivalent to += 1
+            let a_ref = resolve_expr(&expression_node, resolved_expr_vec, expr_indices, symtab)?;
+            let a_type = resolved_expr_vec[a_ref].expr_type();
+            let a_ptr = a_type.is_object_pointer();
+
+            // dummy constant 1
+            let one = ExpressionNode::Constant(Constant::Int(1));
+            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, symtab)?;
+
+            if a_ptr {
+                let ptr_ref = a_ref;
+                let int_ref = one_ref;
+
+                augmented_assign_op(
+                    ptr_ref,
+                    int_ref,
+                    TypedExpressionNode::PointerAdd,
+                    Conversions::None,
+                    resolved_expr_vec,
+                )
+            } else {
+                // normal arithmetic
+                augmented_assign_op(
+                    a_ref,
+                    one_ref,
+                    TypedExpressionNode::Add,
+                    Conversions::Arithmetic,
+                    resolved_expr_vec,
+                )
+            }
+        }
+        ExpressionNode::PreDecrement(expression_node) => {
+            // fully equivalent to -= 1
+            let a_ref = resolve_expr(&expression_node, resolved_expr_vec, expr_indices, symtab)?;
+            let a_type = resolved_expr_vec[a_ref].expr_type();
+            let a_ptr = a_type.is_object_pointer();
+
+            // dummy constant 1
+            let one = ExpressionNode::Constant(Constant::Int(1));
+            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, symtab)?;
+
+            if a_ptr {
+                let ptr_ref = a_ref;
+                let int_ref = one_ref;
+
+                augmented_assign_op(
+                    ptr_ref,
+                    int_ref,
+                    TypedExpressionNode::PointerSub,
+                    Conversions::None,
+                    resolved_expr_vec,
+                )
+            } else {
+                // normal arithmetic
+                augmented_assign_op(
+                    a_ref,
+                    one_ref,
+                    TypedExpressionNode::Subtract,
+                    Conversions::Arithmetic,
+                    resolved_expr_vec,
+                )
+            }
+        }
         ExpressionNode::Sizeof(expression_node) => {
             todo!("implement sizeof")
         }
@@ -633,8 +683,88 @@ pub(super) fn resolve_expr(
             let not_ref = ExprRef::from_push(resolved_expr_vec, not);
             Ok(not_ref)
         }
-        ExpressionNode::PostIncrement(expression_node) => todo!(),
-        ExpressionNode::PostDecrement(expression_node) => todo!(),
+        ExpressionNode::PostIncrement(a) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let a_type = resolved_expr_vec[a_ref].expr_type();
+            let a_ptr = a_type.is_object_pointer();
+
+            let one = ExpressionNode::Constant(Constant::Int(1));
+            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, symtab)?;
+
+            if a_ptr {
+                // pointer arithmetic
+                let ptr_type = resolved_expr_vec[a_ref].expr_type().clone();
+                let ptr_ref = a_ref;
+                let int_ref = one_ref;
+                let pointer_add =
+                    TypedExpressionNode::PointerAdd(ptr_type.clone(), ptr_ref, int_ref);
+                let pointer_add_ref = ExprRef::from_push(resolved_expr_vec, pointer_add);
+
+                let assign = TypedExpressionNode::PostAugmentedAssign(
+                    ptr_type.clone(),
+                    ptr_ref,
+                    pointer_add_ref,
+                );
+                let assign_ref = ExprRef::from_push(resolved_expr_vec, assign);
+                Ok(assign_ref)
+            } else {
+                // normal arithmetic
+                let add_ref = basic_binary_op_inner(
+                    a_ref,
+                    one_ref,
+                    TypedExpressionNode::Add,
+                    resolved_expr_vec,
+                )?;
+                let a_type = resolved_expr_vec[a_ref].expr_type().clone();
+                let converted = assignment_type_conversion(&a_type, add_ref, resolved_expr_vec)?;
+
+                let assign =
+                    TypedExpressionNode::PostAugmentedAssign(a_type.clone(), a_ref, converted);
+                let assign_ref = ExprRef::from_push(resolved_expr_vec, assign);
+                Ok(assign_ref)
+            }
+        }
+        ExpressionNode::PostDecrement(a) => {
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let a_type = resolved_expr_vec[a_ref].expr_type();
+            let a_ptr = a_type.is_object_pointer();
+
+            let one = ExpressionNode::Constant(Constant::Int(1));
+            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, symtab)?;
+
+            if a_ptr {
+                // pointer arithmetic
+                let ptr_type = resolved_expr_vec[a_ref].expr_type().clone();
+                let ptr_ref = a_ref;
+                let int_ref = one_ref;
+                let pointer_add =
+                    TypedExpressionNode::PointerSub(ptr_type.clone(), ptr_ref, int_ref);
+                let pointer_add_ref = ExprRef::from_push(resolved_expr_vec, pointer_add);
+
+                let assign = TypedExpressionNode::PostAugmentedAssign(
+                    ptr_type.clone(),
+                    ptr_ref,
+                    pointer_add_ref,
+                );
+                let assign_ref = ExprRef::from_push(resolved_expr_vec, assign);
+                Ok(assign_ref)
+            } else {
+                // normal arithmetic
+                let add_ref = basic_binary_op_inner(
+                    a_ref,
+                    one_ref,
+                    TypedExpressionNode::Subtract,
+                    resolved_expr_vec,
+                )?;
+                let a_type = resolved_expr_vec[a_ref].expr_type().clone();
+                let converted = assignment_type_conversion(&a_type, add_ref, resolved_expr_vec)?;
+
+                let assign =
+                    TypedExpressionNode::PostAugmentedAssign(a_type.clone(), a_ref, converted);
+                let assign_ref = ExprRef::from_push(resolved_expr_vec, assign);
+                Ok(assign_ref)
+            }
+        }
         ExpressionNode::ArraySubscript(a, b) => {
             // check that one is a pointer to an object, the other is an integer
             let a_ref = resolve_expr(&a, resolved_expr_vec, expr_indices, symtab)?;
@@ -1235,7 +1365,6 @@ enum Conversions {
 fn augmented_assign_op(
     a_ref: ExprRef,
     b_ref: ExprRef,
-    assign_op_ctor: fn(CType, ExprRef, ExprRef) -> TypedExpressionNode,
     op_ctor: fn(CType, ExprRef, ExprRef) -> TypedExpressionNode,
 
     conversions: Conversions,
@@ -1266,7 +1395,7 @@ fn augmented_assign_op(
     let a_type = resolved_expr_vec[a_ref].expr_type().clone();
     let result_converted = assignment_type_conversion(&a_type, op_ref, resolved_expr_vec)?;
 
-    let assign = assign_op_ctor(a_type, a_ref, result_converted);
+    let assign = TypedExpressionNode::AugmentedAssign(a_type, a_ref, result_converted);
     let assign_ref = ExprRef::from_push(resolved_expr_vec, assign);
     Ok(assign_ref)
 }

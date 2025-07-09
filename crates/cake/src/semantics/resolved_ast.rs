@@ -130,18 +130,10 @@ pub(crate) enum TypedExpressionNode {
     // As such, we keep around the lvalue as the first ExprRef and
     // the casts / operation / rhs / casts as the second ExprRef.
     // codegen is responsible for ensuring lvalue is only evaluated once
-    MultiplyAssign(CType, ExprRef, ExprRef),
-    DivideAssign(CType, ExprRef, ExprRef),
-    ModuloAssign(CType, ExprRef, ExprRef),
-    AddAssign(CType, ExprRef, ExprRef),
-    SubAssign(CType, ExprRef, ExprRef),
-    PtrAddAssign(CType, ExprRef, ExprRef),
-    PtrSubAssign(CType, ExprRef, ExprRef),
-    LShiftAssign(CType, ExprRef, ExprRef),
-    RShiftAssign(CType, ExprRef, ExprRef),
-    AndAssign(CType, ExprRef, ExprRef),
-    XorAssign(CType, ExprRef, ExprRef),
-    OrAssign(CType, ExprRef, ExprRef),
+    AugmentedAssign(CType, ExprRef, ExprRef),
+
+    // used for postincrement, postdecrement
+    PostAugmentedAssign(CType, ExprRef, ExprRef),
 
     Ternary(CType, ExprRef, ExprRef, ExprRef),
 
@@ -176,8 +168,6 @@ pub(crate) enum TypedExpressionNode {
     // destination type, reference, source type
     Cast(CType, ExprRef, CType),
 
-    PreIncrement(CType, ExprRef),
-    PreDecrement(CType, ExprRef),
     Sizeof(CType, ExprRef),
     AddressOf(CType, ExprRef),
     Dereference(CType, ExprRef),
@@ -185,9 +175,6 @@ pub(crate) enum TypedExpressionNode {
     UnaryMinus(CType, ExprRef),
     BitwiseNot(CType, ExprRef),
     Not(CType, ExprRef),
-
-    PostIncrement(CType, ExprRef),
-    PostDecrement(CType, ExprRef),
 
     DirectFunctionCall(CType, FunctionIdx, ExprRangeRef),
     IndirectFunctionCall(CType, ExprRef, ExprRangeRef),
@@ -210,18 +197,8 @@ impl TypedExpressionNode {
         match self {
             TypedExpressionNode::CommaExpr(qualified_type, _)
             | TypedExpressionNode::SimpleAssign(qualified_type, _, _)
-            | TypedExpressionNode::MultiplyAssign(qualified_type, _, _)
-            | TypedExpressionNode::DivideAssign(qualified_type, _, _)
-            | TypedExpressionNode::ModuloAssign(qualified_type, _, _)
-            | TypedExpressionNode::AddAssign(qualified_type, _, _)
-            | TypedExpressionNode::SubAssign(qualified_type, _, _)
-            | TypedExpressionNode::PtrAddAssign(qualified_type, _, _)
-            | TypedExpressionNode::PtrSubAssign(qualified_type, _, _)
-            | TypedExpressionNode::LShiftAssign(qualified_type, _, _)
-            | TypedExpressionNode::RShiftAssign(qualified_type, _, _)
-            | TypedExpressionNode::AndAssign(qualified_type, _, _)
-            | TypedExpressionNode::XorAssign(qualified_type, _, _)
-            | TypedExpressionNode::OrAssign(qualified_type, _, _)
+            | TypedExpressionNode::AugmentedAssign(qualified_type, _, _)
+            | TypedExpressionNode::PostAugmentedAssign(qualified_type, _, _)
             | TypedExpressionNode::Ternary(qualified_type, _, _, _)
             | TypedExpressionNode::LogicalAnd(qualified_type, _, _)
             | TypedExpressionNode::LogicalOr(qualified_type, _, _)
@@ -245,8 +222,6 @@ impl TypedExpressionNode {
             | TypedExpressionNode::PointerSub(qualified_type, _, _)
             | TypedExpressionNode::PointerDiff(qualified_type, _, _)
             | TypedExpressionNode::Cast(qualified_type, _, _)
-            | TypedExpressionNode::PreIncrement(qualified_type, _)
-            | TypedExpressionNode::PreDecrement(qualified_type, _)
             | TypedExpressionNode::Sizeof(qualified_type, _)
             | TypedExpressionNode::AddressOf(qualified_type, _)
             | TypedExpressionNode::Dereference(qualified_type, _)
@@ -254,8 +229,6 @@ impl TypedExpressionNode {
             | TypedExpressionNode::UnaryMinus(qualified_type, _)
             | TypedExpressionNode::BitwiseNot(qualified_type, _)
             | TypedExpressionNode::Not(qualified_type, _)
-            | TypedExpressionNode::PostIncrement(qualified_type, _)
-            | TypedExpressionNode::PostDecrement(qualified_type, _)
             | TypedExpressionNode::DirectFunctionCall(qualified_type, _, _)
             | TypedExpressionNode::IndirectFunctionCall(qualified_type, _, _)
             | TypedExpressionNode::DotAccess(qualified_type, _, _)

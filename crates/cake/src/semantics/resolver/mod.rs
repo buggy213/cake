@@ -6,7 +6,7 @@ use thiserror::Error;
 use super::symtab::{Scope, SymbolTable, SymtabError};
 use crate::parser::hand_parser::ParserState;
 use crate::semantics::resolved_ast::{
-    ContextRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
+    ContextRef, ExprRangeRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
 use crate::semantics::symtab::{Function, ScopedSymtab};
 use crate::types::{EnumType, FunctionType, FunctionTypeIdx, StructureType, UnionType};
@@ -78,6 +78,7 @@ pub(crate) struct ResolvedAST {
     pub(crate) ast_indices: Vec<NodeRef>,
     pub(crate) exprs: Vec<TypedExpressionNode>,
     pub(crate) expr_indices: Vec<ExprRef>,
+    pub(crate) function_expr_ranges: Vec<ExprRangeRef>,
     pub(crate) symtab: SymbolTable,
     pub(crate) resolve_contexts: Vec<ResolverContext>,
 }
@@ -90,6 +91,7 @@ struct IntermediateAST {
     ast_indices: Vec<NodeRef>,
     exprs: Vec<TypedExpressionNode>,
     expr_indices: Vec<ExprRef>,
+    function_expr_ranges: Vec<ExprRangeRef>,
 }
 
 impl ResolvedAST {
@@ -103,6 +105,7 @@ impl ResolvedAST {
             ast_indices,
             exprs,
             expr_indices,
+            function_expr_ranges,
         } = intermediate;
 
         let ResolverState {
@@ -120,6 +123,7 @@ impl ResolvedAST {
             ast_indices,
             exprs,
             expr_indices,
+            function_expr_ranges,
             resolve_contexts: context_stack,
             symtab: SymbolTable::from_scoped_symtab(scoped_symtab),
         }
@@ -405,6 +409,7 @@ pub fn resolve_ast(
         ast_indices: Vec::new(),
         exprs: Vec::new(),
         expr_indices: Vec::new(),
+        function_expr_ranges: Vec::new(),
     };
 
     let mut resolver_state = ResolverState::new(scopes);
@@ -539,6 +544,7 @@ fn resolve_ast_inner(
 
             let (node_idx, node_ref) = insert_placeholder(&mut intermediate_ast.nodes);
 
+            let expr_begin = intermediate_ast.exprs.len() as u32;
             resolve_state.add_function_defn(node_ref, func_type_idx);
             let body_ref = resolve_ast_inner(
                 node_ref,
@@ -548,6 +554,10 @@ fn resolve_ast_inner(
                 resolve_state,
             )?;
             resolve_state.close_function_defn();
+            let expr_end = intermediate_ast.exprs.len() as u32;
+            intermediate_ast
+                .function_expr_ranges
+                .push(ExprRangeRef(expr_begin, expr_end));
 
             // check that all goto statements in this function have a proper target
             for goto_node_ref in resolve_state.deferred_goto_resolve.iter().copied() {

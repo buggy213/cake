@@ -175,7 +175,7 @@ pub(crate) struct ScopedSymtab {
 
     // which objects are associated with every function vs which are global
     function_object_ranges: Vec<ObjectRangeRef>,
-    // which correspond to
+
     // TODO: maybe create a new type for resolved function type?
     function_parameter_ranges: Vec<ObjectRangeRef>,
     global_objects: Vec<ObjectIdx>,

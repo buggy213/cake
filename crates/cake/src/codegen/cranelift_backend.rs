@@ -11,13 +11,15 @@ use std::{
 };
 
 use cranelift::{
-    codegen::ir::{ArgumentExtension, ArgumentPurpose, BlockArg, FuncRef, StackSlot, ValueLabel},
+    codegen::ir::{
+        ArgumentExtension, ArgumentPurpose, BlockArg, FuncRef, Opcode, StackSlot, ValueLabel,
+    },
     frontend::FuncInstBuilder,
     module::{DataDescription, DataId, FuncId, Module},
     object::ObjectModule,
     prelude::{
-        AbiParam, Block, FloatCC, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC,
-        MemFlags, Signature, StackSlotData, StackSlotKind, Type, Value,
+        AbiParam, Block, EntityRef, FloatCC, FunctionBuilder, FunctionBuilderContext, InstBuilder,
+        IntCC, MemFlags, Signature, StackSlotData, StackSlotKind, Type, Value,
         isa::TargetFrontendConfig,
         settings::{self, Flags},
         types,
@@ -27,7 +29,7 @@ use cranelift::{
 use crate::{
     semantics::{
         self,
-        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
+        resolved_ast::{ExprRangeRef, ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
         resolver::{ResolvedAST, ResolverContext},
         symtab::{FunctionIdx, ObjectIdx, ObjectRangeRef, Scope, SymbolTable},
     },
@@ -103,6 +105,21 @@ struct LowerFunctionContext {
 
     switch_cases: Vec<Block>,
     current_case: usize,
+
+    // mapping of exprs to Values,
+    // as well as the contiguous range of exprs that are part of this function
+    expr_range: ExprRangeRef,
+    expr_values: Vec<Value>,
+}
+
+impl LowerFunctionContext {
+    fn expr_value(&self, expr_ref: ExprRef) -> Value {
+        self.expr_values[expr_ref.get_inner() - self.expr_range.0 as usize]
+    }
+
+    fn set_expr_value(&mut self, expr_ref: ExprRef, value: Value) {
+        self.expr_values[expr_ref.get_inner() - self.expr_range.0 as usize] = value;
+    }
 }
 
 impl CraneliftBackend {
@@ -249,9 +266,15 @@ impl CraneliftBackend {
 
         match root {
             ResolvedASTNode::TranslationUnit { children } => {
-                for fn_defn_ref_idx in children.0..children.1 {
+                for (fn_defn_idx, fn_defn_ref_idx) in (children.0..children.1).enumerate() {
                     let fn_defn_ref = resolved_ast.ast_indices[fn_defn_ref_idx as usize];
-                    self.lower_function(resolved_ast, fn_defn_ref, function_builder_ctx);
+
+                    self.lower_function(
+                        fn_defn_idx,
+                        resolved_ast,
+                        fn_defn_ref,
+                        function_builder_ctx,
+                    );
                 }
             }
             _ => panic!("corrupted AST"),
@@ -260,6 +283,7 @@ impl CraneliftBackend {
 
     fn lower_function(
         &mut self,
+        function_defn_idx: usize,
         resolved_ast: &ResolvedAST,
         function_node_ref: NodeRef,
         function_builder_ctx: &mut FunctionBuilderContext,
@@ -315,6 +339,10 @@ impl CraneliftBackend {
             fn_builder.ins().stack_store(cranelift_param, stack_slot, 0);
         }
 
+        let expr_range = resolved_ast.function_expr_ranges[function_defn_idx];
+        let num_exprs = (expr_range.1 - expr_range.0) as usize;
+        let mut expr_values = Vec::new();
+        expr_values.resize_with(num_exprs, || Value::new(0));
         let mut lower_fn_ctx = LowerFunctionContext {
             break_target: None,
             continue_target: None,
@@ -322,6 +350,9 @@ impl CraneliftBackend {
 
             switch_cases: Vec::new(),
             current_case: 0,
+
+            expr_values,
+            expr_range,
         };
 
         self.lower_statement(
@@ -792,7 +823,7 @@ impl CraneliftBackend {
         object_frame: &Frame,
         lower_fn_ctx: &mut LowerFunctionContext,
     ) -> Value {
-        match &resolved_ast.exprs[expr_ref] {
+        let expr_value = match &resolved_ast.exprs[expr_ref] {
             crate::semantics::resolved_ast::TypedExpressionNode::Multiply(
                 result_type,
                 lhs,
@@ -1402,11 +1433,94 @@ impl CraneliftBackend {
                 )
             }
 
+            TypedExpressionNode::AugmentedAssign(_, lvalue, operation) => {
+                let result = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *operation,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+
+                // for an lvalue, its associated value must be a stack load or memory load
+                let cranelift_lvalue = lower_fn_ctx.expr_value(*lvalue);
+                let value_def = fn_builder.func.dfg.value_def(cranelift_lvalue);
+                let location = match value_def {
+                    cranelift::codegen::ir::ValueDef::Result(inst_ref, _) => {
+                        let inst = fn_builder.func.dfg.insts[inst_ref];
+                        match inst.opcode() {
+                            Opcode::StackLoad => StackOrMemory::Stack(inst.stack_slot().unwrap()),
+                            Opcode::Load => {
+                                StackOrMemory::Memory(fn_builder.func.dfg.inst_args(inst_ref)[0])
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+
+                match location {
+                    StackOrMemory::Stack(stack_slot) => {
+                        fn_builder.ins().stack_store(result, stack_slot, 0);
+                    }
+                    StackOrMemory::Memory(pointer) => {
+                        fn_builder
+                            .ins()
+                            .store(MemFlags::trusted(), result, pointer, 0);
+                    }
+                }
+
+                result
+            }
+
+            TypedExpressionNode::PostAugmentedAssign(_, lvalue, operation) => {
+                let result = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *operation,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+
+                // for an lvalue, its associated value must be a stack load or memory load
+                let cranelift_lvalue = lower_fn_ctx.expr_value(*lvalue);
+                let value_def = fn_builder.func.dfg.value_def(cranelift_lvalue);
+                let location = match value_def {
+                    cranelift::codegen::ir::ValueDef::Result(inst_ref, _) => {
+                        let inst = fn_builder.func.dfg.insts[inst_ref];
+                        match inst.opcode() {
+                            Opcode::StackLoad => StackOrMemory::Stack(inst.stack_slot().unwrap()),
+                            Opcode::Load => {
+                                StackOrMemory::Memory(fn_builder.func.dfg.inst_args(inst_ref)[0])
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+
+                match location {
+                    StackOrMemory::Stack(stack_slot) => {
+                        fn_builder.ins().stack_store(result, stack_slot, 0);
+                    }
+                    StackOrMemory::Memory(pointer) => {
+                        fn_builder
+                            .ins()
+                            .store(MemFlags::trusted(), result, pointer, 0);
+                    }
+                }
+
+                cranelift_lvalue
+            }
+
             other => {
                 dbg!(other);
                 todo!("other expressions")
             }
-        }
+        };
+
+        lower_fn_ctx.set_expr_value(expr_ref, expr_value);
+        expr_value
     }
 
     fn lower_lvalue(
@@ -1514,9 +1628,10 @@ mod cranelift_backend_tests {
     use super::CraneliftBackend;
 
     fn test_artifact_dir(test_name: &'static str) -> PathBuf {
-        let workspace = PathBuf::from(
-            std::env::var("CARGO_MANIFEST_DIR").expect("workspace directory not set"),
-        );
+        let workspace = std::env::var("CARGO_MANIFEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir());
+
         let test_artifacts = workspace.join("test_artifacts");
         let test_artifact = test_artifacts.join(test_name);
         // error is expected if it already exists
@@ -2116,6 +2231,12 @@ mod cranelift_backend_tests {
     fn test_augmented_assignment() {
         let code = r#"
         int printf(const char *fmt, ...);
+        void my_strcpy(char *dest, const char *src) {
+            while (*src) {
+                *(dest++) = *(src++);
+            }
+            *dest = '\0';
+        }
         int main(int argc, char *argv[]) {
             int i;
             int j;
@@ -2129,11 +2250,16 @@ mod cranelift_backend_tests {
             x = 10;
             printf("%d ", ++x);
             printf("%d ", x++);
+
+            char buf[64];
+            my_strcpy(buf, "test test");
+            printf("%s", buf);
+
             return x;
         }
         "#;
 
-        test_harness("augmented_assignment", code, "1024 11 11", 12);
+        test_harness("augmented_assignment", code, "1024 11 11 test test", 12);
     }
 
     fn test_initializer() {
