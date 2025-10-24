@@ -320,6 +320,14 @@ impl SymbolTable {
             .binary_search(&object_idx)
             .expect("global not found")
     }
+
+    pub(crate) fn structure_types(&self) -> &[StructureType] {
+        &self.structure_types
+    }
+
+    pub(crate) fn union_types(&self) -> &[UnionType] {
+        &self.union_types
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

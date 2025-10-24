@@ -4,7 +4,7 @@ use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
 
 use crate::semantics::resolved_ast::MemberRef;
-use crate::types::{BasicType, CType, StructureType, UnionType};
+use crate::types::{BasicType, CType, StructureType, StructureTypeIdx, UnionType, UnionTypeIdx};
 
 pub(crate) struct FieldOffsets<'arena>(&'arena [u32]);
 
@@ -17,24 +17,56 @@ impl Index<MemberRef> for FieldOffsets<'_> {
 }
 
 pub(crate) struct StructLayout<'arena> {
-    size: u32,
-    align: u32,
-    field_offsets: FieldOffsets<'arena>,
+    pub(crate) size: u32,
+    pub(crate) align: u32,
+    pub(crate) field_offsets: FieldOffsets<'arena>,
 }
 
 pub(crate) struct UnionLayout {
-    size: u32,
-    align: u32,
+    pub(crate) size: u32,
+    pub(crate) align: u32,
 }
 
 pub(crate) struct Layouts<'arena> {
-    struct_layouts: BumpVec<'arena, StructLayout<'arena>>,
-    union_layouts: BumpVec<'arena, UnionLayout>,
+    pub(crate) struct_layouts: BumpVec<'arena, StructLayout<'arena>>,
+    pub(crate) union_layouts: BumpVec<'arena, UnionLayout>,
+}
+
+impl<'arena> Index<StructureTypeIdx> for Layouts<'arena> {
+    type Output = StructLayout<'arena>;
+
+    fn index(&self, index: StructureTypeIdx) -> &Self::Output {
+        &self.struct_layouts[index.get_inner()]
+    }
+}
+
+impl<'arena> Index<UnionTypeIdx> for Layouts<'arena> {
+    type Output = UnionLayout;
+
+    fn index(&self, index: UnionTypeIdx) -> &Self::Output {
+        &self.union_layouts[index.get_inner()]
+    }
+}
+
+impl Layouts<'_> {
+    pub(crate) fn get_member_offset(&self, aggregate_type: &CType, member: MemberRef) -> u32 {
+        match aggregate_type {
+            CType::StructureTypeRef {
+                symtab_idx,
+                qualifier: _,
+            } => self[*symtab_idx].field_offsets[member],
+            CType::UnionTypeRef {
+                symtab_idx,
+                qualifier: _,
+            } => 0,
+            _ => unreachable!("TODO: more specificity in cake's type system to avoid this"),
+        }
+    }
 }
 
 // compute_layouts
 // takes in all StructType and computes their layouts
-fn compute_layouts<'arena>(
+pub(crate) fn compute_layouts<'arena>(
     arena: &'arena Bump,
     struct_types: &[StructureType],
     union_types: &[UnionType],
