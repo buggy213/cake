@@ -793,9 +793,9 @@ fn test_multi_array() {
         arr[0][1] = 2;
         arr[0][2] = 3;
 
-        int *pointer_to_first[3] = &arr[0];
-        int *pointer_to_second[3] = pointer_to_first + 1;
-        pointer_to_second[0] = 4;
+        int (*pointer_to_first)[3] = &arr[0];
+        int (*pointer_to_second)[3] = pointer_to_first + 1;
+        (*pointer_to_second)[0] = 4;
 
         int *flattened = &arr[0][0];
         int sum = 0;
