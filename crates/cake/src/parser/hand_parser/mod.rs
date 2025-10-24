@@ -897,6 +897,38 @@ fn parse_expr_rec(
                                     );
                                 }
 
+                                // member access operators - require identifier on the right
+                                Operator::Dot => {
+                                    // Parse the member identifier
+                                    let member_token =
+                                        toks.peek().ok_or(ParseError::UnexpectedEOF)?;
+                                    if let CLexemes::Identifier = member_token.0 {
+                                        let member = Identifier::new(
+                                            state.current_scope,
+                                            member_token.1.to_string(),
+                                        );
+                                        toks.eat(CLexemes::Identifier);
+                                        lhs = ExpressionNode::DotAccess(Box::new(lhs), member);
+                                    } else {
+                                        return Err(ParseError::BadMemberAccess.into());
+                                    }
+                                }
+                                Operator::Arrow => {
+                                    // Parse the member identifier
+                                    let member_token =
+                                        toks.peek().ok_or(ParseError::UnexpectedEOF)?;
+                                    if let CLexemes::Identifier = member_token.0 {
+                                        let member = Identifier::new(
+                                            state.current_scope,
+                                            member_token.1.to_string(),
+                                        );
+                                        toks.eat(CLexemes::Identifier);
+                                        lhs = ExpressionNode::ArrowAccess(Box::new(lhs), member);
+                                    } else {
+                                        return Err(ParseError::BadMemberAccess.into());
+                                    }
+                                }
+
                                 _ => unreachable!(),
                             }
 
@@ -1007,20 +1039,6 @@ fn parse_expr_rec(
                                 }
                                 Operator::OrAssign => {
                                     ExpressionNode::OrAssign(Box::new(lhs), Box::new(rhs))
-                                }
-                                Operator::Dot => {
-                                    if let ExpressionNode::Identifier(member) = rhs {
-                                        ExpressionNode::DotAccess(Box::new(lhs), member)
-                                    } else {
-                                        return Err(ParseError::BadMemberAccess.into());
-                                    }
-                                }
-                                Operator::Arrow => {
-                                    if let ExpressionNode::Identifier(member) = rhs {
-                                        ExpressionNode::ArrowAccess(Box::new(lhs), member)
-                                    } else {
-                                        return Err(ParseError::BadMemberAccess.into());
-                                    }
                                 }
                                 _ => unreachable!(),
                             };
@@ -1183,7 +1201,6 @@ fn parse_declaration(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
-    dbg!(toks.peek());
     let declaration_specifiers = parse_declaration_specifiers(toks, state)?;
     // handle empty declaration case, see parse_external_declaration
 
@@ -2008,8 +2025,8 @@ fn parse_init_declarator(
     let base_type = qualified_type;
     let (qualified_type, name) = parse_declarator(toks, state, base_type)?;
     let initializer = match toks.peek() {
-        Some((CLexemes::Eq, _, _)) => {
-            toks.eat(CLexemes::Eq);
+        Some((CLexemes::Assign, _, _)) => {
+            toks.eat(CLexemes::Assign);
             let initializer = parse_initializer(toks, state)?;
             Some(Box::new(initializer))
         }
@@ -2407,7 +2424,6 @@ fn parse_statement(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
-    dbg!(toks.peek());
     // only 1-2 token lookahead required to check for what type of statement it is
     if is_lookahead_label(toks, state) {
         return parse_labeled_statement(toks, state);

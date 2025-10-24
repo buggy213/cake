@@ -137,6 +137,76 @@ fn test_parse_expr_cast() {
 }
 
 #[test]
+fn test_parse_expr_member_access() {
+    let basic_expr = r#"
+    a.b
+    "#;
+    let (mut toks, mut state) = text_test_harness(basic_expr);
+
+    let a = make_identifier(&mut state, "a");
+    let b_ident = Identifier::new(state.current_scope, "b".to_string());
+    let expr = ExpressionNode::DotAccess(Box::new(a), b_ident);
+
+    let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
+    assert_eq!(parsed, expr);
+}
+
+#[test]
+fn test_parse_expr_arrow_access() {
+    let basic_expr = r#"
+    a->b
+    "#;
+    let (mut toks, mut state) = text_test_harness(basic_expr);
+
+    let a = make_identifier(&mut state, "a");
+    let b_ident = Identifier::new(state.current_scope, "b".to_string());
+    let expr = ExpressionNode::ArrowAccess(Box::new(a), b_ident);
+
+    let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
+    assert_eq!(parsed, expr);
+}
+
+#[test]
+fn test_parse_expr_member_access_left_associativity() {
+    let basic_expr = r#"
+    a.b.c
+    "#;
+    let (mut toks, mut state) = text_test_harness(basic_expr);
+
+    // Should parse as (a.b).c, not a.(b.c)
+    let a = make_identifier(&mut state, "a");
+    let b_ident = Identifier::new(state.current_scope, "b".to_string());
+    let c_ident = Identifier::new(state.current_scope, "c".to_string());
+
+    let inner_dot = ExpressionNode::DotAccess(Box::new(a), b_ident);
+    let expr = ExpressionNode::DotAccess(Box::new(inner_dot), c_ident);
+
+    let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
+    assert_eq!(parsed, expr);
+}
+
+#[test]
+fn test_parse_expr_member_access_with_arithmetic() {
+    let basic_expr = r#"
+    a.b + c.d
+    "#;
+    let (mut toks, mut state) = text_test_harness(basic_expr);
+
+    // Should parse as (a.b) + (c.d)
+    let a = make_identifier(&mut state, "a");
+    let b_ident = Identifier::new(state.current_scope, "b".to_string());
+    let c = make_identifier(&mut state, "c");
+    let d_ident = Identifier::new(state.current_scope, "d".to_string());
+
+    let a_dot_b = ExpressionNode::DotAccess(Box::new(a), b_ident);
+    let c_dot_d = ExpressionNode::DotAccess(Box::new(c), d_ident);
+    let expr = ExpressionNode::Add(Box::new(a_dot_b), Box::new(c_dot_d));
+
+    let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
+    assert_eq!(parsed, expr);
+}
+
+#[test]
 fn test_parse_subscript_expr() {
     let basic_expr = r#"buf[0] = 'a'"#;
     let (mut toks, mut state) = text_test_harness(basic_expr);
