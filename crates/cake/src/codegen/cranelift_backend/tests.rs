@@ -698,6 +698,32 @@ fn test_struct() {
 }
 
 #[test]
+fn test_struct_assign() {
+    // test assigning a struct to another struct
+    let code = r#"
+    int printf(const char *fmt, ...);
+    struct data {
+        int a;
+        float b;
+    };
+    
+    int main() {
+        struct data x;
+        x.a = 5;
+        x.b = 2.0f;
+
+        struct data y;
+        y = x;
+        printf("y.a = %d, y.b = %.1f\n", y.a, y.b);
+
+        return 0;
+    }
+    "#;
+
+    test_harness("struct_assign", code, "y.a = 5, y.b = 2.0\n", 0);
+}
+
+#[test]
 fn test_struct_param() {
     // test passing a struct by value
     let code = r#"

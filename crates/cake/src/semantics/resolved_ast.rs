@@ -182,9 +182,12 @@ pub(crate) enum TypedExpressionNode {
     DotAccess(CType, ExprRef, MemberRef),
     ArrowAccess(CType, ExprRef, MemberRef),
 
+    // dot / arrow access, object identifier can lead to array decay
+    // (it's effectively a cast)
+    ArrayDecay(CType, ExprRef),
+
     // TODO: add support for compound initializers
     // CompoundInitializer
-    ArrayDecay(CType, ObjectIdx),
     ObjectIdentifier(CType, ObjectIdx),
     FunctionIdentifier(CType, FunctionIdx),
 

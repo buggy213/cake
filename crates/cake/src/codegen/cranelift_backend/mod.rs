@@ -260,7 +260,6 @@ impl<'arena> CraneliftBackend<'arena> {
             _ => todo!("support non-scalar return types"),
         }
 
-        dbg!(&signature);
         signature
     }
 
@@ -473,7 +472,6 @@ impl<'arena> CraneliftBackend<'arena> {
                         object_frame,
                         lower_fn_ctx,
                     );
-                    dbg!(cranelift_value);
                     &[cranelift_value]
                 } else {
                     &[]
@@ -956,22 +954,53 @@ impl<'arena> CraneliftBackend<'arena> {
                 lhs,
                 rhs,
             ) => {
-                // LHS should produce stack slot or global value
+                // LHS should produce pointer
                 let location =
                     self.lower_lvalue(fn_builder, *lhs, resolved_ast, object_frame, lower_fn_ctx);
-                let cranelift_type = match result_type {
-                    CType::BasicType { basic_type, .. } => (*basic_type).into(),
-                    CType::PointerType { .. } => self.pointer_type(),
-                    _ => todo!("support other types"),
-                };
+
                 let rhs_value =
                     self.lower_expr(fn_builder, resolved_ast, *rhs, object_frame, lower_fn_ctx);
 
-                fn_builder
-                    .ins()
-                    .store(MemFlags::trusted(), rhs_value, location, 0);
+                match result_type {
+                    CType::StructureTypeRef {
+                        symtab_idx,
+                        qualifier: _,
+                    } => {
+                        let size = self.computed_layouts[*symtab_idx].size;
+                        let size_val = fn_builder.ins().iconst(self.pointer_type(), size as i64);
+                        fn_builder.call_memcpy(
+                            self.object.target_config(),
+                            location,
+                            rhs_value,
+                            size_val,
+                        );
 
-                rhs_value
+                        location
+                    }
+                    CType::UnionTypeRef {
+                        symtab_idx,
+                        qualifier: _,
+                    } => {
+                        let size = self.computed_layouts[*symtab_idx].size;
+                        let size_val = fn_builder.ins().iconst(self.pointer_type(), size as i64);
+                        fn_builder.call_memcpy(
+                            self.object.target_config(),
+                            location,
+                            rhs_value,
+                            size_val,
+                        );
+
+                        location
+                    }
+                    CType::BasicType { .. } | CType::PointerType { .. } => {
+                        fn_builder
+                            .ins()
+                            .store(MemFlags::trusted(), rhs_value, location, 0);
+
+                        rhs_value
+                    }
+                    _ => todo!("handle other types"),
+                }
             }
             crate::semantics::resolved_ast::TypedExpressionNode::DirectFunctionCall(
                 result_type,
@@ -1097,6 +1126,11 @@ impl<'arena> CraneliftBackend<'arena> {
                 TypedExpressionNode::FunctionIdentifier(_, fn_idx) => fn_builder
                     .ins()
                     .func_addr(self.pointer_type(), self.function_refs[*fn_idx]),
+                TypedExpressionNode::ArrayDecay(_, _) => {
+                    todo!(
+                        "handle array decay case (operand of & means it shouldn't decay in this case)"
+                    )
+                }
                 _ => todo!(),
             },
             crate::semantics::resolved_ast::TypedExpressionNode::ObjectIdentifier(
@@ -1175,10 +1209,12 @@ impl<'arena> CraneliftBackend<'arena> {
                 fn_builder.ins().iadd(base, offset)
             }
 
-            TypedExpressionNode::ArrayDecay(_, object_idx) => {
+            TypedExpressionNode::ArrayDecay(_, base_ref) => {
+                // Arrays already produce pointer to their first element in
+                // `lower_lvalue`, so we don't need to do anything more
                 let location = self.lower_lvalue(
                     fn_builder,
-                    expr_ref,
+                    *base_ref,
                     resolved_ast,
                     object_frame,
                     lower_fn_ctx,
@@ -1536,6 +1572,15 @@ impl<'arena> CraneliftBackend<'arena> {
                             offset as i32,
                         )
                     }
+                    CType::PointerType { .. } => {
+                        let cranelift_type = self.pointer_type();
+                        fn_builder.ins().load(
+                            cranelift_type,
+                            MemFlags::trusted(),
+                            pointer,
+                            offset as i32,
+                        )
+                    }
                     _ => todo!("other members"),
                 };
 
@@ -1603,8 +1648,7 @@ impl<'arena> CraneliftBackend<'arena> {
     ) -> Value {
         let lvalue_expr = &resolved_ast.exprs[lvalue_ref];
         match lvalue_expr {
-            TypedExpressionNode::ObjectIdentifier(_, object_idx)
-            | TypedExpressionNode::ArrayDecay(_, object_idx) => {
+            TypedExpressionNode::ObjectIdentifier(_, object_idx) => {
                 if object_frame.contains(*object_idx) {
                     let stack_slot = object_frame.get_object_stack_slot(*object_idx);
                     fn_builder

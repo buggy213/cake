@@ -880,7 +880,8 @@ pub(super) fn resolve_expr(
                 TypedExpressionNode::DotAccess(modified_member_type, accessee_ref, member_ref);
             let dot_access_ref = ExprRef::from_push(resolved_expr_vec, dot_access);
 
-            Ok(dot_access_ref)
+            // handle array decay
+            Ok(array_decay(resolved_expr_vec, dot_access_ref))
         }
         ExpressionNode::ArrowAccess(pointer, identifier) => {
             let pointer_ref = resolve_expr(&pointer, resolved_expr_vec, expr_indices, symtab)?;
@@ -900,7 +901,8 @@ pub(super) fn resolve_expr(
                 TypedExpressionNode::ArrowAccess(modified_member_type, pointer_ref, member_ref);
             let arrow_access_ref = ExprRef::from_push(resolved_expr_vec, arrow_access);
 
-            Ok(arrow_access_ref)
+            // handle array decay
+            Ok(array_decay(resolved_expr_vec, arrow_access_ref))
         }
         ExpressionNode::Identifier(identifier) => {
             let symbol = symtab.lookup_symbol(identifier.scope, &identifier.name);
@@ -930,26 +932,11 @@ pub(super) fn resolve_expr(
 
                     let object_type = object_type.clone();
 
-                    // handle array decay
-                    match object_type {
-                        CType::ArrayType { element_type, .. } => {
-                            let pointer_type = CType::PointerType {
-                                pointee_type: element_type,
-                                qualifier: TypeQualifier::empty(),
-                            };
-
-                            let array_decay = TypedExpressionNode::ArrayDecay(pointer_type, *idx);
-                            let array_decay_ref =
-                                ExprRef::from_push(resolved_expr_vec, array_decay);
-                            return Ok(array_decay_ref);
-                        }
-                        _ => (),
-                    }
-
                     let object = TypedExpressionNode::ObjectIdentifier(object_type, *idx);
                     let object_ref = ExprRef::from_push(resolved_expr_vec, object);
 
-                    return Ok(object_ref);
+                    // handle array decay
+                    Ok(array_decay(resolved_expr_vec, object_ref))
                 }
             }
         }
@@ -1398,4 +1385,23 @@ fn augmented_assign_op(
     let assign = TypedExpressionNode::AugmentedAssign(a_type, a_ref, result_converted);
     let assign_ref = ExprRef::from_push(resolved_expr_vec, assign);
     Ok(assign_ref)
+}
+
+// Inserts array decay node, if the given base_ref has array type
+fn array_decay(resolved_expr_vec: &mut Vec<TypedExpressionNode>, base_ref: ExprRef) -> ExprRef {
+    // handle array decay
+    match resolved_expr_vec[base_ref].expr_type() {
+        CType::ArrayType { element_type, .. } => {
+            let pointer_type = CType::PointerType {
+                pointee_type: element_type.clone(),
+                qualifier: TypeQualifier::empty(),
+            };
+
+            let array_decay = TypedExpressionNode::ArrayDecay(pointer_type, base_ref);
+            let array_decay_ref = ExprRef::from_push(resolved_expr_vec, array_decay);
+
+            array_decay_ref
+        }
+        _ => base_ref,
+    }
 }
