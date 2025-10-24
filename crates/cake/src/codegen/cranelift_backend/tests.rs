@@ -109,7 +109,7 @@ fn run_code(
 
     let stdout_string =
         String::from_utf8(output.stdout.clone()).expect("stdout contained weird chars");
-    dbg!(stdout_string);
+    println!("{}", &stdout_string);
     dbg!(output.status.code());
 
     assert_eq!(output.stdout.as_slice(), expected_stdout.as_bytes());
@@ -663,6 +663,7 @@ fn test_initializer() {
 
 #[test]
 fn test_struct() {
+    // round-trip some data through a struct, and pointer to struct
     let code = r#"
     int printf(const char *fmt, ...);
     struct data {
@@ -675,13 +676,84 @@ fn test_struct() {
         x.a = 5;
         x.b = 2.0f;
 
-        printf("x.a = %d, x.b = %.1f", x.a, x.b);
+        printf("x.a = %d, x.b = %.1f\n", x.a, x.b);
+
+        struct data *y;
+        y = &x;
+        y->a = 1;
+        y->b = 42.0f;
+
+        printf("y->a = %d, y->b = %.1f\n", y->a, y->b);
 
         return 0;
     }
     "#;
 
-    test_harness("struct", code, "x.a = 5, x.b = 2.0", 0);
+    test_harness(
+        "struct",
+        code,
+        "x.a = 5, x.b = 2.0\ny->a = 1, y->b = 42.0\n",
+        0,
+    );
+}
+
+#[test]
+fn test_struct_param() {
+    // test passing a struct by value
+    let code = r#"
+    int printf(const char *fmt, ...);
+    struct data {
+        int a;
+        float b;
+    };
+
+    void modify_and_print_data(struct data x) {
+        x.a = 1;
+        x.b = 1.0f;
+        printf("x.a = %d, x.b = %.1f\n", x.a, x.b);
+    }
+    
+    int main() {
+        struct data x;
+        x.a = 5;
+        x.b = 2.0f;
+
+        modify_and_print_data(x);
+        printf("x.a = %d, x.b = %.1f\n", x.a, x.b);
+
+        return 0;
+    }
+    "#;
+
+    test_harness(
+        "struct_param",
+        code,
+        "x.a = 1, x.b = 1.0\nx.a = 5, x.b = 2.0\n",
+        0,
+    );
+}
+
+#[test]
+fn test_union_punning() {
+    // do type punning with union
+    let code = r#"
+    int printf(const char *fmt, ...);
+    union data {
+        long num;
+        char c[8];
+    };
+
+    int main() {
+        union data x;
+        x.num = 0x0064636261;
+
+        printf("x.c = %s", x.c);
+
+        return 0;
+    }
+    "#;
+
+    test_harness("union_punning", code, "x.c = abcd", 0);
 }
 
 #[test]

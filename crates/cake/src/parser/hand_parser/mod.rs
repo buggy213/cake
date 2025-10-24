@@ -527,6 +527,37 @@ fn parse_float_const(text: &str) -> Result<Constant> {
     }
 }
 
+fn parse_string_literal(text: &str) -> Result<String> {
+    let without_quotes = &text[1..text.len() - 1];
+    let mut unescaped = String::with_capacity(without_quotes.len());
+    // unescape the string
+    assert!(text.is_ascii());
+    let mut unescape = false;
+    for char in without_quotes.bytes() {
+        if unescape {
+            match char {
+                b'a' => unescaped.push(0x07.into()),
+                b'b' => unescaped.push(0x08.into()),
+                b'f' => unescaped.push(0x0c.into()),
+                b'n' => unescaped.push(0x0a.into()),
+                b'r' => unescaped.push(0x0d.into()),
+                b't' => unescaped.push(0x09.into()),
+                b'v' => unescaped.push(0x0b.into()),
+                _ => unescaped.push(char.into()),
+            }
+            unescape = false;
+        } else {
+            if char == b'\\' {
+                unescape = true;
+            } else {
+                unescaped.push(char.into());
+            }
+        }
+    }
+
+    Ok(unescaped)
+}
+
 enum ExprPartResult {
     ExprPart(ExprPart),
     ParseError(ParseError),
@@ -604,21 +635,7 @@ fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Result
         }
 
         CLexemes::StringConst => {
-            let text = match (
-                text.starts_with('"'),
-                text.ends_with('"') && !text.ends_with("\\\""),
-            ) {
-                (true, true) => text
-                    .strip_prefix('"')
-                    .and_then(|t| t.strip_suffix('"'))
-                    .expect("should be infallible"),
-                (true, false) | (false, true) => return Err(ParseError::BadStringConst.into()),
-                (false, false) => {
-                    text // nop
-                }
-            };
-            let text = text.to_string();
-            // remove quotes if needed
+            let text = parse_string_literal(text)?;
 
             ExprPart::Atom(Atom::StringLiteral(text))
         }

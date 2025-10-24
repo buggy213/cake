@@ -1526,7 +1526,47 @@ impl<'arena> CraneliftBackend<'arena> {
                 let value = match member_type {
                     CType::BasicType {
                         basic_type,
-                        qualifier,
+                        qualifier: _,
+                    } => {
+                        let cranelift_type: Type = (*basic_type).into();
+                        fn_builder.ins().load(
+                            cranelift_type,
+                            MemFlags::trusted(),
+                            pointer,
+                            offset as i32,
+                        )
+                    }
+                    _ => todo!("other members"),
+                };
+
+                value
+            }
+
+            TypedExpressionNode::ArrowAccess(member_type, accessee, member) => {
+                let pointer = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *accessee,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+
+                let accessee_type = match resolved_ast.exprs[*accessee].expr_type() {
+                    CType::PointerType {
+                        pointee_type,
+                        qualifier: _,
+                    } => pointee_type.as_ref(),
+                    _ => unreachable!(),
+                };
+
+                let offset = self
+                    .computed_layouts
+                    .get_member_offset(accessee_type, *member);
+
+                let value = match member_type {
+                    CType::BasicType {
+                        basic_type,
+                        qualifier: _,
                     } => {
                         let cranelift_type: Type = (*basic_type).into();
                         fn_builder.ins().load(
@@ -1613,6 +1653,31 @@ impl<'arena> CraneliftBackend<'arena> {
                 field_ptr
             }
 
+            TypedExpressionNode::ArrowAccess(_, accessee, member) => {
+                let location = self.lower_expr(
+                    fn_builder,
+                    resolved_ast,
+                    *accessee,
+                    object_frame,
+                    lower_fn_ctx,
+                );
+
+                let accessee_type = match resolved_ast.exprs[*accessee].expr_type() {
+                    CType::PointerType {
+                        pointee_type,
+                        qualifier: _,
+                    } => pointee_type.as_ref(),
+                    _ => unreachable!("accessee must be a pointer type"),
+                };
+
+                let offset = self
+                    .computed_layouts
+                    .get_member_offset(accessee_type, *member);
+
+                let field_ptr = fn_builder.ins().iadd_imm(location, offset as i64);
+
+                field_ptr
+            }
             _ => todo!("other lvalue types"),
         }
     }
