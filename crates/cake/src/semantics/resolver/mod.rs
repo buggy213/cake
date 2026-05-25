@@ -82,6 +82,7 @@ pub(crate) struct ResolvedAST {
     pub(crate) function_expr_ranges: Vec<ExprRangeRef>,
     pub(crate) symtab: SymbolTable,
     pub(crate) resolve_contexts: Vec<ResolverContext>,
+    pub(crate) layouts: Layouts,
 }
 
 // during postorder walk, need to have uninitialized values
@@ -111,6 +112,7 @@ impl ResolvedAST {
 
         let ResolverState {
             scoped_symtab,
+            layouts,
             context_stack,
             ..
         } = resolve_state;
@@ -127,6 +129,7 @@ impl ResolvedAST {
             function_expr_ranges,
             resolve_contexts: context_stack,
             symtab: SymbolTable::from_scoped_symtab(scoped_symtab),
+            layouts,
         }
     }
 }
@@ -181,6 +184,7 @@ impl ResolverContext {
 
 struct ResolverState {
     pub(crate) scoped_symtab: ScopedSymtab,
+    layouts: Layouts,
 
     current_context: Option<usize>,
     context_stack: Vec<ResolverContext>,
@@ -192,6 +196,7 @@ impl ResolverState {
     fn new(scopes: Vec<Scope>) -> ResolverState {
         ResolverState {
             scoped_symtab: ScopedSymtab::new_with_scopes(scopes),
+            layouts: Layouts::new(),
             current_context: None,
             context_stack: Vec::new(),
             deferred_goto_resolve: Vec::new(),
@@ -528,6 +533,7 @@ fn resolve_ast_inner(
                 &mut resolve_state.scoped_symtab,
                 &fn_declaration,
                 parser_types,
+                &mut resolve_state.layouts
             )?;
             resolve_state
                 .scoped_symtab
@@ -1128,7 +1134,8 @@ fn resolve_ast_declaration(
                 decl, 
                 parser_types,
                 intermediate_ast,
-                parent
+                parent,
+                &mut resolve_state.layouts
             )?;
             if initializer_node.is_some() && declaration_list.len() > 1 {
                 todo!("multiple initializers not supported yet");
@@ -1140,6 +1147,7 @@ fn resolve_ast_declaration(
             declared_type,
             *scope,
             parser_types,
+            &mut resolve_state.layouts
         )?;
     } else {
         unreachable!("Must be called on ASTNode::Declaration")

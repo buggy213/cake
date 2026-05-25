@@ -5,6 +5,7 @@ use crate::semantics::resolver::{IntermediateAST, resolve_expr};
 use crate::semantics::symtab::{
     Function, FunctionIdx, Linkage, Object, Scope, ScopeType, ScopedSymtab, StorageClass, TaggedTypeIdx
 };
+use crate::types::layout::Layouts;
 use crate::{
     parser::ast::{Constant, Declaration},
     semantics::symtab::Symbol,
@@ -95,6 +96,7 @@ pub(super) fn resolve_declaration(
     parser_types: ParserTypes,
     intermediate_ast: &mut IntermediateAST,
     parent: NodeRef,
+    layouts: &mut Layouts
 ) -> Result<Option<NodeRef>, ASTResolveError> {
     // TODO: think if there's a less expensive / jank way to do this
     // do we really need to preserve parser AST?
@@ -102,7 +104,7 @@ pub(super) fn resolve_declaration(
 
     // first, resolve declaration type
     let declaration_type_category =
-        resolve_declaration_type(symtab, &mut type_copy, declaration.name.scope, parser_types)?;
+        resolve_declaration_type(symtab, &mut type_copy, declaration.name.scope, parser_types, layouts)?;
 
     // functions are always resolved at file scope
     let scope = if declaration_type_category == TypeCategory::Function {
@@ -231,9 +233,10 @@ pub(super) fn resolve_empty_declaration(
     declared_type: &CType,
     scope: Scope,
     parser_types: ParserTypes,
+    layouts: &mut Layouts
 ) -> Result<(), ASTResolveError> {
     let mut declared_type_copy = declared_type.clone();
-    _ = resolve_declaration_type(symtab, &mut declared_type_copy, scope, parser_types)?;
+    _ = resolve_declaration_type(symtab, &mut declared_type_copy, scope, parser_types, layouts)?;
 
     Ok(())
 }
@@ -246,6 +249,7 @@ fn resolve_declaration_type(
     qualified_type: &mut CType,
     scope: Scope,
     parser_types: ParserTypes,
+    layouts: &mut Layouts
 ) -> Result<TypeCategory, ASTResolveError> {
     // check type qualifiers
     // restrict can only be applied to pointers
@@ -271,7 +275,7 @@ fn resolve_declaration_type(
 
         CType::IncompleteArrayType { element_type, .. } => {
             let element_type_category =
-                resolve_declaration_type(symtab, element_type, scope, parser_types)?;
+                resolve_declaration_type(symtab, element_type, scope, parser_types, layouts)?;
 
             // element type must be an object (not function, not incomplete)
             if !matches!(element_type_category, TypeCategory::Object) {
@@ -282,7 +286,7 @@ fn resolve_declaration_type(
         }
         CType::ArrayType { element_type, .. } => {
             let element_type_category =
-                resolve_declaration_type(symtab, element_type, scope, parser_types)?;
+                resolve_declaration_type(symtab, element_type, scope, parser_types, layouts)?;
 
             // element type must be an object (not function, not incomplete)
             if !matches!(element_type_category, TypeCategory::Object) {
@@ -292,13 +296,13 @@ fn resolve_declaration_type(
             return Ok(TypeCategory::Object);
         }
         CType::PointerType { pointee_type, .. } => {
-            resolve_declaration_type(symtab, pointee_type, scope, parser_types)?;
+            resolve_declaration_type(symtab, pointee_type, scope, parser_types, layouts)?;
             return Ok(TypeCategory::Object);
         }
         CType::FunctionTypeRef {
             symtab_idx: ast_idx,
         } => {
-            let function_type = adjust_function_type(symtab, *ast_idx, parser_types)?;
+            let function_type = adjust_function_type(symtab, *ast_idx, parser_types, layouts)?;
             let fn_type_idx = symtab.add_function_type(function_type);
             // now a index into symtab's type table, rather than parser type table
             *ast_idx = fn_type_idx;
@@ -389,14 +393,15 @@ fn resolve_declaration_type(
                 };
 
                 let mut new_struct_members = Vec::from(structure_type.members());
-                resolve_member_types(symtab, &mut new_struct_members, scope, parser_types)?;
+                resolve_member_types(symtab, &mut new_struct_members, scope, parser_types, layouts)?;
 
                 let completed_struct = StructureType::new_complete_structure_type(
                     tag.map(String::from),
                     new_struct_members,
                 );
+                layouts.compute_struct_layout(ast_struct_type_idx, &completed_struct);
                 complete_struct(symtab, ast_struct_type_idx, completed_struct)?;
-
+                
                 *ast_idx = ast_struct_type_idx;
                 return Ok(TypeCategory::Object);
             }
@@ -438,10 +443,11 @@ fn resolve_declaration_type(
                 };
 
                 let mut new_union_members = Vec::from(union_type.members());
-                resolve_member_types(symtab, &mut new_union_members, scope, parser_types)?;
+                resolve_member_types(symtab, &mut new_union_members, scope, parser_types, layouts)?;
 
                 let completed_union =
                     UnionType::new_complete_union_type(tag.map(String::from), new_union_members);
+                layouts.compute_union_layout(ast_union_type_idx, &completed_union);
                 complete_union(symtab, ast_union_type_idx, completed_union)?;
 
                 *ast_idx = ast_union_type_idx;
@@ -593,6 +599,7 @@ fn adjust_function_type(
     symtab: &mut ScopedSymtab,
     parser_type_idx: FunctionTypeIdx,
     parser_types: ParserTypes,
+    layouts: &mut Layouts
 ) -> Result<FunctionType, ASTResolveError> {
     let mut function_type = parser_types.function_types[parser_type_idx].clone();
     let FunctionType {
@@ -606,7 +613,7 @@ fn adjust_function_type(
     // Note: gcc / clang seem to disallow defining a new type (struct / enum / union)
     // inside the return type for C++ but not in C (I'm not totally sure why?)
     let return_type_category =
-        resolve_declaration_type(symtab, return_type, *prototype_scope, parser_types)?;
+        resolve_declaration_type(symtab, return_type, *prototype_scope, parser_types, layouts)?;
 
     // return type cannot be function type or array type
     let return_type_is_array = matches!(
@@ -630,7 +637,7 @@ fn adjust_function_type(
     }
 
     for (_, param_type) in parameter_types {
-        resolve_declaration_type(symtab, param_type, *prototype_scope, parser_types)?;
+        resolve_declaration_type(symtab, param_type, *prototype_scope, parser_types, layouts)?;
 
         // adjust types - array / function decay (array / function parameters converted to
         // pointers to array / function types instead)
@@ -675,10 +682,11 @@ fn resolve_member_types(
     members: &mut Vec<AggregateMember>,
     scope: Scope,
     parser_types: ParserTypes,
+    layouts: &mut Layouts
 ) -> Result<(), ASTResolveError> {
     for (_, member_type) in members {
         let member_type_category =
-            resolve_declaration_type(symtab, member_type, scope, parser_types)?;
+            resolve_declaration_type(symtab, member_type, scope, parser_types, layouts)?;
         if !matches!(member_type_category, TypeCategory::Object) {
             // structs / unions cannot contain function type / incomplete type
             // (they can contain pointer to function / incomplete; the latter is necessary for self-referential types to work)
@@ -693,6 +701,7 @@ pub(crate) fn resolve_function_definition(
     symtab: &mut ScopedSymtab,
     fn_declaration: &Declaration,
     parser_types: ParserTypes,
+    layouts: &mut Layouts,
 ) -> Result<FunctionIdx, ASTResolveError> {
     let scope = fn_declaration.name.scope;
     assert!(
@@ -708,7 +717,7 @@ pub(crate) fn resolve_function_definition(
         }
     };
 
-    let adjusted_type = adjust_function_type(symtab, parser_type_idx, parser_types)?;
+    let adjusted_type = adjust_function_type(symtab, parser_type_idx, parser_types, layouts)?;
 
     // parameter types must not be incomplete at definition time
     for (name, ty) in &adjusted_type.parameter_types {

@@ -7,7 +7,7 @@ pub(crate) mod layout;
 use layout::{StructLayout, UnionLayout};
 
 use crate::{
-    semantics::symtab::Scope, types::layout::Layouts,
+    semantics::symtab::{Scope, SymbolTable}, types::layout::Layouts,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -152,7 +152,7 @@ pub(crate) struct StructureType {
 }
 
 make_type_idx!(StructureTypeIdx, StructureType);
-add_additional_index!(StructureTypeIdx, StructLayout, 'arena);
+add_additional_index!(StructureTypeIdx, StructLayout);
 
 impl StructureType {
     pub(crate) fn new_complete_structure_type(
@@ -475,6 +475,13 @@ impl CType {
                 layouts[*symtab_idx].align
             }
             _ => todo!("more types")
+        }
+    }
+
+    pub(crate) fn as_struct(&self) -> Option<StructureTypeIdx> {
+        match self {
+            CType::StructureTypeRef { symtab_idx, .. } => Some(*symtab_idx),
+            _ => None
         }
     }
 

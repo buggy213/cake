@@ -34,9 +34,7 @@ fn compile_code(test_name: &'static str, code: &'static str) {
     std::fs::write(&resolved_ast_file, format!("{:#?}", &resolved))
         .expect("failed to write resolved AST to file");
 
-    let allocator = Bump::new();
-    let mut cranelift_backend =
-        CraneliftBackend::new("test_compile_expr", &allocator, &resolved.symtab);
+    let mut cranelift_backend = CraneliftBackend::new("test_compile_expr",  &resolved.symtab);
     let mut function_builder_ctx = FunctionBuilderContext::new();
     cranelift_backend.lower_translation_unit(&resolved, &mut function_builder_ctx);
 

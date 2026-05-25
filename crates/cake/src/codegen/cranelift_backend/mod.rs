@@ -79,7 +79,7 @@ enum StackOrMemory {
     Memory(Value),
 }
 
-struct CraneliftBackend<'arena> {
+struct CraneliftBackend {
     object: ObjectModule,
     data: HashMap<ObjectIdx, DataId>,
     functions: Vec<FuncId>,
@@ -89,14 +89,7 @@ struct CraneliftBackend<'arena> {
     function_refs: Vec<FuncRef>,
 
     // these are used for function declarations
-    function_signatures: Vec<Signature>,
-
-    // allocator for temporaries used in code generation
-    // currently only used for computing layouts
-    arena: &'arena Bump,
-
-    // layouts for all struct / union types in the translation unit
-    computed_layouts: Layouts<'arena>,
+    function_signatures: Vec<Signature>
 }
 
 struct LowerFunctionContext {
@@ -123,12 +116,12 @@ impl LowerFunctionContext {
     }
 }
 
-impl<'arena> CraneliftBackend<'arena> {
+impl CraneliftBackend {
     fn pointer_type(&self) -> Type {
         self.object.target_config().pointer_type()
     }
 
-    pub(crate) fn new(object_name: &str, arena: &'arena Bump, symtab: &SymbolTable) -> Self {
+    pub(crate) fn new(object_name: &str, symtab: &SymbolTable) -> Self {
         let isa_builder =
             cranelift::native::builder_with_options(true).expect("failed to make isa builder");
         let flags_builder = settings::builder();
@@ -144,9 +137,6 @@ impl<'arena> CraneliftBackend<'arena> {
 
         let object = ObjectModule::new(object_builder);
 
-        let computed_layouts =
-            layout::compute_layouts(arena, symtab.structure_types(), symtab.union_types());
-
         CraneliftBackend {
             object,
             data: HashMap::new(),
@@ -154,15 +144,12 @@ impl<'arena> CraneliftBackend<'arena> {
 
             function_refs: Vec::new(),
 
-            function_signatures: Vec::new(),
-
-            arena,
-            computed_layouts,
+            function_signatures: Vec::new()
         }
     }
 
-    fn lower_global_initializer(&mut self, ty: &CType, expr_ref: Option<ExprRef>, exprs: &[TypedExpressionNode]) -> DataDescription {
-        let size = ty.size(&self.computed_layouts);
+    fn lower_global_initializer(&mut self, ty: &CType, layouts: &Layouts, expr_ref: Option<ExprRef>, exprs: &[TypedExpressionNode]) -> DataDescription {
+        let size = ty.size(layouts);
         let mut data_desc = DataDescription::new();
         
         let Some(expr_ref) = expr_ref else {
@@ -229,7 +216,7 @@ impl<'arena> CraneliftBackend<'arena> {
                 .declare_data(name, linkage, writable, false)
                 .expect("failed to declare data");
 
-            let init = self.lower_global_initializer(&obj.object_type, global_object.initializer, &resolved_ast.exprs);
+            let init = self.lower_global_initializer(&obj.object_type, &resolved_ast.layouts, global_object.initializer, &resolved_ast.exprs);
             
             self.object
                 .define_data(object_id, &init)
@@ -368,7 +355,7 @@ impl<'arena> CraneliftBackend<'arena> {
 
         let mut fn_builder = FunctionBuilder::new(&mut ctx.func, function_builder_ctx);
         let object_range = resolved_ast.symtab.function_object_range(*cake_id);
-        let object_frame = self.create_frame(&mut fn_builder, &resolved_ast.symtab, object_range);
+        let object_frame = self.create_frame(&mut fn_builder, &resolved_ast.symtab, &resolved_ast.layouts, object_range);
 
         let entry = fn_builder.create_block();
         fn_builder.append_block_params_for_function_params(entry);
@@ -427,14 +414,15 @@ impl<'arena> CraneliftBackend<'arena> {
         &self,
         fn_builder: &mut FunctionBuilder,
         symtab: &SymbolTable,
+        layouts: &Layouts,
         object_range: ObjectRangeRef,
     ) -> Frame {
         let locals = symtab.object_range(object_range);
         let mut stack_slots = Vec::new();
 
         for local_var in locals {
-            let size = local_var.object_type.size(&self.computed_layouts);
-            let align = local_var.object_type.align(&self.computed_layouts);
+            let size = local_var.object_type.size(layouts);
+            let align = local_var.object_type.align(layouts);
             
             let stack_slot_data = StackSlotData {
                 kind: StackSlotKind::ExplicitSlot,
@@ -983,7 +971,7 @@ impl<'arena> CraneliftBackend<'arena> {
                         symtab_idx,
                         qualifier: _,
                     } => {
-                        let size = self.computed_layouts[*symtab_idx].size;
+                        let size = resolved_ast.layouts[*symtab_idx].size;
                         let size_val = fn_builder.ins().iconst(self.pointer_type(), size as i64);
                         fn_builder.call_memcpy(
                             self.object.target_config(),
@@ -998,7 +986,7 @@ impl<'arena> CraneliftBackend<'arena> {
                         symtab_idx,
                         qualifier: _,
                     } => {
-                        let size = self.computed_layouts[*symtab_idx].size;
+                        let size = resolved_ast.layouts[*symtab_idx].size;
                         let size_val = fn_builder.ins().iconst(self.pointer_type(), size as i64);
                         fn_builder.call_memcpy(
                             self.object.target_config(),
@@ -1193,7 +1181,7 @@ impl<'arena> CraneliftBackend<'arena> {
 
             TypedExpressionNode::PointerAdd(pointer_type, ptr_ref, int_ref) => {
                 let pointee_size = match pointer_type {
-                    CType::PointerType { pointee_type, .. } => pointee_type.size(&self.computed_layouts),
+                    CType::PointerType { pointee_type, .. } => pointee_type.size(&resolved_ast.layouts),
                     _ => unreachable!("corrupted resolvedastnode"),
                 };
                 let base = self.lower_expr(
@@ -1498,9 +1486,10 @@ impl<'arena> CraneliftBackend<'arena> {
                 );
 
                 let accessee_type = resolved_ast.exprs[*accessee].expr_type();
-                let offset = self
-                    .computed_layouts
-                    .get_member_offset(accessee_type, *member);
+                let offset = match accessee_type.as_struct() {
+                    Some(struct_ref) => resolved_ast.layouts.get_struct_member_offset(struct_ref, *member),
+                    None => 0, // must be a union
+                };
 
                 let value = match member_type {
                     CType::BasicType {
@@ -1547,9 +1536,10 @@ impl<'arena> CraneliftBackend<'arena> {
                     _ => unreachable!(),
                 };
 
-                let offset = self
-                    .computed_layouts
-                    .get_member_offset(accessee_type, *member);
+                let offset = match accessee_type.as_struct() {
+                    Some(struct_ref) => resolved_ast.layouts.get_struct_member_offset(struct_ref, *member),
+                    None => 0, // must be a union
+                };
 
                 let value = match member_type {
                     CType::BasicType {
@@ -1679,9 +1669,10 @@ impl<'arena> CraneliftBackend<'arena> {
                 );
 
                 let accessee_type = resolved_ast.exprs[*accessee].expr_type();
-                let offset = self
-                    .computed_layouts
-                    .get_member_offset(accessee_type, *member);
+                let offset = match accessee_type.as_struct() {
+                    Some(struct_ref) => resolved_ast.layouts.get_struct_member_offset(struct_ref, *member),
+                    None => 0 // must be a union
+                };
 
                 let field_ptr = fn_builder.ins().iadd_imm(location, offset as i64);
 
@@ -1705,9 +1696,10 @@ impl<'arena> CraneliftBackend<'arena> {
                     _ => unreachable!("accessee must be a pointer type"),
                 };
 
-                let offset = self
-                    .computed_layouts
-                    .get_member_offset(accessee_type, *member);
+                let offset = match accessee_type.as_struct() {
+                    Some(struct_ref) => resolved_ast.layouts.get_struct_member_offset(struct_ref, *member),
+                    None => 0, // must be a union
+                };
 
                 let field_ptr = fn_builder.ins().iadd_imm(location, offset as i64);
 
