@@ -74,13 +74,13 @@ macro_rules! add_additional_index {
             type Output = $type_name;
 
             fn index(&self, index: $type_idx_name) -> &Self::Output {
-                &self[index.0 as usize]
+                &self[index.get_inner()]
             }
         }
 
         impl std::ops::IndexMut<$type_idx_name> for [$type_name] {
             fn index_mut(&mut self, index: $type_idx_name) -> &mut Self::Output {
-                &mut self[index.0 as usize]
+                &mut self[index.get_inner()]
             }
         }
 
@@ -104,13 +104,13 @@ macro_rules! add_additional_index {
             type Output = $type_name<$lifetime>;
 
             fn index(&self, index: $type_idx_name) -> &Self::Output {
-                &self[index.0 as usize]
+                &self[index.get_inner()]
             }
         }
 
         impl<$lifetime> std::ops::IndexMut<$type_idx_name> for [$type_name<$lifetime>] {
             fn index_mut(&mut self, index: $type_idx_name) -> &mut Self::Output {
-                &mut self[index.0 as usize]
+                &mut self[index.get_inner()]
             }
         }
     };

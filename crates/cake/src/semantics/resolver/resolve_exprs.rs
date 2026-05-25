@@ -125,7 +125,7 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::MultiplyAssign(a, b) => {
             let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
             augmented_assign_op(
                 a_ref,
                 b_ref,
@@ -136,7 +136,7 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::DivideAssign(a, b) => {
             let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, symtab)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
             augmented_assign_op(
                 a_ref,
                 b_ref,

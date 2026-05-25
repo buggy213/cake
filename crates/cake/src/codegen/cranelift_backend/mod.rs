@@ -2,6 +2,7 @@ use core::panic;
 use std::{collections::HashMap, ffi::CString, fs, ops::Range, path::Path, str::FromStr};
 
 use bumpalo::Bump;
+use cake_util::add_additional_index;
 use cranelift::{
     codegen::ir::{FuncRef, Opcode, StackSlot},
     frontend::FuncInstBuilder,
@@ -16,14 +17,13 @@ use cranelift::{
 };
 
 use crate::{
-    codegen::layout::{self, Layouts},
     semantics::{
         self,
         resolved_ast::{ExprRangeRef, ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
         resolver::{ResolvedAST, ResolverContext},
-        symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
+        symtab::{FunctionIdx, ObjectIdx, ObjectRangeRef, SymbolTable},
     },
-    types::{BasicType, CType, FunctionType, TypeQualifier},
+    types::{BasicType, CType, FunctionType, FunctionTypeIdx, TypeQualifier, layout::{self, Layouts}},
 };
 
 impl From<BasicType> for cranelift::codegen::ir::Type {
@@ -42,6 +42,10 @@ impl From<BasicType> for cranelift::codegen::ir::Type {
         }
     }
 }
+
+add_additional_index!(FunctionTypeIdx, Signature);
+add_additional_index!(FunctionIdx, FuncId);
+add_additional_index!(FunctionIdx, FuncRef);
 
 // TODO: support static local variables
 // We place every object onto the stack
@@ -1521,83 +1525,13 @@ impl<'arena> CraneliftBackend<'arena> {
             }
 
             TypedExpressionNode::AugmentedAssign(_, lvalue, operation) => {
-                let result = self.lower_expr(
-                    fn_builder,
-                    resolved_ast,
-                    *operation,
-                    object_frame,
-                    lower_fn_ctx,
-                );
-
-                // for an lvalue, its associated value must be a stack load or memory load
-                let cranelift_lvalue = lower_fn_ctx.expr_value(*lvalue);
-                let value_def = fn_builder.func.dfg.value_def(cranelift_lvalue);
-                let location = match value_def {
-                    cranelift::codegen::ir::ValueDef::Result(inst_ref, _) => {
-                        let inst = fn_builder.func.dfg.insts[inst_ref];
-                        match inst.opcode() {
-                            Opcode::StackLoad => StackOrMemory::Stack(inst.stack_slot().unwrap()),
-                            Opcode::Load => {
-                                StackOrMemory::Memory(fn_builder.func.dfg.inst_args(inst_ref)[0])
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    _ => unreachable!(),
-                };
-
-                match location {
-                    StackOrMemory::Stack(stack_slot) => {
-                        fn_builder.ins().stack_store(result, stack_slot, 0);
-                    }
-                    StackOrMemory::Memory(pointer) => {
-                        fn_builder
-                            .ins()
-                            .store(MemFlags::trusted(), result, pointer, 0);
-                    }
-                }
-
-                result
+                let (_pre, post) = self.augmented_assign_op(fn_builder, resolved_ast, *lvalue, *operation, object_frame, lower_fn_ctx);
+                post
             }
 
             TypedExpressionNode::PostAugmentedAssign(_, lvalue, operation) => {
-                let result = self.lower_expr(
-                    fn_builder,
-                    resolved_ast,
-                    *operation,
-                    object_frame,
-                    lower_fn_ctx,
-                );
-
-                // for an lvalue, its associated value must be a stack load or memory load
-                let cranelift_lvalue = lower_fn_ctx.expr_value(*lvalue);
-                let value_def = fn_builder.func.dfg.value_def(cranelift_lvalue);
-                let location = match value_def {
-                    cranelift::codegen::ir::ValueDef::Result(inst_ref, _) => {
-                        let inst = fn_builder.func.dfg.insts[inst_ref];
-                        match inst.opcode() {
-                            Opcode::StackLoad => StackOrMemory::Stack(inst.stack_slot().unwrap()),
-                            Opcode::Load => {
-                                StackOrMemory::Memory(fn_builder.func.dfg.inst_args(inst_ref)[0])
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    _ => unreachable!(),
-                };
-
-                match location {
-                    StackOrMemory::Stack(stack_slot) => {
-                        fn_builder.ins().stack_store(result, stack_slot, 0);
-                    }
-                    StackOrMemory::Memory(pointer) => {
-                        fn_builder
-                            .ins()
-                            .store(MemFlags::trusted(), result, pointer, 0);
-                    }
-                }
-
-                cranelift_lvalue
+                let (pre, _post) = self.augmented_assign_op(fn_builder, resolved_ast, *lvalue, *operation, object_frame, lower_fn_ctx);
+                pre
             }
 
             TypedExpressionNode::DotAccess(member_type, accessee, member) => {
@@ -1690,6 +1624,55 @@ impl<'arena> CraneliftBackend<'arena> {
 
         lower_fn_ctx.set_expr_value(expr_ref, expr_value);
         expr_value
+    }
+
+    // returns value before and after
+    fn augmented_assign_op(
+        &mut self,
+        fn_builder: &mut FunctionBuilder,
+        resolved_ast: &ResolvedAST,
+        lvalue: ExprRef,
+        operation: ExprRef,
+        object_frame: &Frame,
+        lower_fn_ctx: &mut LowerFunctionContext   
+    ) -> (Value, Value) {
+        let result = self.lower_expr(
+            fn_builder,
+            resolved_ast,
+            operation,
+            object_frame,
+            lower_fn_ctx,
+        );
+
+        // for an lvalue, its associated value must be a stack load or memory load
+        let cranelift_lvalue = lower_fn_ctx.expr_value(lvalue);
+        let value_def = fn_builder.func.dfg.value_def(cranelift_lvalue);
+        let location = match value_def {
+            cranelift::codegen::ir::ValueDef::Result(inst_ref, _) => {
+                let inst = fn_builder.func.dfg.insts[inst_ref];
+                match inst.opcode() {
+                    Opcode::StackLoad => StackOrMemory::Stack(inst.stack_slot().unwrap()),
+                    Opcode::Load => {
+                        StackOrMemory::Memory(fn_builder.func.dfg.inst_args(inst_ref)[0])
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => unreachable!(),
+        };
+
+        match location {
+            StackOrMemory::Stack(stack_slot) => {
+                fn_builder.ins().stack_store(result, stack_slot, 0);
+            }
+            StackOrMemory::Memory(pointer) => {
+                fn_builder
+                    .ins()
+                    .store(MemFlags::trusted(), result, pointer, 0);
+            }
+        }
+
+        (cranelift_lvalue, result)
     }
 
     fn lower_lvalue(

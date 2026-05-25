@@ -110,8 +110,6 @@ pub(crate) struct Function {
 }
 
 make_type_idx!(FunctionIdx, Function);
-add_additional_index!(FunctionIdx, FuncId);
-add_additional_index!(FunctionIdx, FuncRef);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Symbol {

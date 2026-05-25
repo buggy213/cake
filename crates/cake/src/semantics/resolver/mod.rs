@@ -144,14 +144,14 @@ pub(crate) struct SwitchStatementContext {
 // Needed for tracking target of break / continue statements (for, while, do-while loops)
 
 #[derive(Debug)]
-struct IterationStatementContext {
+pub(crate) struct IterationStatementContext {
     node: NodeRef, // node in AST that this while statement corresponds to
     enclosing_context: Option<usize>,
 }
 
 // Needed for typechecking return statements
 #[derive(Debug)]
-struct FunctionDefinitionContext {
+pub(crate) struct FunctionDefinitionContext {
     node: NodeRef,
     func_type: FunctionTypeIdx,
 }
@@ -216,18 +216,22 @@ impl ResolverState {
         self.current_context = Some(new_switch_idx);
     }
 
-    // Get index of the lexically closest switch statement context
-    fn current_switch_idx(&self) -> Option<usize> {
+    fn find_ctx_idx(&self, predicate: impl Fn(&ResolverContext) -> bool) -> Option<usize> {
         let mut idx = self.current_context;
         while let Some(current_idx) = idx {
             match &self.context_stack[current_idx] {
-                ResolverContext::Switch(_) => return Some(current_idx),
+                ctx if predicate(ctx) => return Some(current_idx),
                 // continue searching in enclosing context
                 ctx => idx = ctx.enclosing_context(),
             }
         }
 
         None
+    }
+
+    // Get index of the lexically closest switch statement context
+    fn current_switch_idx(&self) -> Option<usize> {
+        self.find_ctx_idx(|c| matches!(c, ResolverContext::Switch(_)))
     }
 
     // Get reference to lexically closest switch statement context
@@ -277,15 +281,7 @@ impl ResolverState {
 
     // Get index of the lexically closest iteration statement context
     fn current_iterstmt_idx(&self) -> Option<usize> {
-        let mut idx = self.current_context;
-        while let Some(current_idx) = idx {
-            match &self.context_stack[current_idx] {
-                ResolverContext::Iteration(_) => return Some(current_idx),
-                ctx => idx = ctx.enclosing_context(),
-            }
-        }
-
-        None
+        self.find_ctx_idx(|c| matches!(c, ResolverContext::Iteration(_)))
     }
 
     // Get reference to lexically closest switch statement context
@@ -337,15 +333,7 @@ impl ResolverState {
     }
 
     fn current_function_defn_idx(&self) -> Option<usize> {
-        let mut idx = self.current_context;
-        while let Some(current_idx) = idx {
-            match &self.context_stack[current_idx] {
-                ResolverContext::Function(_) => return Some(current_idx),
-                ctx => idx = ctx.enclosing_context(),
-            }
-        }
-
-        None
+        self.find_ctx_idx(|c| matches!(c, ResolverContext::Function(_)))
     }
 
     // Get reference to lexically closest switch statement context
@@ -391,7 +379,7 @@ struct ParserTypes<'p> {
 /// 4. evaluate compile time constants
 /// goal: by the end of `resolve_ast`, the code is guaranteed to be free of compilation (though maybe not link-time) errors
 /// resolve_ast also checks internal compiler invariants
-pub fn resolve_ast(
+pub(crate) fn resolve_ast(
     ast_root: ASTNode,
     parser_state: ParserState,
 ) -> Result<ResolvedAST, ASTResolveError> {
