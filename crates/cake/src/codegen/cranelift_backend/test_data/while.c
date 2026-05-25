@@ -5,6 +5,8 @@ void my_strcpy(char *dest, const char *src) {
         dest = dest + 1;
         src = src + 1;
     }
+
+    *dest = *src;
 }
 
 int main(int argc, char *argv[]) {
