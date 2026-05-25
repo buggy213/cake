@@ -2402,16 +2402,6 @@ fn parse_function_declarator(
                         let parameter_base_type = qualified_type;
                         let Declarator(parameter_type, parameter_name) =
                             parse_declarator_base(toks, state, parameter_base_type)?;
-                        if let Some(ref parameter_name) = parameter_name {
-                            /* RESOLVE LOGIC
-                            let parameter = Symbol::Variable {
-                                symbol_type: parameter_type.0.clone(),
-                                storage_class,
-                                linkage: Linkage::None
-                            };
-                            state.symbol_table.add_symbol(state.current_scope, parameter_name, parameter)?;
-                            */
-                        }
 
                         parameter_types.push((parameter_name, parameter_type));
 
@@ -2499,19 +2489,6 @@ fn parse_labeled_statement(
             // follow standard for now
             let labelee = parse_statement(toks, state)?;
             let labelee = Box::new(labelee);
-            /* RESOLVE LOGIC
-            // let res = state.symbol_table.add_label(
-            //     state.current_scope,
-            //     label.clone(),
-            //     Rc::clone(&labelee)
-            // );
-
-            // match res {
-            //     Ok(()) => {}
-            //     Err(e @ SymtabError::LabelAlreadyDeclared(_)) => return Err(ParseError::RedeclaredLabel(e)),
-            //     Err(e) => return Err(ParseError::OtherSymtabError(e))
-            // }
-            */
 
             let label_ident = Identifier::new(state.current_scope, label);
             let label_node = ASTNode::Label(labelee, label_ident);

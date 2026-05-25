@@ -1,4 +1,4 @@
-use std::{ops::Range, slice::SliceIndex};
+use std::ops::Range;
 
 use cake_util::make_type_idx;
 

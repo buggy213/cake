@@ -26,7 +26,7 @@ use crate::{
     types::{BasicType, CType, FunctionType, TypeQualifier},
 };
 
-impl From<BasicType> for Type {
+impl From<BasicType> for cranelift::codegen::ir::Type {
     fn from(value: BasicType) -> Self {
         match value {
             BasicType::Char => types::I8,

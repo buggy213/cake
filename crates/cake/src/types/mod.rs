@@ -393,7 +393,7 @@ impl CType {
         }
     }
 
-    // can this type be the target of an assignment expression
+    // can this type be the target of an assignment expression?
     pub(crate) fn is_assignable(&self) -> bool {
         match self {
             CType::BasicType { .. } => true,

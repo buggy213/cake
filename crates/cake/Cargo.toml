@@ -16,6 +16,7 @@ cake-util = { path = "../cake-util" }
 thiserror = { workspace = true }
 bumpalo = { workspace = true }
 cranelift = { workspace = true }
+paste = { workspace = true }
 
 [build-dependencies]
 codegen = { workspace = true }
