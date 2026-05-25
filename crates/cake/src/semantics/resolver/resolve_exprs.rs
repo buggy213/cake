@@ -997,24 +997,9 @@ fn usual_arithmetic_conversions(
         return Ok((common_type, a_ref, b_ref));
     }
 
-    fn basic_type_rank(basic_type: BasicType) -> u32 {
-        match basic_type {
-            BasicType::Char => 0,
-            BasicType::UChar => 1,
-            BasicType::Short => 2,
-            BasicType::UShort => 3,
-            BasicType::Int => 4,
-            BasicType::UInt => 5,
-            BasicType::Long => 6,
-            BasicType::ULong => 7,
-            BasicType::Float => 8,
-            BasicType::Double => 9,
-        }
-    }
-
     // otherwise, convert from lower rank to higher one. i think this matches
     // description of conversions in 6.3.1.8 though not entirely confident
-    let swap = basic_type_rank(*a_type) < basic_type_rank(*b_type);
+    let swap = a_type.conversion_rank() < b_type.conversion_rank();
     if swap {
         std::mem::swap(&mut a_ref, &mut b_ref);
         std::mem::swap(&mut a_type, &mut b_type);

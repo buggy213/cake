@@ -39,6 +39,7 @@ impl Constant {
         }
     }
 
+    // size, in bits
     fn width(&self) -> u32 {
         match self {
             Constant::Int(_) => 32,

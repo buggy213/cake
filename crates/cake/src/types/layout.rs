@@ -59,7 +59,7 @@ impl Layouts<'_> {
                 symtab_idx,
                 qualifier: _,
             } => 0,
-            _ => unreachable!("TODO: more specificity in cake's type system to avoid this"),
+            _ => panic!("Layouts::get_member_offset must be called with aggregate type"),
         }
     }
 }
@@ -156,13 +156,14 @@ pub(crate) fn compute_layouts<'arena>(
     }
 }
 
+// this duplicates CType::size() and CType::align(), but those depend on the layout calculation done by this function...
 fn type_align_size(
     ty: &CType,
     struct_layouts: &[StructLayout],
     union_layouts: &[UnionLayout],
 ) -> Option<(u32, u32)> {
     match ty {
-        CType::BasicType { basic_type, .. } => Some((basic_type.align(), basic_type.bytes())),
+        CType::BasicType { basic_type, .. } => Some((basic_type.align(), basic_type.size())),
 
         CType::ArrayType {
             size, element_type, ..
@@ -177,7 +178,7 @@ fn type_align_size(
         }
         CType::PointerType { .. } => {
             let ptr_type = BasicType::ULong;
-            Some((ptr_type.align(), ptr_type.bytes()))
+            Some((ptr_type.align(), ptr_type.size()))
         }
 
         CType::StructureTypeRef { symtab_idx, .. } => {
@@ -199,7 +200,7 @@ fn type_align_size(
         CType::EnumTypeRef { .. } => {
             // TODO: all enums are just ints for now
             let enum_type = BasicType::Int;
-            Some((enum_type.align(), enum_type.bytes()))
+            Some((enum_type.align(), enum_type.size()))
         }
         CType::IncompleteArrayType { .. } => {
             panic!("incomplete array types are unsized")

@@ -162,15 +162,7 @@ impl<'arena> CraneliftBackend<'arena> {
     }
 
     fn lower_global_initializer(&mut self, ty: &CType, expr_ref: Option<ExprRef>, exprs: &[TypedExpressionNode]) -> DataDescription {
-        let size = match ty {
-            CType::BasicType { basic_type, qualifier } => 4,
-            CType::PointerType { pointee_type, qualifier } => 8,
-            CType::ArrayType { .. }
-            | CType::EnumTypeRef { .. }
-            | CType::StructureTypeRef { .. }
-            | CType::UnionTypeRef { .. } => todo!("more complex types for global values"),
-            _ => unreachable!("no initializer exists")
-        };
+        let size = ty.size(&self.computed_layouts);
         let mut data_desc = DataDescription::new();
         
         let Some(expr_ref) = expr_ref else {
@@ -441,47 +433,13 @@ impl<'arena> CraneliftBackend<'arena> {
         let mut stack_slots = Vec::new();
 
         for local_var in locals {
-            let (size, align) = match &local_var.object_type {
-                CType::BasicType { basic_type, .. } => {
-                    (basic_type.bytes(), basic_type.align().ilog2() as u8)
-                }
-                CType::PointerType { .. } => (
-                    self.pointer_type().bytes(),
-                    self.pointer_type().bytes().ilog2() as u8,
-                ),
-                CType::ArrayType {
-                    size, element_type, ..
-                } => match element_type.as_ref() {
-                    CType::BasicType { basic_type, .. } => {
-                        (basic_type.bytes() * size, basic_type.align().ilog2() as u8)
-                    }
-                    CType::PointerType { .. } => (
-                        self.pointer_type().bytes(),
-                        self.pointer_type().bytes().ilog2() as u8,
-                    ),
-                    _ => todo!(),
-                },
-                CType::StructureTypeRef {
-                    symtab_idx,
-                    qualifier: _,
-                } => {
-                    let struct_layout = &self.computed_layouts[*symtab_idx];
-                    (struct_layout.size, struct_layout.align as u8)
-                }
-                CType::UnionTypeRef {
-                    symtab_idx,
-                    qualifier: _,
-                } => {
-                    let union_layout = &self.computed_layouts[*symtab_idx];
-                    (union_layout.size, union_layout.align as u8)
-                }
-                _ => todo!(),
-            };
-
+            let size = local_var.object_type.size(&self.computed_layouts);
+            let align = local_var.object_type.align(&self.computed_layouts);
+            
             let stack_slot_data = StackSlotData {
                 kind: StackSlotKind::ExplicitSlot,
                 size,
-                align_shift: align,
+                align_shift: align.ilog2() as u8,
             };
             let stack_slot = fn_builder.create_sized_stack_slot(stack_slot_data);
             stack_slots.push(stack_slot);
@@ -1234,12 +1192,8 @@ impl<'arena> CraneliftBackend<'arena> {
             }
 
             TypedExpressionNode::PointerAdd(pointer_type, ptr_ref, int_ref) => {
-                let size = match pointer_type {
-                    CType::PointerType { pointee_type, .. } => match pointee_type.as_ref() {
-                        CType::BasicType { basic_type, .. } => basic_type.bytes(),
-                        CType::PointerType { .. } => self.pointer_type().bytes(),
-                        _ => todo!(),
-                    },
+                let pointee_size = match pointer_type {
+                    CType::PointerType { pointee_type, .. } => pointee_type.size(&self.computed_layouts),
                     _ => unreachable!("corrupted resolvedastnode"),
                 };
                 let base = self.lower_expr(
@@ -1264,7 +1218,7 @@ impl<'arena> CraneliftBackend<'arena> {
                     offset
                 };
 
-                let offset = fn_builder.ins().imul_imm(offset, size as i64);
+                let offset = fn_builder.ins().imul_imm(offset, pointee_size as i64);
                 fn_builder.ins().iadd(base, offset)
             }
 

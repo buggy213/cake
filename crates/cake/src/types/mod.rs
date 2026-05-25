@@ -7,7 +7,7 @@ pub(crate) mod layout;
 use layout::{StructLayout, UnionLayout};
 
 use crate::{
-    semantics::symtab::Scope,
+    semantics::symtab::Scope, types::layout::Layouts,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -63,7 +63,7 @@ impl BasicType {
     }
 
     // we will only compile in LP64 model for now
-    pub(crate) fn bytes(&self) -> u32 {
+    pub(crate) fn size(&self) -> u32 {
         match self {
             BasicType::Char => 1,
             BasicType::UChar => 1,
@@ -79,7 +79,22 @@ impl BasicType {
     }
 
     pub(crate) fn align(&self) -> u32 {
-        self.bytes()
+        self.size()
+    }
+
+    pub(crate) fn conversion_rank(&self) -> u32 {
+        match self {
+            BasicType::Char => 0,
+            BasicType::UChar => 1,
+            BasicType::Short => 2,
+            BasicType::UShort => 3,
+            BasicType::Int => 4,
+            BasicType::UInt => 5,
+            BasicType::Long => 6,
+            BasicType::ULong => 7,
+            BasicType::Float => 8,
+            BasicType::Double => 9,
+        }
     }
 }
 
@@ -273,7 +288,7 @@ pub(crate) enum CType {
     },
 
     // Pointers into symbol table to avoid having deep copies of highly-nested structs / unions
-    // need to be careful to avoid circular / recursive structs (infinite size!)
+    // need to be careful to avoid circular / recursive structs
     StructureTypeRef {
         symtab_idx: StructureTypeIdx,
         qualifier: TypeQualifier,
@@ -406,6 +421,60 @@ impl CType {
             CType::UnionTypeRef { .. } => true,
             CType::EnumTypeRef { .. } => true,
             CType::FunctionTypeRef { .. } => false,
+        }
+    }
+
+    pub(crate) fn size(&self, layouts: &Layouts) -> u32 {
+        match self {
+            CType::BasicType { basic_type, .. } => {
+                basic_type.size()
+            }
+            CType::PointerType { .. } => 8,
+            CType::ArrayType {
+                size, element_type, ..
+            } => {
+                element_type.size(layouts) * size
+            }
+            CType::StructureTypeRef {
+                symtab_idx,
+                qualifier: _,
+            } => {
+                layouts[*symtab_idx].size
+            }
+            CType::UnionTypeRef {
+                symtab_idx,
+                qualifier: _,
+            } => {
+                layouts[*symtab_idx].size
+            }
+            _ => todo!("more types")
+        }
+    }
+
+    pub(crate) fn align(&self, layouts: &Layouts) -> u32 {
+        match self {
+            CType::BasicType { basic_type, .. } => {
+                basic_type.align()
+            }
+            CType::PointerType { .. } => 8,
+            CType::ArrayType {
+                size, element_type, ..
+            } => {
+                element_type.align(layouts)
+            }
+            CType::StructureTypeRef {
+                symtab_idx,
+                qualifier: _,
+            } => {
+                layouts[*symtab_idx].align
+            }
+            CType::UnionTypeRef {
+                symtab_idx,
+                qualifier: _,
+            } => {
+                layouts[*symtab_idx].align
+            }
+            _ => todo!("more types")
         }
     }
 
