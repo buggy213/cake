@@ -481,13 +481,17 @@ fn resolve_ast_top(
             for defn in definitions {
                 match defn {
                     ASTNode::Declaration(_) | ASTNode::EmptyDeclaration(_, _) => {
-                        resolve_ast_declaration(
+                        let initializer_ref = resolve_ast_declaration(
                             node_ref,
                             intermediate_ast,
                             defn,
                             parser_types,
                             resolve_state,
-                        )?
+                        )?;
+
+                        if let Some(initializer_ref) = initializer_ref {
+                            children.push(initializer_ref);
+                        }
                     }
                     _ => {
                         let child_ref = resolve_ast_inner(
@@ -718,13 +722,17 @@ fn resolve_ast_inner(
             for stmt in inner_statements {
                 match stmt {
                     ASTNode::Declaration(_) | ASTNode::EmptyDeclaration(_, _) => {
-                        resolve_ast_declaration(
+                        let initializer_ref = resolve_ast_declaration(
                             node_ref,
                             intermediate_ast,
                             stmt,
                             parser_types,
                             resolve_state,
-                        )?
+                        )?;
+                        
+                        if let Some(initializer_ref) = initializer_ref {
+                            children.push(initializer_ref);
+                        }
                     }
                     _ => {
                         let child_ref = resolve_ast_inner(
@@ -1108,10 +1116,20 @@ fn resolve_ast_declaration(
     ast: &ASTNode,
     parser_types: ParserTypes,
     resolve_state: &mut ResolverState,
-) -> Result<(), ASTResolveError> {
+) -> Result<Option<NodeRef>, ASTResolveError> {
+    let mut initializer_node = None;
     if let ASTNode::Declaration(declaration_list) = ast {
         for decl in declaration_list {
-            resolve_declaration(&mut resolve_state.scoped_symtab, decl, parser_types)?;
+            initializer_node = resolve_declaration(
+                &mut resolve_state.scoped_symtab, 
+                decl, 
+                parser_types,
+                intermediate_ast,
+                parent
+            )?;
+            if initializer_node.is_some() && declaration_list.len() > 1 {
+                todo!("multiple initializers not supported yet");
+            }
         }
     } else if let ASTNode::EmptyDeclaration(declared_type, scope) = ast {
         resolve_empty_declaration(
@@ -1124,7 +1142,7 @@ fn resolve_ast_declaration(
         unreachable!("Must be called on ASTNode::Declaration")
     }
 
-    Ok(())
+    Ok(initializer_node)
 }
 
 mod resolve_decls;

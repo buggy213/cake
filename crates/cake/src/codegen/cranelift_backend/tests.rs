@@ -78,7 +78,6 @@ fn compile_code(test_name: &'static str, code: &'static str) {
     */
 }
 
-// TODO: support interactive input
 fn run_code(
     test_name: &'static str,
     stdin: &'static str,

@@ -1,3 +1,7 @@
+use std::mem::MaybeUninit;
+
+use crate::semantics::resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode};
+use crate::semantics::resolver::{IntermediateAST, resolve_expr};
 use crate::semantics::symtab::{
     Function, FunctionIdx, Linkage, Object, Scope, ScopeType, ScopedSymtab, StorageClass,
     SymbolTable, TaggedTypeIdx,
@@ -89,7 +93,9 @@ pub(super) fn resolve_declaration(
     symtab: &mut ScopedSymtab,
     declaration: &Declaration,
     parser_types: ParserTypes,
-) -> Result<(), ASTResolveError> {
+    intermediate_ast: &mut IntermediateAST,
+    parent: NodeRef,
+) -> Result<Option<NodeRef>, ASTResolveError> {
     // TODO: think if there's a less expensive / jank way to do this
     // do we really need to preserve parser AST?
     let mut type_copy = declaration.qualified_type.clone();
@@ -106,6 +112,7 @@ pub(super) fn resolve_declaration(
     };
 
     // then, place identifier into symbol table
+    let mut object_idx = None;
     match symtab.direct_lookup_symbol(scope, &declaration.name.name) {
         Some(_) => {
             // Technically, this is allowed by standard
@@ -139,7 +146,7 @@ pub(super) fn resolve_declaration(
                         linkage,
                     };
 
-                    symtab.add_object(scope, declaration.name.name.clone(), object)?;
+                    object_idx = Some(symtab.add_object(scope, declaration.name.name.clone(), object)?);
                 }
                 TypeCategory::Function => {
                     // this is definitely not standards compliant
@@ -174,7 +181,28 @@ pub(super) fn resolve_declaration(
         }
     }
 
-    Ok(())
+    // create initializer, if this declaration has one
+    let Some(initializer) = &declaration.initializer else {
+        return Ok(None);
+    };
+
+    // resolve expression
+    let resolved_expr = resolve_expr(
+        &initializer, 
+        &mut intermediate_ast.exprs, 
+        &mut intermediate_ast.expr_indices, 
+        symtab
+    )?;
+    
+    let initializer_node_ref = NodeRef(intermediate_ast.nodes.len() as u32);
+    let initializer_node = ResolvedASTNode::Initializer { 
+        parent, 
+        object: object_idx.expect("initializers only for object types"), 
+        initial_value: resolved_expr 
+    };
+    intermediate_ast.nodes.push(MaybeUninit::new(initializer_node));
+
+    Ok(Some(initializer_node_ref))
 }
 
 // Resolves empty declaration. This is generally only used for declaring a new type

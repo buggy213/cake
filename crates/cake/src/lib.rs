@@ -6,3 +6,4 @@ pub mod semantics;
 pub mod types;
 
 mod codegen;
+mod cir;

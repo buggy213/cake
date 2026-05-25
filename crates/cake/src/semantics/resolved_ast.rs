@@ -112,6 +112,12 @@ pub(crate) enum ResolvedASTNode {
         parent: NodeRef,
         return_value: Option<ExprRef>,
     },
+    
+    Initializer {
+        parent: NodeRef,
+        object: ObjectIdx,
+        initial_value: ExprRef,
+    }
 }
 
 // First member (.0) is always the type of the expression

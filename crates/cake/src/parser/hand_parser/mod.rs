@@ -1161,8 +1161,8 @@ fn parse_external_declaration(
         // otherwise, must be a declaration
         // try to parse initializer; some duplicated logic from parse_init_declarators but
         // this is hard to avoid
-        Some((CLexemes::Eq, _, _)) => {
-            toks.eat(CLexemes::Eq);
+        Some((CLexemes::Assign, _, _)) => {
+            toks.eat(CLexemes::Assign);
             let initializer = parse_initializer(toks, state)?;
             let declaration = Declaration::new(
                 Identifier::new(state.current_scope, name),
@@ -2668,15 +2668,15 @@ fn parse_iteration_statement(
             // or just an expression
             toks.eat(CLexemes::For);
             eat_or_error!(toks, CLexemes::LParen)?;
-            let mut opened_scope = false;
+            let mut has_declaration = false;
 
             let first_clause = if is_lookahead_declaration(toks, state) {
                 state.open_scope(ScopeType::BlockScope);
                 let declaration = parse_declaration(toks, state)?;
-                opened_scope = true;
+                has_declaration = true;
                 Some(declaration)
             } else {
-                match toks.peek() {
+                let expr = match toks.peek() {
                     Some((CLexemes::Semicolon, _, _)) => None,
                     Some((_, _, _)) => {
                         let expr = parse_expr(toks, state)?;
@@ -2686,9 +2686,12 @@ fn parse_iteration_statement(
                         ))
                     }
                     None => return Err(ParseError::UnexpectedEOF.into()),
-                }
+                };
+
+                eat_or_error!(toks, CLexemes::Semicolon)?;
+                expr
             };
-            eat_or_error!(toks, CLexemes::Semicolon)?;
+            
             let second_clause = match toks.peek() {
                 Some((CLexemes::Semicolon, _, _)) => None,
                 Some((_, _, _)) => Some(parse_expr(toks, state)?),
@@ -2711,7 +2714,7 @@ fn parse_iteration_statement(
                 state.current_scope,
             );
 
-            if opened_scope {
+            if has_declaration {
                 state.close_scope()?;
             }
 

@@ -16,7 +16,7 @@ fn assert_types_eq(actual: &ParserState, expected: &ParserState) {
     assert_eq!(actual.function_types, expected.function_types);
 }
 
-fn make_identifier(state: &mut ParserState, name: &str) -> ExpressionNode {
+fn make_identifier(state: &ParserState, name: &str) -> ExpressionNode {
     let ident = Identifier::new(state.current_scope, name.to_string());
     ExpressionNode::Identifier(ident)
 }
@@ -881,4 +881,60 @@ fn function_typedef_constraint() {
     "#;
 
     // todo!("write the test (maybe copilot can do it)")
+}
+
+#[test]
+fn parse_for_stmt() {
+    let for_stmt = r#"
+    for (int i = 0; i < 15; i += 1) {
+    }
+    "#;
+
+    let mut dummy_state = ParserState::new();
+
+    let (mut toks, mut state) = text_test_harness(&for_stmt);
+    let res = parse_statement(&mut toks, &mut state);
+
+    dummy_state.open_scope(ScopeType::BlockScope);
+    let i_init = make_constant!(Constant::Int, 0);
+    let i = ASTNode::Declaration(vec![
+        Declaration {
+            name: Identifier { name: String::from("i"), scope: dummy_state.current_scope }, 
+            qualified_type: CType::BasicType { basic_type: BasicType::Int, qualifier: TypeQualifier::empty() }, 
+            storage_class: StorageClass::None, 
+            is_typedef: false, 
+            function_specifier: FunctionSpecifier::None, 
+            initializer: Some(Box::new(i_init)) 
+        }
+    ]);
+
+    let cond = {
+        let i_ident = make_identifier(&dummy_state, "i");
+        let fifteen = make_constant!(Constant::Int, 15);
+        make_expr!(ExpressionNode::LessThan, i_ident, fifteen)
+    };
+
+    let post = {
+        let i_ident = make_identifier(&dummy_state, "i");
+        let one = make_constant!(Constant::Int, 1);
+        make_expr!(ExpressionNode::AddAssign, i_ident, one)
+    };
+
+    let body = ASTNode::CompoundStatement(Vec::new(), dummy_state.current_scope);
+
+    let for_stmt_node = ASTNode::ForStatement(
+        Some(Box::new(i)), 
+        Some(Box::new(cond)), 
+        Some(Box::new(post)),
+        Box::new(body), 
+        dummy_state.current_scope
+    );
+
+    dummy_state.close_scope().unwrap();
+    
+    assert_eq!(
+        res.expect("failed to parse"), 
+        for_stmt_node,
+        "parse_for_stmt mismatch"
+    );
 }
