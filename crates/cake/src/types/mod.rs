@@ -492,6 +492,13 @@ impl CType {
         }
     }
 
+    pub(crate) fn size_type() -> CType {
+        CType::BasicType { 
+            basic_type: BasicType::ULong, 
+            qualifier: TypeQualifier::empty() 
+        }
+    }
+
     pub(crate) fn float() -> CType {
         CType::BasicType {
             basic_type: BasicType::Float,

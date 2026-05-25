@@ -595,7 +595,16 @@ pub(super) fn resolve_expr(
             }
         }
         ExpressionNode::Sizeof(expression_node) => {
-            todo!("implement sizeof")
+            let sizeof_target_ref = resolve_expr(expression_node, resolved_expr_vec, expr_indices, symtab)?;
+            let sizeof_target_type = resolved_expr_vec[sizeof_target_ref].expr_type();
+            let sizeof = TypedExpressionNode::Sizeof(CType::size_type(), sizeof_target_type.clone());
+            let sizeof_ref = ExprRef::from_push(resolved_expr_vec, sizeof);
+            Ok(sizeof_ref)
+        }
+        ExpressionNode::SizeofType(type_name) => {
+            let sizeof = TypedExpressionNode::Sizeof(CType::size_type(), type_name.clone());
+            let sizeof_ref = ExprRef::from_push(resolved_expr_vec, sizeof);
+            Ok(sizeof_ref)
         }
         ExpressionNode::AddressOf(pointee) => {
             let pointee_ref = resolve_expr(&pointee, resolved_expr_vec, expr_indices, symtab)?;

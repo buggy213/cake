@@ -9,6 +9,7 @@ use crate::semantics::resolved_ast::{
     ContextRef, ExprRangeRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
 use crate::semantics::symtab::{Function, ScopedSymtab};
+use crate::types::layout::Layouts;
 use crate::types::{EnumType, FunctionType, FunctionTypeIdx, StructureType, UnionType};
 use crate::{
     parser::ast::{ASTNode, Constant, ExpressionNode},
@@ -376,7 +377,8 @@ struct ParserTypes<'p> {
 /// 2. resolve identifiers (i.e. check that there is a corresponding definition) within expressions
 ///    - TODO: consider using numeric indices rather than string-based hashtable lookup for everything
 /// 3. perform type checking for expressions
-/// 4. evaluate compile time constants
+/// 4. compute layouts
+/// 5. evaluate compile time constants
 /// goal: by the end of `resolve_ast`, the code is guaranteed to be free of compilation (though maybe not link-time) errors
 /// resolve_ast also checks internal compiler invariants
 pub(crate) fn resolve_ast(
@@ -416,8 +418,10 @@ pub(crate) fn resolve_ast(
     )?;
 
     // SAFETY: we initialize all entries of resolved AST
-    let resolved_ast =
+    let mut resolved_ast =
         unsafe { ResolvedAST::from_intermediate_ast(intermediate_ast, resolver_state) };
+
+    // check 
 
     Ok(resolved_ast)
 }

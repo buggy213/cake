@@ -160,6 +160,7 @@ pub(crate) enum ExpressionNode {
     PreIncrement(Box<ExpressionNode>),
     PreDecrement(Box<ExpressionNode>),
     Sizeof(Box<ExpressionNode>),
+    SizeofType(CType),
     AddressOf(Box<ExpressionNode>),
     Dereference(Box<ExpressionNode>),
     UnaryPlus(Box<ExpressionNode>),

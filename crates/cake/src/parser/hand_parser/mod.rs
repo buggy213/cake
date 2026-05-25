@@ -814,6 +814,23 @@ fn parse_expr_rec(
                         eat_or_error!(toks, CLexemes::RParen)?;
                     }
                 }
+                ExprPart::Operator(Operator::Sizeof) => {
+                    if let Some((CLexemes::LParen, _, _)) = toks.peek() {
+                        toks.eat(CLexemes::LParen);
+                        if is_lookahead_type_name(toks, state) {
+                            let type_name = parse_type_name(toks, state)?;
+                            eat_or_error!(toks, CLexemes::RParen)?;
+                            lhs = ExpressionNode::SizeofType(type_name);
+                        } else {
+                            let inner = parse_expr_rec(toks, state, 0)?;
+                            eat_or_error!(toks, CLexemes::RParen)?;
+                            lhs = ExpressionNode::Sizeof(Box::new(inner));
+                        }
+                    } else {
+                        let rhs = parse_expr_rec(toks, state, PREFIX_BINDING_POWER)?;
+                        lhs = ExpressionNode::Sizeof(Box::new(rhs));
+                    }
+                }
                 ExprPart::Operator(op) => {
                     // it must be a prefix operator
                     if let Some(power) = prefix_binding_power(op) {
@@ -843,14 +860,6 @@ fn parse_expr_rec(
                             Operator::BitAnd => {
                                 lhs = ExpressionNode::AddressOf(Box::new(rhs));
                             }
-                            Operator::Sizeof => {
-                                // TODO: special lookahead for sizeof type name
-                                // (as opposed to sizeof an expression)
-                                lhs = ExpressionNode::Sizeof(Box::new(rhs));
-                            }
-                            // to avoid cluttering with additional types,
-                            // no separate "PrefixOperator" enum. however,
-                            // op cannot be any other value
                             _ => unreachable!(),
                         }
                     } else {

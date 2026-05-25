@@ -174,7 +174,7 @@ pub(crate) enum TypedExpressionNode {
     // destination type, reference, source type
     Cast(CType, ExprRef, CType),
 
-    Sizeof(CType, ExprRef),
+    Sizeof(CType, CType),
     AddressOf(CType, ExprRef),
     Dereference(CType, ExprRef),
     UnaryPlus(CType, ExprRef),

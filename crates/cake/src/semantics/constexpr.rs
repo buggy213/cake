@@ -373,7 +373,9 @@ pub(crate) fn preprocessor_constant_eval(root: &ExpressionNode) -> Result<i64, C
         | ExpressionNode::FunctionCall(_, _)
         | ExpressionNode::DotAccess(_, _)
         | ExpressionNode::ArrowAccess(_, _)
-        | ExpressionNode::Cast(_, _) // explicitly forbidden in standard (unclear why?)
+        | ExpressionNode::Cast(_, _) // explicitly forbidden in standard
+        | ExpressionNode::Sizeof(_) // explicitly forbidden in standard
+        | ExpressionNode::SizeofType(_) // explicitly forbidden in standard
         | ExpressionNode::PreIncrement(_)
         | ExpressionNode::PreDecrement(_)
         | ExpressionNode::AddressOf(_)
@@ -468,7 +470,7 @@ pub(crate) fn preprocessor_constant_eval(root: &ExpressionNode) -> Result<i64, C
             Ok(val)
         },
         
-        ExpressionNode::Sizeof(_) => todo!("implement sizeof"),
+        ExpressionNode::Sizeof(_) | ExpressionNode::SizeofType(_) => todo!("implement sizeof"),
         ExpressionNode::UnaryPlus(target) => {
             let val = preprocessor_constant_eval(target)?;
             Ok(val)
@@ -790,8 +792,8 @@ pub(crate) fn integer_constant_eval(symtab: &ScopedSymtab, root: &ExpressionNode
             }
         },
         
-        ExpressionNode::Sizeof(_) => todo!("implement sizeof"),
-        
+        ExpressionNode::Sizeof(_) | ExpressionNode::SizeofType(_) => todo!("implement sizeof"),
+
         // only effect is integer promotion, which is not applicable under current model of constants 
         ExpressionNode::UnaryPlus(target) => {
             let val = integer_constant_eval(symtab, target)?;
