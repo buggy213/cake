@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use thiserror::Error;
 
-use crate::{parser::ast::{Constant, ExpressionNode}, semantics::symtab::ScopedSymtab};
+use crate::{parser::ast::{Constant, ExpressionNode, Identifier}, semantics::symtab::ScopedSymtab, types::CType};
 
 use super::symtab::Symbol;
 
@@ -28,7 +28,7 @@ enum ConstantArithmeticError {
 }
 
 impl Constant {
-    fn nonzero(&self) -> bool {
+    pub(crate) fn nonzero(&self) -> bool {
         match self {
             Constant::Int(x) => *x != 0,
             Constant::LongInt(x) => *x != 0,
@@ -350,160 +350,6 @@ impl Constant {
     }
 }
 
-
-// TODO: research integer promotion / evaluation rules
-pub(crate) fn preprocessor_constant_eval(root: &ExpressionNode) -> Result<i64, ConstantExprError> {
-    match root {
-        ExpressionNode::CommaExpr(_)
-        | ExpressionNode::SimpleAssign(_, _)
-        | ExpressionNode::MultiplyAssign(_, _)
-        | ExpressionNode::DivideAssign(_, _)
-        | ExpressionNode::ModuloAssign(_, _)
-        | ExpressionNode::AddAssign(_, _)
-        | ExpressionNode::SubAssign(_, _)
-        | ExpressionNode::LShiftAssign(_, _)
-        | ExpressionNode::RShiftAssign(_, _)
-        | ExpressionNode::AndAssign(_, _)
-        | ExpressionNode::XorAssign(_, _)
-        | ExpressionNode::OrAssign(_, _)
-        | ExpressionNode::Identifier(_)
-        | ExpressionNode::PostIncrement(_)
-        | ExpressionNode::PostDecrement(_)
-        | ExpressionNode::ArraySubscript(_, _)
-        | ExpressionNode::FunctionCall(_, _)
-        | ExpressionNode::DotAccess(_, _)
-        | ExpressionNode::ArrowAccess(_, _)
-        | ExpressionNode::Cast(_, _) // explicitly forbidden in standard
-        | ExpressionNode::Sizeof(_) // explicitly forbidden in standard
-        | ExpressionNode::SizeofType(_) // explicitly forbidden in standard
-        | ExpressionNode::PreIncrement(_)
-        | ExpressionNode::PreDecrement(_)
-        | ExpressionNode::AddressOf(_)
-        | ExpressionNode::Dereference(_)
-        | ExpressionNode::StringLiteral(_) => {
-            return Err(ConstantExprError::PreprocessorConstantExprError);
-        }
-
-        ExpressionNode::Ternary(a, b, c) => {
-            let a = preprocessor_constant_eval(a)?;
-            if a != 0 {
-                preprocessor_constant_eval(b)
-            } else {
-                preprocessor_constant_eval(c)
-            } 
-        },
-        ExpressionNode::LogicalAnd(lhs, rhs) => {
-            if preprocessor_constant_eval(lhs)? != 0 && preprocessor_constant_eval(rhs)? != 0 {
-                Ok(1)
-            }
-            else {
-                Ok(0)
-            }
-        },
-        ExpressionNode::LogicalOr(lhs, rhs) => {
-            if preprocessor_constant_eval(lhs)? != 0 || preprocessor_constant_eval(rhs)? != 0 {
-                Ok(1)
-            }
-            else {
-                Ok(0)
-            }
-        },
-        ExpressionNode::BitwiseAnd(lhs, rhs) => {
-            Ok(preprocessor_constant_eval(lhs)? & preprocessor_constant_eval(rhs)?)
-        },
-        ExpressionNode::BitwiseOr(lhs, rhs) => {
-            Ok(preprocessor_constant_eval(lhs)? | preprocessor_constant_eval(rhs)?)
-        },
-        ExpressionNode::BitwiseXor(lhs, rhs) => {
-            Ok(preprocessor_constant_eval(lhs)? ^ preprocessor_constant_eval(rhs)?)
-        },
-        ExpressionNode::Equal(lhs, rhs) => {
-            let val = if preprocessor_constant_eval(lhs)? == preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-            Ok(val)
-        },
-        ExpressionNode::NotEqual(lhs, rhs) => {
-            let val = if preprocessor_constant_eval(lhs)? != preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-            Ok(val)
-        },
-        ExpressionNode::LessThan(lhs, rhs) => {
-            let val = if preprocessor_constant_eval(lhs)? < preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-            Ok(val)
-        },
-        ExpressionNode::GreaterThan(lhs, rhs) => {
-            let val = if preprocessor_constant_eval(lhs)? > preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-            Ok(val)
-        }
-        ExpressionNode::LessThanOrEqual(lhs, rhs) => {
-            let val = if preprocessor_constant_eval(lhs)? <= preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-            Ok(val)
-        },
-        ExpressionNode::GreaterThanOrEqual(lhs, rhs) => {
-            let val = if preprocessor_constant_eval(lhs)? >= preprocessor_constant_eval(rhs)? { 1 } else { 0 };
-            Ok(val)
-        },
-        ExpressionNode::LShift(lhs, rhs) => {
-            let val = preprocessor_constant_eval(lhs)? << preprocessor_constant_eval(rhs)?;
-            Ok(val)
-        },
-        ExpressionNode::RShift(lhs, rhs) => {
-            let val = preprocessor_constant_eval(lhs)? >> preprocessor_constant_eval(rhs)?;
-            Ok(val)
-        },
-        ExpressionNode::Multiply(lhs, rhs) => {
-            let val = preprocessor_constant_eval(lhs)? * preprocessor_constant_eval(rhs)?;
-            Ok(val)
-        },
-        ExpressionNode::Divide(lhs, rhs) => {
-            let val = preprocessor_constant_eval(lhs)? / preprocessor_constant_eval(rhs)?;
-            Ok(val)
-        },
-        ExpressionNode::Modulo(lhs, rhs) => {
-            let val = preprocessor_constant_eval(lhs)? % preprocessor_constant_eval(rhs)?;
-            Ok(val)
-        },
-        ExpressionNode::Add(lhs, rhs) => {
-            let val = preprocessor_constant_eval(lhs)? + preprocessor_constant_eval(rhs)?;
-            Ok(val)
-        },
-        ExpressionNode::Subtract(lhs, rhs) => {
-            let val = preprocessor_constant_eval(lhs)? - preprocessor_constant_eval(rhs)?;
-            Ok(val)
-        },
-        
-        ExpressionNode::Sizeof(_) | ExpressionNode::SizeofType(_) => todo!("implement sizeof"),
-        ExpressionNode::UnaryPlus(target) => {
-            let val = preprocessor_constant_eval(target)?;
-            Ok(val)
-        },
-        ExpressionNode::UnaryMinus(target) => {
-            let val = preprocessor_constant_eval(target)?;
-            Ok(-val)
-        },
-        ExpressionNode::BitwiseNot(target) => {
-            let val = preprocessor_constant_eval(target)?;
-            Ok(!val)
-        },
-        ExpressionNode::Not(target) => {
-            let val = if preprocessor_constant_eval(target)? != 0 { 0 } else { 1 };
-            Ok(val)
-        },
-        
-        ExpressionNode::Constant(constant) => {
-            match constant {
-                Constant::Int(v) => Ok(*v as i64),
-                Constant::LongInt(v) => Ok(*v as i64),
-                Constant::UInt(v) => Ok(*v as i64),
-                Constant::ULongInt(v) => Ok(*v as i64),
-                Constant::Float(_) => return Err(ConstantExprError::PreprocessorConstantExprError),
-                Constant::Double(_) => return Err(ConstantExprError::PreprocessorConstantExprError),
-            }
-        },
-        
-    }
-}
-
-
-
 // perform "usual arithmetic conversions" on constants
 fn convert_constants(lhs: Constant, rhs: Constant) -> (Constant, Constant) {
     match (lhs, rhs) {
@@ -566,8 +412,225 @@ fn convert_constants(lhs: Constant, rhs: Constant) -> (Constant, Constant) {
     }
 }
 
-pub(crate) fn integer_constant_eval(symtab: &ScopedSymtab, root: &ExpressionNode) -> Result<Constant, ConstantExprError> {
+trait ConstexprBehavior {
+    fn handle_identifier(&self, ident: &Identifier) -> Result<Constant, ConstantExprError>;
+    fn handle_function(&self, func: &ExpressionNode, args: &[ExpressionNode]) -> Result<Constant, ConstantExprError>;
+    fn handle_constant(&self, constant: Constant) -> Result<Constant, ConstantExprError>;
+    fn handle_sizeof_expr(&self, expr: &ExpressionNode) -> Result<Constant, ConstantExprError>;
+    fn handle_sizeof_type(&self, ty: &CType) -> Result<Constant, ConstantExprError>;
+}
+
+// the core logic of evaluating constant expressions is the same between preprocessor (only used for #if / #elif, basically)
+// and for the main language, so we factor it out into shared logic and only specialize it at the leaves of the expression tree
+fn integer_constant_eval(
+    root: &ExpressionNode, 
+    constexpr_behavior: &impl ConstexprBehavior
+) -> Result<Constant, ConstantExprError> {
     match root {
+        ExpressionNode::Ternary(a, b, c) => {
+            let a = integer_constant_eval(a, constexpr_behavior)?;
+            if a.nonzero() {
+                integer_constant_eval(b, constexpr_behavior)
+            } else {
+                integer_constant_eval(c, constexpr_behavior)
+            } 
+        },
+        ExpressionNode::LogicalAnd(lhs, rhs) => {
+            if integer_constant_eval(lhs, constexpr_behavior)?.nonzero() && integer_constant_eval(rhs, constexpr_behavior)?.nonzero() {
+                Ok(Constant::Int(1))
+            }
+            else {
+                Ok(Constant::Int(0))
+            }
+        },
+        ExpressionNode::LogicalOr(lhs, rhs) => {
+            if integer_constant_eval(lhs, constexpr_behavior)?.nonzero() || integer_constant_eval(rhs, constexpr_behavior)?.nonzero() {
+                Ok(Constant::Int(1))
+            }
+            else {
+                Ok(Constant::Int(0))
+            }
+        },
+        ExpressionNode::BitwiseAnd(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            match Constant::bit_and(lhs, rhs) {
+                Ok(res) => Ok(res),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::BitwiseOr(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            match Constant::bit_or(lhs, rhs) {
+                Ok(res) => Ok(res),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::BitwiseXor(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            match Constant::bit_xor(lhs, rhs) {
+                Ok(res) => Ok(res),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::Equal(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            let val = if Constant::equal(lhs, rhs) { 1 } else { 0 };
+            Ok(Constant::Int(val))
+        },
+        ExpressionNode::NotEqual(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            let val = if !Constant::equal(lhs, rhs) { 1 } else { 0 };
+            Ok(Constant::Int(val))
+        },
+        ExpressionNode::LessThan(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            match Constant::ord(lhs, rhs) {
+                Ok(Ordering::Less) => Ok(Constant::Int(1)),
+                Ok(_) => Ok(Constant::Int(0)),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::GreaterThan(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            match Constant::ord(lhs, rhs) {
+                Ok(Ordering::Greater) => Ok(Constant::Int(1)),
+                Ok(_) => Ok(Constant::Int(0)),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        }
+        ExpressionNode::LessThanOrEqual(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            match Constant::ord(lhs, rhs) {
+                Ok(Ordering::Less) | Ok(Ordering::Equal) => Ok(Constant::Int(1)),
+                Ok(_) => Ok(Constant::Int(0)),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::GreaterThanOrEqual(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            match Constant::ord(lhs, rhs) {
+                Ok(Ordering::Greater) | Ok(Ordering::Equal) => Ok(Constant::Int(1)),
+                Ok(_) => Ok(Constant::Int(0)),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+
+        // shifts do not perform "usual arithmetic conversions"
+        ExpressionNode::LShift(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let val = Constant::lshift(lhs, rhs);
+            match val {
+                Ok(val) => Ok(val),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::RShift(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let val = Constant::rshift(lhs, rhs);
+            match val {
+                Ok(val) => Ok(val),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::Multiply(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            let val = Constant::mul(lhs, rhs);
+            match val {
+                Ok(val) => Ok(val),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::Divide(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            let val = Constant::div(lhs, rhs);
+            match val {
+                Ok(val) => Ok(val),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::Modulo(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            let val = Constant::modulo(lhs, rhs);
+            match val {
+                Ok(val) => Ok(val),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::Add(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            let val = Constant::add(lhs, rhs);
+            match val {
+                Ok(val) => Ok(val),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::Subtract(lhs, rhs) => {
+            let lhs = integer_constant_eval(lhs, constexpr_behavior)?;
+            let rhs = integer_constant_eval(rhs, constexpr_behavior)?;
+            let (lhs, rhs) = convert_constants(lhs, rhs);
+            let val = Constant::sub(lhs, rhs);
+            match val {
+                Ok(val) => Ok(val),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        
+        // only effect is integer promotion, which is not applicable under current model of constants 
+        ExpressionNode::UnaryPlus(target) => {
+            let val = integer_constant_eval(target, constexpr_behavior)?;
+            Ok(val)
+        },
+        ExpressionNode::UnaryMinus(target) => {
+            let val = integer_constant_eval(target, constexpr_behavior)?;
+            Ok(val.neg())
+        },
+        ExpressionNode::BitwiseNot(target) => {
+            let val = integer_constant_eval(target, constexpr_behavior)?;
+            match Constant::bit_not(val) {
+                Ok(v) => Ok(v),
+                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
+            }
+        },
+        ExpressionNode::Not(target) => {
+            let val = integer_constant_eval(target, constexpr_behavior)?;
+            let not = if val.nonzero() { 0 } else { 1 };
+            Ok(Constant::Int(not))
+        },
+        
+        ExpressionNode::Identifier(ident) => constexpr_behavior.handle_identifier(ident),
+        ExpressionNode::Constant(constant) => constexpr_behavior.handle_constant(*constant),
+        ExpressionNode::FunctionCall(func, args) => constexpr_behavior.handle_function(func, args),
+        ExpressionNode::Sizeof(expr) => constexpr_behavior.handle_sizeof_expr(expr),
+        ExpressionNode::SizeofType(ty) => constexpr_behavior.handle_sizeof_type(ty),
+
         ExpressionNode::CommaExpr(_)
         | ExpressionNode::SimpleAssign(_, _)
         | ExpressionNode::MultiplyAssign(_, _)
@@ -580,253 +643,127 @@ pub(crate) fn integer_constant_eval(symtab: &ScopedSymtab, root: &ExpressionNode
         | ExpressionNode::AndAssign(_, _)
         | ExpressionNode::XorAssign(_, _)
         | ExpressionNode::OrAssign(_, _)
-        | ExpressionNode::PostIncrement(_)
-        | ExpressionNode::PostDecrement(_)
-        | ExpressionNode::ArraySubscript(_, _)
-        | ExpressionNode::FunctionCall(_, _)
-        | ExpressionNode::DotAccess(_, _)
-        | ExpressionNode::ArrowAccess(_, _)
-        | ExpressionNode::Cast(_, _) // explicitly forbidden in standard (unclear why?)
+        | ExpressionNode::Cast(_, _)
         | ExpressionNode::PreIncrement(_)
         | ExpressionNode::PreDecrement(_)
         | ExpressionNode::AddressOf(_)
         | ExpressionNode::Dereference(_)
-        | ExpressionNode::StringLiteral(_) => {
-            Err(ConstantExprError::IntegerConstantExprError)
-        }
-
-        ExpressionNode::Identifier(ident) => {
-            let symbol = symtab.lookup_symbol(ident.scope, &ident.name);
-            match symbol {
-                Some(Symbol::Constant(constant)) => {
-                    match constant {
-                        Constant::Float(_) => Err(ConstantExprError::IntegerConstantExprError),
-                        Constant::Double(_) => Err(ConstantExprError::IntegerConstantExprError),
-                        int_const => Ok(*int_const)
-                    }
-                },
-                Some(_) => {
-                    // symbol is not a constant type (i.e. not an enum constant)
-                    Err(ConstantExprError::IntegerConstantExprError)
-                }
-                None => {
-                    // symbol not found
-                    Err(ConstantExprError::IntegerConstantExprError)
-                },
-            }
-        }
-
-        ExpressionNode::Ternary(a, b, c) => {
-            let a = integer_constant_eval(symtab, a)?;
-            if a.nonzero() {
-                integer_constant_eval(symtab, b)
-            } else {
-                integer_constant_eval(symtab, c)
-            } 
-        },
-        ExpressionNode::LogicalAnd(lhs, rhs) => {
-            if integer_constant_eval(symtab, lhs)?.nonzero() && integer_constant_eval(symtab, rhs)?.nonzero() {
-                Ok(Constant::Int(1))
-            }
-            else {
-                Ok(Constant::Int(0))
-            }
-        },
-        ExpressionNode::LogicalOr(lhs, rhs) => {
-            if integer_constant_eval(symtab, lhs)?.nonzero() || integer_constant_eval(symtab, rhs)?.nonzero() {
-                Ok(Constant::Int(1))
-            }
-            else {
-                Ok(Constant::Int(0))
-            }
-        },
-        ExpressionNode::BitwiseAnd(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            match Constant::bit_and(lhs, rhs) {
-                Ok(res) => Ok(res),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::BitwiseOr(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            match Constant::bit_or(lhs, rhs) {
-                Ok(res) => Ok(res),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::BitwiseXor(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            match Constant::bit_xor(lhs, rhs) {
-                Ok(res) => Ok(res),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::Equal(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            let val = if Constant::equal(lhs, rhs) { 1 } else { 0 };
-            Ok(Constant::Int(val))
-        },
-        ExpressionNode::NotEqual(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            let val = if !Constant::equal(lhs, rhs) { 1 } else { 0 };
-            Ok(Constant::Int(val))
-        },
-        ExpressionNode::LessThan(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            match Constant::ord(lhs, rhs) {
-                Ok(Ordering::Less) => Ok(Constant::Int(1)),
-                Ok(_) => Ok(Constant::Int(0)),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::GreaterThan(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            match Constant::ord(lhs, rhs) {
-                Ok(Ordering::Greater) => Ok(Constant::Int(1)),
-                Ok(_) => Ok(Constant::Int(0)),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        }
-        ExpressionNode::LessThanOrEqual(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            match Constant::ord(lhs, rhs) {
-                Ok(Ordering::Less) | Ok(Ordering::Equal) => Ok(Constant::Int(1)),
-                Ok(_) => Ok(Constant::Int(0)),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::GreaterThanOrEqual(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            match Constant::ord(lhs, rhs) {
-                Ok(Ordering::Greater) | Ok(Ordering::Equal) => Ok(Constant::Int(1)),
-                Ok(_) => Ok(Constant::Int(0)),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-
-        // shifts do not perform "usual arithmetic conversions"
-        ExpressionNode::LShift(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let val = Constant::lshift(lhs, rhs);
-            match val {
-                Ok(val) => Ok(val),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::RShift(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let val = Constant::rshift(lhs, rhs);
-            match val {
-                Ok(val) => Ok(val),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::Multiply(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            let val = Constant::mul(lhs, rhs);
-            match val {
-                Ok(val) => Ok(val),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::Divide(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            let val = Constant::div(lhs, rhs);
-            match val {
-                Ok(val) => Ok(val),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::Modulo(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            let val = Constant::modulo(lhs, rhs);
-            match val {
-                Ok(val) => Ok(val),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::Add(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            let val = Constant::add(lhs, rhs);
-            match val {
-                Ok(val) => Ok(val),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::Subtract(lhs, rhs) => {
-            let lhs = integer_constant_eval(symtab, lhs)?;
-            let rhs = integer_constant_eval(symtab, rhs)?;
-            let (lhs, rhs) = convert_constants(lhs, rhs);
-            let val = Constant::sub(lhs, rhs);
-            match val {
-                Ok(val) => Ok(val),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        
-        ExpressionNode::Sizeof(_) | ExpressionNode::SizeofType(_) => todo!("implement sizeof"),
-
-        // only effect is integer promotion, which is not applicable under current model of constants 
-        ExpressionNode::UnaryPlus(target) => {
-            let val = integer_constant_eval(symtab, target)?;
-            Ok(val)
-        },
-        ExpressionNode::UnaryMinus(target) => {
-            let val = integer_constant_eval(symtab, target)?;
-            Ok(val.neg())
-        },
-        ExpressionNode::BitwiseNot(target) => {
-            let val = integer_constant_eval(symtab, target)?;
-            match Constant::bit_not(val) {
-                Ok(v) => Ok(v),
-                Err(_) => Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        ExpressionNode::Not(target) => {
-            let val = integer_constant_eval(symtab, target)?;
-            let not = if val.nonzero() { 0 } else { 1 };
-            Ok(Constant::Int(not))
-        },
-        
-        ExpressionNode::Constant(constant) => {
-            match constant {
-                c @ Constant::Int(_)
-                | c @ Constant::LongInt(_)
-                | c @ Constant::UInt(_)
-                | c @ Constant::ULongInt(_) => Ok(*c),
-                Constant::Float(v) => return Err(ConstantExprError::IntegerConstantExprError),
-                Constant::Double(v) => return Err(ConstantExprError::IntegerConstantExprError),
-            }
-        },
-        
+        | ExpressionNode::PostIncrement(_)
+        | ExpressionNode::PostDecrement(_)
+        | ExpressionNode::ArraySubscript(_, _)
+        | ExpressionNode::DotAccess(_, _)
+        | ExpressionNode::ArrowAccess(_, _)
+        | ExpressionNode::StringLiteral(_) => return Err(ConstantExprError::IntegerConstantExprError),
     }
+}
+
+
+// not fully compliant, since not everything is evaluated as being intmax_t / uintmax_t but should be close enough
+struct PreprocessorConstexprBehavior<F> where F: Fn(&str) -> bool {
+    macro_defined: F
+}
+
+impl<F: Fn(&str) -> bool> ConstexprBehavior for PreprocessorConstexprBehavior<F> {
+    fn handle_identifier(&self, _ident: &Identifier) -> Result<Constant, ConstantExprError> {
+        Err(ConstantExprError::PreprocessorConstantExprError)
+    }
+
+    // a bit of a hack, since `defined` is not included in CLexemes.
+    // this means that `#if defined MACRO_NAME` *without* parentheses will not compile though
+    fn handle_function(&self, func: &ExpressionNode, args: &[ExpressionNode]) -> Result<Constant, ConstantExprError> {
+        let ExpressionNode::Identifier(Identifier { name, .. }) = func else {
+            return Err(ConstantExprError::PreprocessorConstantExprError);
+        };
+
+        if name != "defined" {
+            return Err(ConstantExprError::PreprocessorConstantExprError);
+        }
+
+        let Some(expr) = args.first() else {
+            return Err(ConstantExprError::PreprocessorConstantExprError);
+        };
+
+        let ExpressionNode::Identifier(Identifier { name, .. }) = &expr else {
+            return Err(ConstantExprError::PreprocessorConstantExprError);
+        };
+
+        let defined = (self.macro_defined)(&name);
+        return Ok(if defined { Constant::ULongInt(1) } else { Constant::ULongInt(0) });
+    }
+
+    fn handle_constant(&self, constant: Constant) -> Result<Constant, ConstantExprError> {
+        let padded_constant = match constant {
+            Constant::Int(int) => Constant::LongInt(int as i64),
+            Constant::LongInt(long) => Constant::LongInt(long),
+            Constant::UInt(uint) => Constant::ULongInt(uint as u64),
+            Constant::ULongInt(ulong) => Constant::ULongInt(ulong),
+            Constant::Float(_) => return Err(ConstantExprError::PreprocessorConstantExprError),
+            Constant::Double(_) => return Err(ConstantExprError::PreprocessorConstantExprError),
+        };
+
+        Ok(padded_constant)
+    }
+
+    // sizeof not allowed in preprocessor constants
+    fn handle_sizeof_expr(&self, _expr: &ExpressionNode) -> Result<Constant, ConstantExprError> {
+        Err(ConstantExprError::PreprocessorConstantExprError)
+    }
+
+    fn handle_sizeof_type(&self, _ty: &CType) -> Result<Constant, ConstantExprError> {
+        Err(ConstantExprError::PreprocessorConstantExprError)
+    }
+}
+
+pub(crate) fn preprocessor_constant_eval(root: &ExpressionNode, macro_defined: impl Fn(&str) -> bool) -> Result<Constant, ConstantExprError> {
+    let constexpr_behavior = PreprocessorConstexprBehavior { macro_defined };
+    integer_constant_eval(root, &constexpr_behavior)
+}
+
+struct ExpressionConstexprBehavior<'symtab> {
+    symtab: &'symtab ScopedSymtab
+}
+
+impl<'symtab> ConstexprBehavior for ExpressionConstexprBehavior<'symtab> {
+    fn handle_identifier(&self, ident: &Identifier) -> Result<Constant, ConstantExprError> {
+        let symbol = self.symtab.lookup_symbol(ident.scope, &ident.name);
+        match symbol {
+            Some(Symbol::Constant(constant)) => {
+                match constant {
+                    Constant::Float(_) => Err(ConstantExprError::IntegerConstantExprError),
+                    Constant::Double(_) => Err(ConstantExprError::IntegerConstantExprError),
+                    int_const => Ok(*int_const)
+                }
+            },
+            Some(_) => {
+                // symbol is not a constant type (i.e. not an enum constant)
+                Err(ConstantExprError::IntegerConstantExprError)
+            }
+            None => {
+                // symbol not found
+                Err(ConstantExprError::IntegerConstantExprError)
+            },
+        }
+    }
+
+    fn handle_function(&self, _func: &ExpressionNode, _args: &[ExpressionNode]) -> Result<Constant, ConstantExprError> {
+        Err(ConstantExprError::IntegerConstantExprError)
+    }
+
+    fn handle_constant(&self, constant: Constant) -> Result<Constant, ConstantExprError> {
+        Ok(constant)
+    }
+
+    fn handle_sizeof_expr(&self, _expr: &ExpressionNode) -> Result<Constant, ConstantExprError> {
+        todo!("handle sizeof_expr")
+    }
+
+    fn handle_sizeof_type(&self, _ty: &CType) -> Result<Constant, ConstantExprError> {
+        todo!("handle sizeof_type")
+    }
+}
+
+pub(crate) fn expression_constant_eval(symtab: &ScopedSymtab, root: &ExpressionNode) -> Result<Constant, ConstantExprError> {
+    let expression_constexpr_behavior = ExpressionConstexprBehavior { symtab };
+    integer_constant_eval(root, &expression_constexpr_behavior)
 }
 

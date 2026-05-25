@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::parser::ast::{Constant, ExpressionNode, Identifier};
 use crate::semantics::resolved_ast::{ExprRangeRef, ExprRef, MemberRef, TypedExpressionNode};
 use crate::semantics::symtab::{Function, Object, ScopedSymtab, Symbol};
-use crate::semantics::constexpr::integer_constant_eval;
+use crate::semantics::constexpr::expression_constant_eval;
 use crate::types::{AggregateMember, BasicType, CType, TypeQualifier};
 
 use super::ASTResolveError;
@@ -60,7 +60,7 @@ pub(super) fn resolve_integer_constant_expression(
     symtab: &ScopedSymtab,
     expr: &ExpressionNode,
 ) -> Result<Constant, ASTResolveError> {
-    let constant = integer_constant_eval(symtab, expr);
+    let constant = expression_constant_eval(symtab, expr);
     match constant {
         Ok(c) => match c {
             Constant::Int(_) => Ok(c),

@@ -592,22 +592,20 @@ impl Preprocessor {
                     .map(MacroPreprocessorToken::FromSource)
                     .collect();
 
-                // dbg!(&rest_of_line);
                 let (substituted, stack) =
                     self.perform_macro_substitution(rest_of_line, Vec::new());
-                dbg!(&substituted);
-
+                
                 if !stack.is_empty() {
                     eprintln!("unterminated macro expansion");
                     todo!()
                 }
 
                 let mut fixed = FixedTokens::new_from_deque(substituted, self);
-                dbg!(&fixed);
                 let controlling_expr = parse_expr(&mut fixed, &mut ParserState::new());
                 let value = match controlling_expr {
                     Ok(expr_node) => {
-                        let res = preprocessor_constant_eval(&expr_node);
+                        let macro_defined = |name: &str| self.macros.contains_key(name);
+                        let res = preprocessor_constant_eval(&expr_node, macro_defined);
                         match res {
                             Ok(v) => v,
                             Err(eval_err) => {
@@ -624,7 +622,7 @@ impl Preprocessor {
 
                 match directive_type {
                     DirectiveType::If => {
-                        if value != 0 {
+                        if value.nonzero() {
                             self.conditional_stack.push(ConditionalState::Active);
                         } else {
                             self.conditional_stack.push(ConditionalState::NoneTaken);
@@ -638,7 +636,7 @@ impl Preprocessor {
 
                         match self.conditional_stack.last_mut().unwrap() {
                             cur @ ConditionalState::NoneTaken => {
-                                if value != 0 {
+                                if value.nonzero() {
                                     *cur = ConditionalState::Active;
                                 }
                             }
