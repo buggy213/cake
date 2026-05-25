@@ -112,11 +112,11 @@ pub(crate) enum ResolvedASTNode {
         parent: NodeRef,
         return_value: Option<ExprRef>,
     },
-    
+
     Initializer {
         parent: NodeRef,
         object: ObjectIdx,
-        initial_value: ExprRef,
+        assignment: ExprRef,
     }
 }
 

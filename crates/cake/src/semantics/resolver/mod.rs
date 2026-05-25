@@ -922,14 +922,25 @@ fn resolve_ast_inner(
             let first_clause = match decl_or_expr {
                 None => None,
                 Some(decl) if matches!(&**decl, ASTNode::Declaration(_)) => {
-                    resolve_ast_declaration(
+                    let resolved_init = resolve_ast_declaration(
                         node_ref,
                         intermediate_ast,
                         decl,
                         parser_types,
                         resolve_state,
                     )?;
-                    None
+
+                    // SAFETY: resolve_ast_declaration actually writes the node
+                    // TODO: this does not need to be unsafe at all, need to find a better way to plumb this information
+                    unsafe {
+                        match resolved_init {            
+                            Some(x) => match intermediate_ast.nodes[x.0 as usize].assume_init_ref() {
+                                ResolvedASTNode::Initializer { assignment, .. } => Some(*assignment),
+                                _ => unreachable!("must be initializer?")
+                            },
+                            None => None
+                        }
+                    }
                 }
                 Some(expr_node) if matches!(&**expr_node, ASTNode::ExpressionStatement(_, _)) => {
                     match expr_node.as_ref() {

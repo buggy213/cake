@@ -1,4 +1,4 @@
-use std::{collections::HashMap, mem::MaybeUninit, ops::Range};
+use std::{collections::HashMap, mem::MaybeUninit};
 
 use cake_util::{add_additional_index, make_type_idx};
 use cranelift::{codegen::ir::FuncRef, module::FuncId};
@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::{
     parser::ast::Constant,
-    semantics::resolved_ast::NodeRef,
+    semantics::resolved_ast::{ExprRef, NodeRef},
     types::{
         CType, EnumType, EnumTypeIdx, FunctionType, FunctionTypeIdx, StructureType,
         StructureTypeIdx, UnionType, UnionTypeIdx,
@@ -158,7 +158,6 @@ impl TaggedTypeIdx {
 }
 
 // monolithic symbol table contains all symbols in program
-
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct ScopedSymtab {
     // these are built during parse; types may need to be merged during resolve
@@ -178,13 +177,19 @@ pub(crate) struct ScopedSymtab {
 
     // TODO: maybe create a new type for resolved function type?
     function_parameter_ranges: Vec<ObjectRangeRef>,
-    global_objects: Vec<ObjectIdx>,
+    global_objects: Vec<GlobalObject>,
 
     enum_types: Vec<EnumType>,
     structure_types: Vec<StructureType>,
     union_types: Vec<UnionType>,
 
     function_types: Vec<FunctionType>,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct GlobalObject {
+    pub(crate) object_ref: ObjectIdx,
+    pub(crate) initializer: Option<ExprRef>
 }
 
 // subset of symbol table used after resolve
@@ -203,7 +208,7 @@ pub(crate) struct SymbolTable {
 
     function_object_ranges: Vec<ObjectRangeRef>,
     function_parameter_ranges: Vec<ObjectRangeRef>,
-    global_objects: Vec<ObjectIdx>,
+    global_objects: Vec<GlobalObject>,
 
     function_types: Vec<FunctionType>,
 }
@@ -264,18 +269,21 @@ impl SymbolTable {
             function_object_ranges,
             function_parameter_ranges,
             global_objects,
+
             function_types,
         }
     }
 
-    pub(crate) fn global_objects(&self) -> impl Iterator<Item = &Object> {
-        self.global_objects.iter().map(|idx| &self.objects[*idx])
+    pub(crate) fn global_objects(&self) -> &[GlobalObject] {
+        &self.global_objects
     }
 
-    pub(crate) fn global_object_names(&self) -> impl Iterator<Item = &str> {
-        self.global_objects
-            .iter()
-            .map(|idx| self.object_names[idx.0 as usize].as_str())
+    pub(crate) fn get_object(&self, object_ref: ObjectIdx) -> &Object {
+        &self.objects[object_ref]
+    }
+    
+    pub(crate) fn object_name(&self, object_ref: ObjectIdx) -> &str {
+        &self.object_names[object_ref.0 as usize]
     }
 
     pub(crate) fn functions(&self) -> &[Function] {
@@ -313,12 +321,6 @@ impl SymbolTable {
 
     pub(crate) fn function_types(&self) -> &[FunctionType] {
         &self.function_types
-    }
-
-    pub(crate) fn global_index(&self, object_idx: ObjectIdx) -> usize {
-        self.global_objects
-            .binary_search(&object_idx)
-            .expect("global not found")
     }
 
     pub(crate) fn structure_types(&self) -> &[StructureType] {
@@ -472,15 +474,19 @@ impl ScopedSymtab {
             return Err(SymtabError::AlreadyDeclared(name));
         }
 
-        let is_global = object.linkage != Linkage::None;
-        let object_idx = ObjectIdx::from_push(&mut self.objects, object);
-        let object_symbol = Symbol::Object(object_idx);
+        let object_ref = ObjectIdx::from_push(&mut self.objects, object);
+        let object_symbol = Symbol::Object(object_ref);
         self.symbols[scope.index].insert(name, object_symbol);
-        if is_global {
-            self.global_objects.push(object_idx);
-        }
 
-        Ok(object_idx)
+        Ok(object_ref)
+    }
+
+    pub(crate) fn register_global_object(&mut self, object_ref: ObjectIdx) {
+        self.global_objects.push(GlobalObject { object_ref, initializer: None });
+    }
+
+    pub(crate) fn register_global_object_with_initializer(&mut self, object_ref: ObjectIdx, initializer: ExprRef) {
+        self.global_objects.push(GlobalObject { object_ref, initializer: Some(initializer) });
     }
 
     pub(crate) fn begin_function_definition(&self) -> ObjectIdx {

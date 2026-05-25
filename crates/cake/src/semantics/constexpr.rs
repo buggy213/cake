@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{parser::ast::{Constant, ExpressionNode}, semantics::symtab::ScopedSymtab};
 
-use super::symtab::{Symbol, SymbolTable};
+use super::symtab::Symbol;
 
 
 #[derive(Debug, Error)]

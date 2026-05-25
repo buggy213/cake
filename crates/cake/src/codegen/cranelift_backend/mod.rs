@@ -1,5 +1,5 @@
 use core::panic;
-use std::{ffi::CString, fs, iter, ops::Range, path::Path, str::FromStr};
+use std::{collections::HashMap, ffi::CString, fs, ops::Range, path::Path, str::FromStr};
 
 use bumpalo::Bump;
 use cranelift::{
@@ -77,7 +77,7 @@ enum StackOrMemory {
 
 struct CraneliftBackend<'arena> {
     object: ObjectModule,
-    data: Vec<DataId>,
+    data: HashMap<ObjectIdx, DataId>,
     functions: Vec<FuncId>,
 
     // these are used for declare_data_in_func, declare_func_in_func
@@ -143,9 +143,9 @@ impl<'arena> CraneliftBackend<'arena> {
         let computed_layouts =
             layout::compute_layouts(arena, symtab.structure_types(), symtab.union_types());
 
-        let mut me = CraneliftBackend {
+        CraneliftBackend {
             object,
-            data: Vec::new(),
+            data: HashMap::new(),
             functions: Vec::new(),
 
             function_refs: Vec::new(),
@@ -154,52 +154,92 @@ impl<'arena> CraneliftBackend<'arena> {
 
             arena,
             computed_layouts,
-        };
-
-        me.process_global_symbols(symtab);
-
-        me
+        }
     }
 
-    fn process_global_symbols(&mut self, symtab: &SymbolTable) {
-        let global_objects = symtab.global_objects();
-        let global_object_names = symtab.global_object_names();
+    fn lower_global_initializer(&mut self, ty: &CType, expr_ref: Option<ExprRef>, exprs: &[TypedExpressionNode]) -> DataDescription {
+        let size = match ty {
+            CType::BasicType { basic_type, qualifier } => 4,
+            CType::PointerType { pointee_type, qualifier } => 8,
+            CType::ArrayType { .. }
+            | CType::EnumTypeRef { .. }
+            | CType::StructureTypeRef { .. }
+            | CType::UnionTypeRef { .. } => todo!("more complex types for global values"),
+            _ => unreachable!("no initializer exists")
+        };
+        let mut data_desc = DataDescription::new();
+        
+        let Some(expr_ref) = expr_ref else {
+            data_desc.define_zeroinit(size as usize);
+            return data_desc;
+        };
 
-        for (global_object, global_object_name) in
-            std::iter::zip(global_objects, global_object_names)
-        {
-            let linkage = match global_object.linkage {
+        match &exprs[expr_ref] {
+            TypedExpressionNode::Constant(_, val) => {
+                match val {
+                    crate::parser::ast::Constant::Int(x) => { 
+                        let bytes =  x.to_le_bytes();
+                        data_desc.define(Box::from(bytes.as_slice()));
+                    },
+                    crate::parser::ast::Constant::LongInt(x) => {
+                        let bytes = x.to_le_bytes();
+                        data_desc.define(Box::from(bytes));
+                    },
+                    crate::parser::ast::Constant::UInt(x) => {
+                        let bytes = x.to_le_bytes();
+                        data_desc.define(Box::from(bytes));
+                    },
+                    crate::parser::ast::Constant::ULongInt(x) => {
+                        let bytes = x.to_le_bytes();
+                        data_desc.define(Box::from(bytes));
+                    },
+                    crate::parser::ast::Constant::Float(x) => {
+                        let bytes = x.to_le_bytes();
+                        data_desc.define(Box::from(bytes));
+                    },
+                    crate::parser::ast::Constant::Double(x) => {
+                        let bytes = x.to_le_bytes();
+                        data_desc.define(Box::from(bytes));
+                    },
+                }
+
+                data_desc
+            }
+            _ => todo!("support more complex constexpr initializers")
+        }
+    }
+
+    fn process_global_symbols(&mut self, resolved_ast: &ResolvedAST) {
+        let symtab = &resolved_ast.symtab;
+        for global_object in symtab.global_objects() {
+            let obj = symtab.get_object(global_object.object_ref);
+            let name = symtab.object_name(global_object.object_ref);
+
+            let linkage = match obj.linkage {
                 semantics::symtab::Linkage::External => cranelift::module::Linkage::Export,
                 semantics::symtab::Linkage::Internal => cranelift::module::Linkage::Local,
                 semantics::symtab::Linkage::None => {
-                    panic!("top-level decls should have defined linkage")
+                    unreachable!("globals should have defined linkage")
                 }
             };
 
-            let writable = !global_object
+            let writable = !obj
                 .object_type
                 .qualifier()
                 .contains(TypeQualifier::Const);
 
             let object_id = self
                 .object
-                .declare_data(global_object_name, linkage, writable, false)
+                .declare_data(name, linkage, writable, false)
                 .expect("failed to declare data");
 
-            // TODO: support initializer
-            let mut zero_init = DataDescription::new();
-            let bytes = match &global_object.object_type {
-                CType::BasicType { basic_type, .. } => basic_type.bytes(),
-                CType::PointerType { .. } => self.pointer_type().bytes(),
-                _ => todo!(),
-            };
-            zero_init.define_zeroinit(bytes as usize);
-
+            let init = self.lower_global_initializer(&obj.object_type, global_object.initializer, &resolved_ast.exprs);
+            
             self.object
-                .define_data(object_id, &zero_init)
+                .define_data(object_id, &init)
                 .expect("failed to define data");
 
-            self.data.push(object_id);
+            self.data.insert(global_object.object_ref, object_id);
         }
 
         let functions = symtab.functions();
@@ -268,19 +308,24 @@ impl<'arena> CraneliftBackend<'arena> {
         resolved_ast: &ResolvedAST,
         function_builder_ctx: &mut FunctionBuilderContext,
     ) {
-        let root = &resolved_ast.nodes[0];
+        self.process_global_symbols(resolved_ast);
 
+        let root = &resolved_ast.nodes[0];
         match root {
             ResolvedASTNode::TranslationUnit { children } => {
-                for (fn_defn_idx, fn_defn_ref_idx) in (children.0..children.1).enumerate() {
-                    let fn_defn_ref = resolved_ast.ast_indices[fn_defn_ref_idx as usize];
+                for (idx, node_ref) in (children.0..children.1).enumerate() {                    
+                    let node_ref = resolved_ast.ast_indices[node_ref as usize];
 
-                    self.lower_function(
-                        fn_defn_idx,
-                        resolved_ast,
-                        fn_defn_ref,
-                        function_builder_ctx,
-                    );
+                    match &resolved_ast.nodes[node_ref.0 as usize] {
+                        ResolvedASTNode::FunctionDefinition { .. } => self.lower_function(
+                            idx,
+                            resolved_ast,
+                            node_ref,
+                            function_builder_ctx,
+                        ),
+
+                        _ => panic!("corrupted AST"),
+                    }
                 }
             }
             _ => panic!("corrupted AST"),
@@ -823,6 +868,16 @@ impl<'arena> CraneliftBackend<'arena> {
                     *labelee,
                     object_frame,
                     lower_fn_ctx,
+                );
+            }
+
+            ResolvedASTNode::Initializer { parent, object, assignment } => {
+                self.lower_expr(
+                    fn_builder, 
+                    resolved_ast, 
+                    *assignment, 
+                    object_frame, 
+                    lower_fn_ctx
                 );
             }
 
@@ -1656,8 +1711,7 @@ impl<'arena> CraneliftBackend<'arena> {
                         .stack_addr(self.pointer_type(), stack_slot, 0)
                 } else {
                     // must be a global / static variable
-                    let global_index: usize = resolved_ast.symtab.global_index(*object_idx);
-                    let data_id = self.data[global_index];
+                    let data_id = self.data[object_idx];
                     let global_value = self.object.declare_data_in_func(data_id, fn_builder.func);
                     let global_address = fn_builder
                         .ins()
