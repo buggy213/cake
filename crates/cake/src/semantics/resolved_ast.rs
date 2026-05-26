@@ -12,7 +12,7 @@ use crate::{
 pub(crate) struct NodeRef(pub u32);
 
 #[derive(Debug, PartialEq, Copy, Clone)]
-pub(crate) struct NodeRangeRef(pub u32, pub u32);
+pub(crate) struct NodeRangeRef(pub u32, pub u32); 
 
 make_type_idx!(ExprRef, TypedExpressionNode);
 
