@@ -1,6 +1,7 @@
 use std::mem::MaybeUninit;
 
 use crate::semantics::resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode};
+use crate::semantics::resolver::resolve_exprs::ResolveExprContext;
 use crate::semantics::resolver::{IntermediateAST, resolve_expr};
 use crate::semantics::symtab::{
     Function, FunctionIdx, Linkage, Object, Scope, ScopeType, ScopedSymtab, StorageClass, TaggedTypeIdx
@@ -157,11 +158,18 @@ pub(super) fn resolve_declaration(
                         return Ok(None);
                     };
                     
+                    let mut resolve_expr_ctx = ResolveExprContext {
+                        symtab,
+                        layouts,
+                        scope,
+                        parser_types,
+                    };
+
                     let initializer_expr = resolve_expr(
                         &initializer_expr, 
                         &mut intermediate_ast.exprs, 
                         &mut intermediate_ast.expr_indices, 
-                        symtab
+                        &mut resolve_expr_ctx
                     )?;
 
                     if linkage != Linkage::None {
@@ -234,11 +242,11 @@ pub(super) fn resolve_empty_declaration(
     scope: Scope,
     parser_types: ParserTypes,
     layouts: &mut Layouts
-) -> Result<(), ASTResolveError> {
+) -> Result<CType, ASTResolveError> {
     let mut declared_type_copy = declared_type.clone();
     _ = resolve_declaration_type(symtab, &mut declared_type_copy, scope, parser_types, layouts)?;
 
-    Ok(())
+    Ok(declared_type_copy)
 }
 
 /// ensure that type used in declaration is valid. intent is that caller

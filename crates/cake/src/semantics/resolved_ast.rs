@@ -174,7 +174,6 @@ pub(crate) enum TypedExpressionNode {
     // destination type, reference, source type
     Cast(CType, ExprRef, CType),
 
-    Sizeof(CType, CType),
     AddressOf(CType, ExprRef),
     Dereference(CType, ExprRef),
     UnaryPlus(CType, ExprRef),
@@ -231,7 +230,6 @@ impl TypedExpressionNode {
             | TypedExpressionNode::PointerSub(qualified_type, _, _)
             | TypedExpressionNode::PointerDiff(qualified_type, _, _)
             | TypedExpressionNode::Cast(qualified_type, _, _)
-            | TypedExpressionNode::Sizeof(qualified_type, _)
             | TypedExpressionNode::AddressOf(qualified_type, _)
             | TypedExpressionNode::Dereference(qualified_type, _)
             | TypedExpressionNode::UnaryPlus(qualified_type, _)

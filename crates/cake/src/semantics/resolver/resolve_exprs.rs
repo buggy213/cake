@@ -4,8 +4,10 @@ use thiserror::Error;
 
 use crate::parser::ast::{Constant, ExpressionNode, Identifier};
 use crate::semantics::resolved_ast::{ExprRangeRef, ExprRef, MemberRef, TypedExpressionNode};
-use crate::semantics::symtab::{Function, Object, ScopedSymtab, Symbol};
+use crate::semantics::resolver::{ParserTypes, resolve_empty_declaration};
+use crate::semantics::symtab::{Function, Object, Scope, ScopedSymtab, Symbol};
 use crate::semantics::constexpr::expression_constant_eval;
+use crate::types::layout::Layouts;
 use crate::types::{AggregateMember, BasicType, CType, TypeQualifier};
 
 use super::ASTResolveError;
@@ -54,6 +56,11 @@ pub(super) enum ResolveExprError {
     BadUnaryArithmeticOperand,
     #[error("integer promotion requires arithmetic operand")]
     ExpectedArithmeticType,
+
+    #[error("failure while resolving sizeof target")]
+    SizeofTypeError,
+    #[error("failure while resolving cast target")]
+    CastTypeError
 }
 
 pub(super) fn resolve_integer_constant_expression(
@@ -74,18 +81,26 @@ pub(super) fn resolve_integer_constant_expression(
     }
 }
 
+pub(super) struct ResolveExprContext<'resolver, 'parser> {
+    pub(super) symtab: &'resolver mut ScopedSymtab,
+    pub(super) layouts: &'resolver mut Layouts,
+    pub(super) scope: Scope,
+    pub(super) parser_types: ParserTypes<'parser>
+}
+
 // performs type checking for expressions, inserts integer promotions, validates casts
 pub(super) fn resolve_expr(
     expr: &ExpressionNode,
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
     expr_indices: &mut Vec<ExprRef>,
-    symtab: &ScopedSymtab,
+
+    ctx: &mut ResolveExprContext
 ) -> Result<ExprRef, ResolveExprError> {
     match expr {
         ExpressionNode::CommaExpr(expression_nodes) => {
             let mut subexpr_refs = Vec::new();
             for subexpr in expression_nodes {
-                let subexpr_ref = resolve_expr(subexpr, resolved_expr_vec, expr_indices, symtab)?;
+                let subexpr_ref = resolve_expr(subexpr, resolved_expr_vec, expr_indices, ctx)?;
                 subexpr_refs.push(subexpr_ref);
             }
 
@@ -103,7 +118,7 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::SimpleAssign(lhs, rhs) => {
             // ensure LHS is a modifiable l-value
-            let lhs_ref = resolve_expr(lhs, resolved_expr_vec, expr_indices, symtab)?;
+            let lhs_ref = resolve_expr(lhs, resolved_expr_vec, expr_indices, ctx)?;
             let lhs_is_lvalue = check_lvalue(lhs_ref, resolved_expr_vec);
             let lhs_type = resolved_expr_vec[lhs_ref].expr_type().clone();
             let lhs_type_qualifier = lhs_type.qualifier();
@@ -113,7 +128,7 @@ pub(super) fn resolve_expr(
                 return Err(ResolveExprError::ExpressionNotLvalue);
             }
 
-            let rhs_ref = resolve_expr(rhs, resolved_expr_vec, expr_indices, symtab)?;
+            let rhs_ref = resolve_expr(rhs, resolved_expr_vec, expr_indices, ctx)?;
             let converted_rhs_ref =
                 assignment_type_conversion(&lhs_type, rhs_ref, resolved_expr_vec)?;
 
@@ -124,8 +139,8 @@ pub(super) fn resolve_expr(
             Ok(simple_assign_ref)
         }
         ExpressionNode::MultiplyAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
             augmented_assign_op(
                 a_ref,
                 b_ref,
@@ -135,8 +150,8 @@ pub(super) fn resolve_expr(
             )
         }
         ExpressionNode::DivideAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
             augmented_assign_op(
                 a_ref,
                 b_ref,
@@ -146,8 +161,8 @@ pub(super) fn resolve_expr(
             )
         }
         ExpressionNode::ModuloAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
             augmented_assign_op(
                 a_ref,
                 b_ref,
@@ -157,8 +172,8 @@ pub(super) fn resolve_expr(
             )
         }
         ExpressionNode::AddAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, ctx)?;
 
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let b_type = resolved_expr_vec[b_ref].expr_type();
@@ -190,8 +205,8 @@ pub(super) fn resolve_expr(
             }
         }
         ExpressionNode::SubAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, ctx)?;
 
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let b_type = resolved_expr_vec[b_ref].expr_type();
@@ -222,8 +237,8 @@ pub(super) fn resolve_expr(
             }
         }
         ExpressionNode::LShiftAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
             augmented_assign_op(
                 a_ref,
                 b_ref,
@@ -233,8 +248,8 @@ pub(super) fn resolve_expr(
             )
         }
         ExpressionNode::RShiftAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
             augmented_assign_op(
                 a_ref,
                 b_ref,
@@ -244,8 +259,8 @@ pub(super) fn resolve_expr(
             )
         }
         ExpressionNode::AndAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
 
             augmented_assign_op(
                 a_ref,
@@ -256,8 +271,8 @@ pub(super) fn resolve_expr(
             )
         }
         ExpressionNode::XorAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
 
             augmented_assign_op(
                 a_ref,
@@ -268,8 +283,8 @@ pub(super) fn resolve_expr(
             )
         }
         ExpressionNode::OrAssign(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
 
             augmented_assign_op(
                 a_ref,
@@ -281,8 +296,8 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::Ternary(a, b, expression_node2) => todo!(),
         ExpressionNode::LogicalAnd(lhs, rhs) => {
-            let lhs_ref = resolve_expr(&lhs, resolved_expr_vec, expr_indices, symtab)?;
-            let rhs_ref = resolve_expr(&rhs, resolved_expr_vec, expr_indices, symtab)?;
+            let lhs_ref = resolve_expr(&lhs, resolved_expr_vec, expr_indices, ctx)?;
+            let rhs_ref = resolve_expr(&rhs, resolved_expr_vec, expr_indices, ctx)?;
             let lhs_type = resolved_expr_vec[lhs_ref].expr_type();
             let rhs_type = resolved_expr_vec[rhs_ref].expr_type();
 
@@ -298,8 +313,8 @@ pub(super) fn resolve_expr(
             Ok(logical_and_ref)
         }
         ExpressionNode::LogicalOr(lhs, rhs) => {
-            let lhs_ref = resolve_expr(&lhs, resolved_expr_vec, expr_indices, symtab)?;
-            let rhs_ref = resolve_expr(&rhs, resolved_expr_vec, expr_indices, symtab)?;
+            let lhs_ref = resolve_expr(&lhs, resolved_expr_vec, expr_indices, ctx)?;
+            let rhs_ref = resolve_expr(&rhs, resolved_expr_vec, expr_indices, ctx)?;
             let lhs_type = resolved_expr_vec[lhs_ref].expr_type();
             let rhs_type = resolved_expr_vec[rhs_ref].expr_type();
 
@@ -321,7 +336,7 @@ pub(super) fn resolve_expr(
                 TypedExpressionNode::BitwiseAnd,
                 resolved_expr_vec,
                 expr_indices,
-                symtab,
+                ctx,
             )?;
             Ok(bit_and_ref)
         }
@@ -332,7 +347,7 @@ pub(super) fn resolve_expr(
                 TypedExpressionNode::BitwiseOr,
                 resolved_expr_vec,
                 expr_indices,
-                symtab,
+                ctx,
             )?;
             Ok(bitor_ref)
         }
@@ -343,7 +358,7 @@ pub(super) fn resolve_expr(
                 TypedExpressionNode::BitwiseXor,
                 resolved_expr_vec,
                 expr_indices,
-                symtab,
+                ctx,
             )?;
             Ok(bitxor_ref)
         }
@@ -353,7 +368,7 @@ pub(super) fn resolve_expr(
             TypedExpressionNode::Equal,
             resolved_expr_vec,
             expr_indices,
-            symtab,
+            ctx,
         ),
         ExpressionNode::NotEqual(a, b) => relational_operator(
             a,
@@ -361,7 +376,7 @@ pub(super) fn resolve_expr(
             TypedExpressionNode::NotEqual,
             resolved_expr_vec,
             expr_indices,
-            symtab,
+            ctx,
         ),
         ExpressionNode::LessThan(a, b) => relational_operator(
             a,
@@ -369,7 +384,7 @@ pub(super) fn resolve_expr(
             TypedExpressionNode::LessThan,
             resolved_expr_vec,
             expr_indices,
-            symtab,
+            ctx,
         ),
         ExpressionNode::GreaterThan(a, b) => relational_operator(
             a,
@@ -377,7 +392,7 @@ pub(super) fn resolve_expr(
             TypedExpressionNode::GreaterThan,
             resolved_expr_vec,
             expr_indices,
-            symtab,
+            ctx,
         ),
         ExpressionNode::LessThanOrEqual(a, b) => relational_operator(
             a,
@@ -385,7 +400,7 @@ pub(super) fn resolve_expr(
             TypedExpressionNode::LessThanOrEqual,
             resolved_expr_vec,
             expr_indices,
-            symtab,
+            ctx,
         ),
         ExpressionNode::GreaterThanOrEqual(a, b) => relational_operator(
             a,
@@ -393,7 +408,7 @@ pub(super) fn resolve_expr(
             TypedExpressionNode::GreaterThanOrEqual,
             resolved_expr_vec,
             expr_indices,
-            symtab,
+            ctx,
         ),
         ExpressionNode::LShift(expr, shamt) => bitshift_operator(
             expr,
@@ -401,7 +416,7 @@ pub(super) fn resolve_expr(
             TypedExpressionNode::LShift,
             resolved_expr_vec,
             expr_indices,
-            symtab,
+            ctx,
         ),
         ExpressionNode::RShift(expr, shamt) => bitshift_operator(
             expr,
@@ -409,7 +424,7 @@ pub(super) fn resolve_expr(
             TypedExpressionNode::RShift,
             resolved_expr_vec,
             expr_indices,
-            symtab,
+            ctx,
         ),
         ExpressionNode::Multiply(a, b) => {
             let multiply_ref = basic_binary_op(
@@ -418,7 +433,7 @@ pub(super) fn resolve_expr(
                 TypedExpressionNode::Multiply,
                 resolved_expr_vec,
                 expr_indices,
-                symtab,
+                ctx,
             )?;
             Ok(multiply_ref)
         }
@@ -429,7 +444,7 @@ pub(super) fn resolve_expr(
                 TypedExpressionNode::Divide,
                 resolved_expr_vec,
                 expr_indices,
-                symtab,
+                ctx,
             )?;
             Ok(divide_ref)
         }
@@ -440,13 +455,13 @@ pub(super) fn resolve_expr(
                 TypedExpressionNode::Modulo,
                 resolved_expr_vec,
                 expr_indices,
-                symtab,
+                ctx,
             )?;
             Ok(modulo_ref)
         }
         ExpressionNode::Add(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
 
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let b_type = resolved_expr_vec[b_ref].expr_type();
@@ -476,8 +491,8 @@ pub(super) fn resolve_expr(
             }
         }
         ExpressionNode::Subtract(a, b) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
 
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let b_type = resolved_expr_vec[b_ref].expr_type();
@@ -517,7 +532,7 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::Cast(expr, destination_type) => {
             // check that both have scalar type
-            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, symtab)?;
+            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, ctx)?;
             let expr_type = resolved_expr_vec[expr_ref].expr_type();
             if !destination_type.is_scalar_type() || !expr_type.is_scalar_type() {
                 return Err(ResolveExprError::NonScalarCast);
@@ -532,13 +547,13 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::PreIncrement(expression_node) => {
             // fully equivalent to += 1
-            let a_ref = resolve_expr(&expression_node, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(&expression_node, resolved_expr_vec, expr_indices, ctx)?;
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let a_ptr = a_type.is_object_pointer();
 
             // dummy constant 1
             let one = ExpressionNode::Constant(Constant::Int(1));
-            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, symtab)?;
+            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, ctx)?;
 
             if a_ptr {
                 let ptr_ref = a_ref;
@@ -564,13 +579,13 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::PreDecrement(expression_node) => {
             // fully equivalent to -= 1
-            let a_ref = resolve_expr(&expression_node, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(&expression_node, resolved_expr_vec, expr_indices, ctx)?;
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let a_ptr = a_type.is_object_pointer();
 
             // dummy constant 1
             let one = ExpressionNode::Constant(Constant::Int(1));
-            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, symtab)?;
+            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, ctx)?;
 
             if a_ptr {
                 let ptr_ref = a_ref;
@@ -595,19 +610,37 @@ pub(super) fn resolve_expr(
             }
         }
         ExpressionNode::Sizeof(expression_node) => {
-            let sizeof_target_ref = resolve_expr(expression_node, resolved_expr_vec, expr_indices, symtab)?;
-            let sizeof_target_type = resolved_expr_vec[sizeof_target_ref].expr_type();
-            let sizeof = TypedExpressionNode::Sizeof(CType::size_type(), sizeof_target_type.clone());
+            let sizeof_target_ref = resolve_expr(expression_node, resolved_expr_vec, expr_indices, ctx)?;
+            let sizeof_target_type = match &resolved_expr_vec[sizeof_target_ref] {
+                TypedExpressionNode::ArrayDecay(_, inner) => resolved_expr_vec[*inner].expr_type(),
+                // TODO: string literals
+                other => other.expr_type()
+            };
+            let sizeof = TypedExpressionNode::Constant(
+                CType::size_type(), 
+                Constant::ULongInt(sizeof_target_type.size(ctx.layouts) as u64)
+            );
             let sizeof_ref = ExprRef::from_push(resolved_expr_vec, sizeof);
             Ok(sizeof_ref)
         }
         ExpressionNode::SizeofType(type_name) => {
-            let sizeof = TypedExpressionNode::Sizeof(CType::size_type(), type_name.clone());
+            // same as cast, we treat this as an empty declaration and invoke resolve_decl machinery to handle it
+            let resolved_type = resolve_empty_declaration(
+                ctx.symtab, 
+                type_name, 
+                ctx.scope, 
+                ctx.parser_types, 
+                ctx.layouts
+            ).map_err(|_| ResolveExprError::SizeofTypeError)?;
+            let sizeof = TypedExpressionNode::Constant(
+                CType::size_type(), 
+                Constant::ULongInt(resolved_type.size(ctx.layouts) as u64)
+            );
             let sizeof_ref = ExprRef::from_push(resolved_expr_vec, sizeof);
             Ok(sizeof_ref)
         }
         ExpressionNode::AddressOf(pointee) => {
-            let pointee_ref = resolve_expr(&pointee, resolved_expr_vec, expr_indices, symtab)?;
+            let pointee_ref = resolve_expr(&pointee, resolved_expr_vec, expr_indices, ctx)?;
             let pointee_type = resolved_expr_vec[pointee_ref].expr_type();
             let pointer_type = CType::PointerType {
                 pointee_type: Box::new(pointee_type.clone()),
@@ -619,7 +652,7 @@ pub(super) fn resolve_expr(
             Ok(address_of_ref)
         }
         ExpressionNode::Dereference(pointer) => {
-            let pointer_ref = resolve_expr(pointer, resolved_expr_vec, expr_indices, symtab)?;
+            let pointer_ref = resolve_expr(pointer, resolved_expr_vec, expr_indices, ctx)?;
             match resolved_expr_vec[pointer_ref].expr_type() {
                 CType::PointerType { pointee_type, .. } => {
                     let pointee_type = pointee_type.as_ref().clone();
@@ -631,7 +664,7 @@ pub(super) fn resolve_expr(
             }
         }
         ExpressionNode::UnaryPlus(expr) => {
-            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, symtab)?;
+            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, ctx)?;
             let expr_type = resolved_expr_vec[expr_ref].expr_type();
 
             if !expr_type.is_arithmetic_type() {
@@ -647,7 +680,7 @@ pub(super) fn resolve_expr(
             Ok(unary_plus_ref)
         }
         ExpressionNode::UnaryMinus(expr) => {
-            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, symtab)?;
+            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, ctx)?;
             let expr_type = resolved_expr_vec[expr_ref].expr_type();
 
             if !expr_type.is_arithmetic_type() {
@@ -663,7 +696,7 @@ pub(super) fn resolve_expr(
             Ok(unary_minus_ref)
         }
         ExpressionNode::BitwiseNot(expr) => {
-            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, symtab)?;
+            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, ctx)?;
             let expr_type = resolved_expr_vec[expr_ref].expr_type();
 
             if !expr_type.is_integer_type() {
@@ -680,7 +713,7 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::Not(expr) => {
             // equivalent to (0 == E), all we need to check is if it's a scalar type
-            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, symtab)?;
+            let expr_ref = resolve_expr(expr, resolved_expr_vec, expr_indices, ctx)?;
             let expr_type = resolved_expr_vec[expr_ref].expr_type();
 
             if !expr_type.is_scalar_type() {
@@ -693,12 +726,12 @@ pub(super) fn resolve_expr(
             Ok(not_ref)
         }
         ExpressionNode::PostIncrement(a) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let a_ptr = a_type.is_object_pointer();
 
             let one = ExpressionNode::Constant(Constant::Int(1));
-            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, symtab)?;
+            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, ctx)?;
 
             if a_ptr {
                 // pointer arithmetic
@@ -734,12 +767,12 @@ pub(super) fn resolve_expr(
             }
         }
         ExpressionNode::PostDecrement(a) => {
-            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let a_ptr = a_type.is_object_pointer();
 
             let one = ExpressionNode::Constant(Constant::Int(1));
-            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, symtab)?;
+            let one_ref = resolve_expr(&one, resolved_expr_vec, expr_indices, ctx)?;
 
             if a_ptr {
                 // pointer arithmetic
@@ -776,8 +809,8 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::ArraySubscript(a, b) => {
             // check that one is a pointer to an object, the other is an integer
-            let a_ref = resolve_expr(&a, resolved_expr_vec, expr_indices, symtab)?;
-            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, symtab)?;
+            let a_ref = resolve_expr(&a, resolved_expr_vec, expr_indices, ctx)?;
+            let b_ref = resolve_expr(&b, resolved_expr_vec, expr_indices, ctx)?;
 
             let a_type = resolved_expr_vec[a_ref].expr_type();
             let b_type = resolved_expr_vec[b_ref].expr_type();
@@ -808,7 +841,7 @@ pub(super) fn resolve_expr(
         }
         ExpressionNode::FunctionCall(fn_expr, argument_exprs) => {
             // either a pointer to a function, or a "function designator" directly
-            let fn_expr_ref = resolve_expr(&fn_expr, resolved_expr_vec, expr_indices, symtab)?;
+            let fn_expr_ref = resolve_expr(&fn_expr, resolved_expr_vec, expr_indices, ctx)?;
 
             // optimization for direct calls
             let fn_idx = match resolved_expr_vec[fn_expr_ref] {
@@ -830,19 +863,21 @@ pub(super) fn resolve_expr(
             };
 
             // get return type
-            let fn_canonical_type = symtab.get_function_type(fn_expr_type_idx);
+            let fn_canonical_type = ctx.symtab.get_function_type(fn_expr_type_idx);
+            let formal_arg_types: Vec<CType> = fn_canonical_type.parameter_types.iter().map(|a| a.1.clone()).collect();
             let return_type = fn_canonical_type.return_type.clone();
 
             let mut argument_expr_refs = Vec::new();
-            for ((_, formal_arg_type), actual_arg) in
-                iter::zip(fn_canonical_type.parameter_types.iter(), argument_exprs)
+            for (formal_arg_type, actual_arg) in
+                iter::zip(&formal_arg_types, argument_exprs)
             {
-                let fn_arg_ref = resolve_expr(actual_arg, resolved_expr_vec, expr_indices, symtab)?;
+                let fn_arg_ref = resolve_expr(actual_arg, resolved_expr_vec, expr_indices, ctx)?;
                 let converted_arg_ref =
                     assignment_type_conversion(formal_arg_type, fn_arg_ref, resolved_expr_vec)?;
                 argument_expr_refs.push(converted_arg_ref);
             }
 
+            let fn_canonical_type = ctx.symtab.get_function_type(fn_expr_type_idx);
             if fn_canonical_type.varargs {
                 if fn_canonical_type.parameter_types.len() > argument_exprs.len() {
                     return Err(ResolveExprError::IncorrectNumberOfArguments);
@@ -850,7 +885,7 @@ pub(super) fn resolve_expr(
                 // apply default argument promotions to remaining varargs
                 let varargs = &argument_exprs[fn_canonical_type.parameter_types.len()..];
                 for vararg in varargs {
-                    let vararg_ref = resolve_expr(vararg, resolved_expr_vec, expr_indices, symtab)?;
+                    let vararg_ref = resolve_expr(vararg, resolved_expr_vec, expr_indices, ctx)?;
                     let converted_vararg_ref =
                         default_argument_promotions(vararg_ref, resolved_expr_vec)?;
                     argument_expr_refs.push(converted_vararg_ref);
@@ -876,11 +911,11 @@ pub(super) fn resolve_expr(
             Ok(fn_call_ref)
         }
         ExpressionNode::DotAccess(accessee, identifier) => {
-            let accessee_ref = resolve_expr(&accessee, resolved_expr_vec, expr_indices, symtab)?;
+            let accessee_ref = resolve_expr(&accessee, resolved_expr_vec, expr_indices, ctx)?;
             let accessee = &resolved_expr_vec[accessee_ref];
             let accessee_type = accessee.expr_type();
 
-            let (member_ref, member_type) = aggregate_member(accessee_type, symtab, identifier)?;
+            let (member_ref, member_type) = aggregate_member(accessee_type, ctx.symtab, identifier)?;
             let mut modified_member_type = member_type.clone();
             // member "adopts" type qualifier of its containing type
             *modified_member_type.qualifier_mut() |= accessee_type.qualifier();
@@ -893,7 +928,7 @@ pub(super) fn resolve_expr(
             Ok(array_decay(resolved_expr_vec, dot_access_ref))
         }
         ExpressionNode::ArrowAccess(pointer, identifier) => {
-            let pointer_ref = resolve_expr(&pointer, resolved_expr_vec, expr_indices, symtab)?;
+            let pointer_ref = resolve_expr(&pointer, resolved_expr_vec, expr_indices, ctx)?;
             let pointer = &resolved_expr_vec[pointer_ref];
             let pointer_type = pointer.expr_type();
             let accessee_type = match pointer_type {
@@ -901,7 +936,7 @@ pub(super) fn resolve_expr(
                 _ => return Err(ResolveExprError::BadArrowOperator),
             };
 
-            let (member_ref, member_type) = aggregate_member(accessee_type, symtab, identifier)?;
+            let (member_ref, member_type) = aggregate_member(accessee_type, ctx.symtab, identifier)?;
             let mut modified_member_type = member_type.clone();
             // member "adopts" type qualifier of its containing type
             *modified_member_type.qualifier_mut() |= accessee_type.qualifier();
@@ -914,17 +949,17 @@ pub(super) fn resolve_expr(
             Ok(array_decay(resolved_expr_vec, arrow_access_ref))
         }
         ExpressionNode::Identifier(identifier) => {
-            let symbol = symtab.lookup_symbol(identifier.scope, &identifier.name);
+            let symbol = ctx.symtab.lookup_symbol(identifier.scope, &identifier.name);
             match symbol {
                 None => return Err(ResolveExprError::IdentifierNotFound),
 
                 Some(Symbol::Constant(c)) => {
                     let dummy = ExpressionNode::Constant(*c);
-                    return resolve_expr(&dummy, resolved_expr_vec, expr_indices, symtab);
+                    return resolve_expr(&dummy, resolved_expr_vec, expr_indices, ctx);
                 }
 
                 Some(Symbol::Function(idx)) => {
-                    let Function { function_type, .. } = symtab.get_function(*idx);
+                    let Function { function_type, .. } = ctx.symtab.get_function(*idx);
                     let function_type = CType::FunctionTypeRef {
                         symtab_idx: *function_type,
                     };
@@ -937,7 +972,7 @@ pub(super) fn resolve_expr(
                 }
 
                 Some(Symbol::Object(idx)) => {
-                    let Object { object_type, .. } = symtab.get_object(*idx);
+                    let Object { object_type, .. } = ctx.symtab.get_object(*idx);
 
                     let object_type = object_type.clone();
 
@@ -1041,10 +1076,10 @@ fn basic_binary_op(
 
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
     expr_indices: &mut Vec<ExprRef>,
-    symtab: &ScopedSymtab,
+    ctx: &mut ResolveExprContext
 ) -> Result<ExprRef, ResolveExprError> {
-    let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-    let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+    let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+    let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
 
     basic_binary_op_inner(a_ref, b_ref, op_ctor, resolved_expr_vec)
 }
@@ -1203,10 +1238,10 @@ fn relational_operator(
 
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
     expr_indices: &mut Vec<ExprRef>,
-    symtab: &ScopedSymtab,
+    ctx: &mut ResolveExprContext,
 ) -> Result<ExprRef, ResolveExprError> {
-    let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-    let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+    let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+    let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
 
     let a_type = resolved_expr_vec[a_ref].expr_type();
     let b_type = resolved_expr_vec[b_ref].expr_type();
@@ -1255,10 +1290,10 @@ fn bitshift_operator(
 
     resolved_expr_vec: &mut Vec<TypedExpressionNode>,
     expr_indices: &mut Vec<ExprRef>,
-    symtab: &ScopedSymtab,
+    ctx: &mut ResolveExprContext,
 ) -> Result<ExprRef, ResolveExprError> {
-    let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, symtab)?;
-    let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, symtab)?;
+    let a_ref = resolve_expr(a, resolved_expr_vec, expr_indices, ctx)?;
+    let b_ref = resolve_expr(b, resolved_expr_vec, expr_indices, ctx)?;
 
     let a_type = resolved_expr_vec[a_ref].expr_type();
     let b_type = resolved_expr_vec[b_ref].expr_type();

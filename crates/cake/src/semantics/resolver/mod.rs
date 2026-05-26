@@ -8,7 +8,8 @@ use crate::parser::hand_parser::ParserState;
 use crate::semantics::resolved_ast::{
     ContextRef, ExprRangeRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
-use crate::semantics::symtab::{Function, ScopedSymtab};
+use crate::semantics::resolver::resolve_exprs::ResolveExprContext;
+use crate::semantics::symtab::ScopedSymtab;
 use crate::types::layout::Layouts;
 use crate::types::{EnumType, FunctionType, FunctionTypeIdx, StructureType, UnionType};
 use crate::{
@@ -426,8 +427,6 @@ pub(crate) fn resolve_ast(
     let mut resolved_ast =
         unsafe { ResolvedAST::from_intermediate_ast(intermediate_ast, resolver_state) };
 
-    // check 
-
     Ok(resolved_ast)
 }
 
@@ -757,11 +756,18 @@ fn resolve_ast_inner(
             Ok(node_ref)
         }
         ASTNode::ExpressionStatement(expr, scope) => {
+            let mut resolve_expr_ctx = ResolveExprContext {
+                symtab: &mut resolve_state.scoped_symtab,
+                layouts: &mut resolve_state.layouts,
+                scope: *scope,
+                parser_types,
+            };
+
             let expr_ref = resolve_expr(
                 expr,
                 &mut intermediate_ast.exprs,
                 &mut intermediate_ast.expr_indices,
-                &resolve_state.scoped_symtab,
+                &mut resolve_expr_ctx,
             )?;
             let expr_node = ResolvedASTNode::ExpressionStatement {
                 parent,
@@ -782,11 +788,18 @@ fn resolve_ast_inner(
             Ok(node_ref)
         }
         ASTNode::IfStatement(controlling_expr, body, else_body, scope) => {
+            let mut resolve_expr_ctx = ResolveExprContext {
+                symtab: &mut resolve_state.scoped_symtab,
+                layouts: &mut resolve_state.layouts,
+                scope: *scope,
+                parser_types,
+            };
+            
             let controlling_expr_ref = resolve_expr(
                 controlling_expr,
                 &mut intermediate_ast.exprs,
                 &mut intermediate_ast.expr_indices,
-                &resolve_state.scoped_symtab,
+                &mut resolve_expr_ctx,
             )?;
 
             let controlling_expr_type = intermediate_ast.exprs[controlling_expr_ref].expr_type();
@@ -829,11 +842,18 @@ fn resolve_ast_inner(
             Ok(node_ref)
         }
         ASTNode::SwitchStatement(controlling_expr, body, scope) => {
+            let mut resolve_expr_ctx = ResolveExprContext {
+                symtab: &mut resolve_state.scoped_symtab,
+                layouts: &mut resolve_state.layouts,
+                scope: *scope,
+                parser_types,
+            };
+            
             let controlling_expr_ref = resolve_expr(
                 &controlling_expr,
                 &mut intermediate_ast.exprs,
                 &mut intermediate_ast.expr_indices,
-                &resolve_state.scoped_symtab,
+                &mut resolve_expr_ctx,
             )?;
 
             let controlling_expr_type = intermediate_ast.exprs[controlling_expr_ref].expr_type();
@@ -873,11 +893,18 @@ fn resolve_ast_inner(
         }
         ASTNode::WhileStatement(controlling_expr, body, scope)
         | ASTNode::DoWhileStatement(controlling_expr, body, scope) => {
+            let mut resolve_expr_ctx = ResolveExprContext {
+                symtab: &mut resolve_state.scoped_symtab,
+                layouts: &mut resolve_state.layouts,
+                scope: *scope,
+                parser_types,
+            };
+
             let controlling_expr_ref = resolve_expr(
                 &controlling_expr,
                 &mut intermediate_ast.exprs,
                 &mut intermediate_ast.expr_indices,
-                &resolve_state.scoped_symtab,
+                &mut resolve_expr_ctx,
             )?;
 
             let controlling_expr_type = intermediate_ast.exprs[controlling_expr_ref].expr_type();
@@ -943,11 +970,18 @@ fn resolve_ast_inner(
                 Some(expr_node) if matches!(&**expr_node, ASTNode::ExpressionStatement(_, _)) => {
                     match expr_node.as_ref() {
                         ASTNode::ExpressionStatement(expr, scope) => {
+                            let mut resolve_expr_ctx = ResolveExprContext {
+                                symtab: &mut resolve_state.scoped_symtab,
+                                layouts: &mut resolve_state.layouts,
+                                scope: *scope,
+                                parser_types,
+                            };
+                            
                             let expr_ref = resolve_expr(
                                 expr,
                                 &mut intermediate_ast.exprs,
                                 &mut intermediate_ast.expr_indices,
-                                &resolve_state.scoped_symtab,
+                                &mut resolve_expr_ctx,
                             )?;
                             Some(expr_ref)
                         }
@@ -960,11 +994,19 @@ fn resolve_ast_inner(
             let second_clause: Option<ExprRef> = match condition {
                 None => None,
                 Some(expr) => {
+                    let mut resolve_expr_ctx = ResolveExprContext {
+                        symtab: &mut resolve_state.scoped_symtab,
+                        layouts: &mut resolve_state.layouts,
+                        scope: *scope,
+                        parser_types,
+                    };
+
+
                     let expr_ref = resolve_expr(
                         expr,
                         &mut intermediate_ast.exprs,
                         &mut intermediate_ast.expr_indices,
-                        &resolve_state.scoped_symtab,
+                        &mut resolve_expr_ctx,
                     )?;
                     Some(expr_ref)
                 }
@@ -973,11 +1015,18 @@ fn resolve_ast_inner(
             let third_clause: Option<ExprRef> = match post_loop {
                 None => None,
                 Some(expr) => {
+                    let mut resolve_expr_ctx = ResolveExprContext {
+                        symtab: &mut resolve_state.scoped_symtab,
+                        layouts: &mut resolve_state.layouts,
+                        scope: *scope,
+                        parser_types,
+                    };
+
                     let expr_ref = resolve_expr(
                         expr,
                         &mut intermediate_ast.exprs,
                         &mut intermediate_ast.expr_indices,
-                        &resolve_state.scoped_symtab,
+                        &mut resolve_expr_ctx,
                     )?;
                     Some(expr_ref)
                 }
@@ -1072,22 +1121,29 @@ fn resolve_ast_inner(
             let current_fn_type = resolve_state
                 .scoped_symtab
                 .get_function_type(current_fn.func_type);
-            let current_fn_return_type = &current_fn_type.return_type;
+            let current_fn_return_type = current_fn_type.return_type.clone();
 
             // do type-check
             let return_value = match expr {
                 Some(expr) => {
+                    let mut resolve_expr_ctx = ResolveExprContext {
+                        symtab: &mut resolve_state.scoped_symtab,
+                        layouts: &mut resolve_state.layouts,
+                        scope: *scope,
+                        parser_types,
+                    };
+
                     let expr_ref = resolve_expr(
                         expr,
                         &mut intermediate_ast.exprs,
                         &mut intermediate_ast.expr_indices,
-                        &resolve_state.scoped_symtab,
+                        &mut resolve_expr_ctx,
                     )?;
                     let expr_type = intermediate_ast.exprs[expr_ref].expr_type();
 
                     // qualifiers don't matter here, i think
                     // technically, this is not compliant to standard i think
-                    if !CType::unqualified_equal(current_fn_return_type, expr_type) {
+                    if !CType::unqualified_equal(&current_fn_return_type, expr_type) {
                         dbg!(current_fn_return_type);
                         dbg!(expr_type);
                         return Err(ASTResolveError::BadReturnValue);
@@ -1142,7 +1198,7 @@ fn resolve_ast_declaration(
             }
         }
     } else if let ASTNode::EmptyDeclaration(declared_type, scope) = ast {
-        resolve_empty_declaration(
+        _ = resolve_empty_declaration(
             &mut resolve_state.scoped_symtab,
             declared_type,
             *scope,

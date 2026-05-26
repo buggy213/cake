@@ -11,7 +11,7 @@ int main() {
     struct data s;
     struct data sa[18];
 
-    printf("%d %d %d %d %d %d %d %d %d",
+    printf("%d %d %d %d %d %d %d %d %d %d %d",
         sizeof(int),
         sizeof i,
         sizeof(void *),
