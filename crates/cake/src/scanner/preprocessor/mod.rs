@@ -21,7 +21,7 @@ use bumpalo::Bump;
 
 // specialized implementation for C lexemes
 // implements preprocessing logic
-struct Preprocessor {
+pub struct Preprocessor {
     preprocess_scanner: DFAScanner,
     main_scanner: DFAScanner,
     platform: Platform,

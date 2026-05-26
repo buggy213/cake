@@ -1215,6 +1215,27 @@ fn resolve_ast_declaration(
 mod resolve_decls;
 mod resolve_exprs;
 
+use crate::ParseOutput;
+pub struct Resolver {
+    parse_output: ParseOutput
+}
+
+pub struct ResolveOutput {
+    pub(crate) resolved_ast: ResolvedAST
+}
+
+impl Resolver {
+    pub fn new(parse_output: ParseOutput) -> Resolver {
+        Resolver { parse_output }
+    }
+
+    pub fn resolve_ast(self) -> Result<ResolveOutput, Box<dyn std::error::Error>> {
+        let ParseOutput { root_node, final_parse_state } = self.parse_output;
+        let resolved_ast = resolve_ast(root_node, final_parse_state)?;
+        Ok(ResolveOutput { resolved_ast })
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod resolve_ast_tests {
     use crate::{

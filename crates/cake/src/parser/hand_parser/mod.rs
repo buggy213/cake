@@ -73,10 +73,10 @@ impl Error for ParseErrorWithBacktrace {
 }
 
 #[cfg(debug_assertions)]
-type Result<T> = std::result::Result<T, Box<ParseErrorWithBacktrace>>;
+pub(crate) type Result<T> = std::result::Result<T, Box<ParseErrorWithBacktrace>>;
 
 #[cfg(not(debug_assertions))]
-type Result<T> = std::result::Result<T, Box<ParseError>>;
+pub(crate) type Result<T> = std::result::Result<T, Box<ParseError>>;
 
 #[derive(Error, Debug)]
 pub(crate) enum ParseError {
@@ -2785,6 +2785,3 @@ fn parse_jump_statement(
 
 #[cfg(test)]
 mod hand_parser_tests;
-
-/// uses petgraph + DOT export functionality to visualize an AST
-mod viz;

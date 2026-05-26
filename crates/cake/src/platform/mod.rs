@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
 
-pub(crate) struct Platform {
+pub struct Platform {
     working_dir: PathBuf,
     system_header_paths: Vec<PathBuf>,
     normal_header_paths: Vec<PathBuf>,
 }
 
 impl Platform {
-    pub(crate) fn new(working_dir: PathBuf) -> Self {
+    pub fn new(working_dir: PathBuf) -> Self {
         Self {
             working_dir,
             system_header_paths: Vec::new(),
