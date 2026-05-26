@@ -10,6 +10,7 @@ pub use scanner::preprocessor::Preprocessor;
 pub use parser::{HandParser, ParseOutput};
 pub use semantics::resolver::{Resolver, ResolveOutput};
 
-
 mod codegen;
 mod cir;
+
+pub use codegen::CraneliftBackend;

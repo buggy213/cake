@@ -1224,6 +1224,7 @@ pub struct ResolveOutput {
     pub(crate) resolved_ast: ResolvedAST
 }
 
+
 impl Resolver {
     pub fn new(parse_output: ParseOutput) -> Resolver {
         Resolver { parse_output }

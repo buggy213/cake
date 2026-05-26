@@ -20,7 +20,7 @@ use crate::{
     semantics::{
         self,
         resolved_ast::{ExprRangeRef, ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
-        resolver::{ResolvedAST, ResolverContext},
+        resolver::{ResolveOutput, ResolvedAST, ResolverContext},
         symtab::{FunctionIdx, ObjectIdx, ObjectRangeRef, SymbolTable},
     },
     types::{BasicType, CType, FunctionType, FunctionTypeIdx, TypeQualifier, layout::{self, Layouts}},
@@ -79,7 +79,7 @@ enum StackOrMemory {
     Memory(Value),
 }
 
-struct CraneliftBackend {
+pub struct CraneliftBackend {
     object: ObjectModule,
     data: HashMap<ObjectIdx, DataId>,
     functions: Vec<FuncId>,
@@ -119,6 +119,13 @@ impl LowerFunctionContext {
 impl CraneliftBackend {
     fn pointer_type(&self) -> Type {
         self.object.target_config().pointer_type()
+    }
+
+    pub fn from_resolve_output(object_name: &str, resolve_output: &ResolveOutput) -> Self {
+        let mut backend = Self::new(object_name, &resolve_output.resolved_ast.symtab);
+        let mut function_builder_ctx = FunctionBuilderContext::new();
+        backend.lower_translation_unit(&resolve_output.resolved_ast, &mut function_builder_ctx);
+        backend
     }
 
     pub(crate) fn new(object_name: &str, symtab: &SymbolTable) -> Self {
@@ -1717,7 +1724,7 @@ impl CraneliftBackend {
         }
     }
 
-    pub(crate) fn finish_and_write(self, path: &Path) {
+    pub fn finish_and_write(self, path: &Path) {
         let finished_object = self.object.finish();
         let bytes = finished_object.emit().expect("failed to emit object file");
 
