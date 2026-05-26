@@ -194,3 +194,4 @@ make_test!(struct_param);
 make_test!(union_punning);
 make_test!(multi_array);
 make_test!(sizeof);
+make_test!(fib);
