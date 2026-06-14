@@ -7,7 +7,8 @@ pub(crate) mod layout;
 use layout::{StructLayout, UnionLayout};
 
 use crate::{
-    semantics::symtab::{Scope, SymbolTable}, types::layout::Layouts,
+    semantics::symtab::{Scope, SymbolTable},
+    types::layout::Layouts,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -426,62 +427,53 @@ impl CType {
 
     pub(crate) fn size(&self, layouts: &Layouts) -> u32 {
         match self {
-            CType::BasicType { basic_type, .. } => {
-                basic_type.size()
-            }
+            CType::BasicType { basic_type, .. } => basic_type.size(),
             CType::PointerType { .. } => 8,
             CType::ArrayType {
                 size, element_type, ..
-            } => {
-                element_type.size(layouts) * size
-            }
+            } => element_type.size(layouts) * size,
             CType::StructureTypeRef {
                 symtab_idx,
                 qualifier: _,
-            } => {
-                layouts[*symtab_idx].size
-            }
+            } => layouts[*symtab_idx].size,
             CType::UnionTypeRef {
                 symtab_idx,
                 qualifier: _,
-            } => {
-                layouts[*symtab_idx].size
-            }
-            _ => todo!("more types")
+            } => layouts[*symtab_idx].size,
+            _ => todo!("more types"),
         }
     }
 
     pub(crate) fn align(&self, layouts: &Layouts) -> u32 {
         match self {
-            CType::BasicType { basic_type, .. } => {
-                basic_type.align()
-            }
+            CType::BasicType { basic_type, .. } => basic_type.align(),
             CType::PointerType { .. } => 8,
             CType::ArrayType {
                 size, element_type, ..
-            } => {
-                element_type.align(layouts)
-            }
+            } => element_type.align(layouts),
             CType::StructureTypeRef {
                 symtab_idx,
                 qualifier: _,
-            } => {
-                layouts[*symtab_idx].align
-            }
+            } => layouts[*symtab_idx].align,
             CType::UnionTypeRef {
                 symtab_idx,
                 qualifier: _,
-            } => {
-                layouts[*symtab_idx].align
-            }
-            _ => todo!("more types")
+            } => layouts[*symtab_idx].align,
+            _ => todo!("more types"),
         }
     }
 
     pub(crate) fn as_struct(&self) -> Option<StructureTypeIdx> {
         match self {
             CType::StructureTypeRef { symtab_idx, .. } => Some(*symtab_idx),
-            _ => None
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_pointee(&self) -> Option<&CType> {
+        match self {
+            CType::PointerType { pointee_type, .. } => Some(&pointee_type),
+            _ => None,
         }
     }
 
@@ -500,9 +492,9 @@ impl CType {
     }
 
     pub(crate) fn size_type() -> CType {
-        CType::BasicType { 
-            basic_type: BasicType::ULong, 
-            qualifier: TypeQualifier::empty() 
+        CType::BasicType {
+            basic_type: BasicType::ULong,
+            qualifier: TypeQualifier::empty(),
         }
     }
 
