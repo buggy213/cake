@@ -354,6 +354,21 @@ mod ast2cir;
 
 #[cfg(test)]
 mod test {
+    use super::*;
+
     #[test]
-    fn test_make_block() {}
+    fn test_basic_ops() {
+        let mut module = Module::new();
+        let main_sig = module.add_signature(Signature {
+            argument_types: vec![],
+            return_type: None,
+        });
+
+        let func = module.add_function(main_sig);
+        let mut fn_builder = module.fn_builder(func);
+
+        let a = fn_builder.insert().const_i32(1);
+        let b = fn_builder.insert().const_i32(2);
+        let add = fn_builder.insert().add(a, b);
+    }
 }
