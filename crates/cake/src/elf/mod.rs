@@ -74,6 +74,9 @@ mod consts {
     // everything aligned to 16 bytes for simplicity
     pub(super) const SECTION_ALIGN: usize = 16;
 
+    pub(super) const SHNUM: u16 = 9;
+    pub(super) const SHSTRNDX: u16 = 8;
+
     pub(super) const PROGBITS: u32 = 1;
     pub(super) const SYMTAB: u32 = 2;
     pub(super) const STRTAB: u32 = 3;
@@ -277,10 +280,10 @@ impl Elf {
 
         const SHENT_SIZE: u16 = 64;
         writer.write_u16::<LittleEndian>(SHENT_SIZE)?;
-        // fixed 8 sections
-        writer.write_u16::<LittleEndian>(8)?;
+        // 8 real sections + SHN_UNDEF
+        writer.write_u16::<LittleEndian>(SHNUM)?;
         // header names always at index 8 (index 0 is SHN_UNDEF)
-        writer.write_u16::<LittleEndian>(8)?;
+        writer.write_u16::<LittleEndian>(SHSTRNDX)?;
 
         fn write_padding(size: usize, writer: &mut impl std::io::Write) -> std::io::Result<()> {
             let zeros = [0x00_u8; 16];
@@ -326,6 +329,8 @@ impl Elf {
         let section_names_size = self.section_names.size().next_multiple_of(SECTION_ALIGN);
         self.section_names.write(writer)?;
         write_padding(self.section_names.size(), writer)?;
+
+        dbg!(&self.section_names);
 
         fn write_section_header(
             writer: &mut impl std::io::Write, 
@@ -396,6 +401,8 @@ impl Elf {
         }
 
         // write section headers
+        let zeros = [0x00_u8; SHENT_SIZE as usize];
+        writer.write_all(&zeros)?;
         write_section_header(writer, self.section_name_offsets[0], Section::Text, text_offset, text_size, 0)?;
         write_section_header(writer, self.section_name_offsets[1], Section::Data, data_offset, data_size, 0)?;
         write_section_header(writer, self.section_name_offsets[2], Section::Bss, rela_text_offset, bss_size, 0)?;
@@ -403,7 +410,8 @@ impl Elf {
         write_section_header(writer, self.section_name_offsets[4], Section::RelaData, rela_data_offset, rela_data_size, 0)?;
         write_section_header(writer, self.section_name_offsets[5], Section::Symtab, symbol_table_offset, symbol_table_size, 0)?;
         write_section_header(writer, self.section_name_offsets[6], Section::Strtab, string_table_offset, string_table_size, 0)?;
-        write_section_header(writer, self.section_name_offsets[7], Section::Strtab, symbol_table_offset, symbol_table_size, 0)?;
+        write_section_header(writer, self.section_name_offsets[7], Section::Strtab, section_names_offset, section_names_size, 0)?;
+
 
         Ok(())
     }
@@ -528,6 +536,7 @@ impl RelocationSection {
     }
 }
 
+#[derive(Debug)]
 struct StringTableSection {
     data: Vec<u8>
 }
@@ -623,11 +632,18 @@ impl SymbolTableSection {
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use std::io::{BufWriter, Write};
+
+use super::*;
 
     #[test]
-    fn test_create_object_file() {
-        let mut elf = Elf::new();
-        elf.
+    fn test_create_empty_file() {
+        let elf = Elf::new();
+        let f = std::fs::File::create("test.o")
+            .expect("failed to create file");
+
+        let mut f_buffered = BufWriter::new(f);
+        elf.write(&mut f_buffered).expect("failed to write");
+        f_buffered.flush().expect("failed to write");
     }
 }
