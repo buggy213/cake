@@ -324,12 +324,12 @@ impl Elf {
 
         let rela_text_offset = data_offset + data_size;
         let rela_text_size = self.rela_text.size().next_multiple_of(SECTION_ALIGN);
-        self.rela_text.write(writer)?;
+        self.rela_text.write(writer, self.symbol_table.local_symbol_count())?;
         write_padding(self.rela_text.size(), writer)?;
         
         let rela_data_offset = rela_text_offset + rela_text_size;
         let rela_data_size = self.rela_data.size().next_multiple_of(SECTION_ALIGN);
-        self.rela_data.write(writer)?;
+        self.rela_data.write(writer, self.symbol_table.local_symbol_count())?;
         write_padding(self.rela_data.size(), writer)?;
         
         let symbol_table_offset = rela_data_offset + rela_data_size;
@@ -355,7 +355,7 @@ impl Elf {
             size: usize,
             
             // only for symtab
-            local_symbols: usize
+            local_symbol_count: usize
 
         ) -> std::io::Result<()> {
             writer.write_u32::<LittleEndian>(name.0 as u32)?;
@@ -401,7 +401,7 @@ impl Elf {
             let section_info = match section {
                 Section::RelaText => SHN_TEXT,
                 Section::RelaData => SHN_DATA,
-                Section::Symtab => local_symbols as u32,
+                Section::Symtab => local_symbol_count as u32,
                 _ => 0
             };
 
@@ -423,7 +423,7 @@ impl Elf {
         write_section_header(writer, self.section_name_offsets[2], Section::Bss, rela_text_offset, bss_size, 0)?;
         write_section_header(writer, self.section_name_offsets[3], Section::RelaText, rela_text_offset, rela_text_size, 0)?;
         write_section_header(writer, self.section_name_offsets[4], Section::RelaData, rela_data_offset, rela_data_size, 0)?;
-        write_section_header(writer, self.section_name_offsets[5], Section::Symtab, symbol_table_offset, symbol_table_size, 0)?;
+        write_section_header(writer, self.section_name_offsets[5], Section::Symtab, symbol_table_offset, symbol_table_size, self.symbol_table.local_symbol_count())?;
         write_section_header(writer, self.section_name_offsets[6], Section::Strtab, string_table_offset, string_table_size, 0)?;
         write_section_header(writer, self.section_name_offsets[7], Section::Strtab, section_names_offset, section_names_size, 0)?;
 
@@ -546,11 +546,16 @@ impl RelocationSection {
         consts::RELA_ENTSIZE as usize * self.relocations.len()
     }
 
-    fn write(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
+    fn write(&self, writer: &mut impl std::io::Write, local_symbol_count: usize) -> std::io::Result<()> {
         for rela_entry in &self.relocations {
             writer.write_u64::<LittleEndian>(rela_entry.offset as u64)?;
             writer.write_u32::<LittleEndian>(rela_entry.reloc_type.into())?;
-            writer.write_u32::<LittleEndian>(rela_entry.symtab_idx.0)?;
+            let absolute_idx = match rela_entry.symtab_idx {
+                SymbolTableIndex::LocalSymbol(idx) => idx,
+                SymbolTableIndex::NonlocalSymbol(idx) => local_symbol_count as u32 + idx,
+            };
+
+            writer.write_u32::<LittleEndian>(absolute_idx)?;
             writer.write_i64::<LittleEndian>(rela_entry.addend as i64)?;
         }
 
@@ -597,15 +602,37 @@ struct Symbol {
     size: usize,
 }
 struct SymbolTableSection {
-    symbols: Vec<Symbol>
+    local_symbols: Vec<Symbol>,
+    nonlocal_symbols: Vec<Symbol>,
 }
 
 #[derive(Clone, Copy)]
-struct SymbolTableIndex(u32);
+enum SymbolTableIndex {
+    // # of previous local symbols
+    LocalSymbol(u32),
+    // # of previous nonlocal symbols
+    NonlocalSymbol(u32)
+}
 
 impl SymbolTableSection {
     fn new() -> SymbolTableSection {
-        SymbolTableSection { symbols: Vec::new() }
+        SymbolTableSection { 
+            local_symbols: vec![
+                Symbol { 
+                    name: StringTableOffset(0), 
+                    binding: ElfSymbolBinding::Global, 
+                    symbol_type: ElfSymbolType::NoType, 
+                    section: None, 
+                    value: 0, 
+                    size: 0
+                }
+            ],
+            nonlocal_symbols: Vec::new() 
+        }
+    }
+
+    fn local_symbol_count(&self) -> usize {
+        self.local_symbols.len()
     }
 
     fn add_symbol(
@@ -614,10 +641,14 @@ impl SymbolTableSection {
         binding: ElfSymbolBinding, 
         symbol_type: ElfSymbolType, 
         section: Option<Section>, 
-        value: usize, 
+        value: usize,
         size: usize
     ) -> SymbolTableIndex {
-        let idx = SymbolTableIndex(self.symbols.len() as u32);
+        let idx = match binding {
+            ElfSymbolBinding::Local => SymbolTableIndex::LocalSymbol(self.local_symbols.len() as u32),
+            ElfSymbolBinding::Global | ElfSymbolBinding::Weak => SymbolTableIndex::NonlocalSymbol(self.nonlocal_symbols.len() as u32)
+        };
+
         let symbol = Symbol {
             name,
             binding,
@@ -626,16 +657,25 @@ impl SymbolTableSection {
             value,
             size,
         };
-        self.symbols.push(symbol);
+
+        match binding {
+            ElfSymbolBinding::Local => self.local_symbols.push(symbol),
+            ElfSymbolBinding::Global | ElfSymbolBinding::Weak => self.nonlocal_symbols.push(symbol),
+        };
+
         idx
     }
 
     fn size(&self) -> usize {
-        consts::SYMTAB_ENTSIZE as usize * self.symbols.len()
+        consts::SYMTAB_ENTSIZE as usize * (self.local_symbols.len() + self.nonlocal_symbols.len())
     }
 
     fn write(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
-        for symbol in &self.symbols {
+        // first symbol is dummy (all zeros)
+        let zeros = &[0x00_u8; consts::SYMTAB_ENTSIZE as usize];
+        writer.write_all(zeros)?;
+
+        for symbol in std::iter::chain(&self.local_symbols, &self.nonlocal_symbols).skip(1) {
             writer.write_u32::<LittleEndian>(symbol.name.0 as u32)?;
             
             let info = symbol_info(symbol.symbol_type, symbol.binding);
@@ -780,9 +820,9 @@ mod test {
         ]);
 
         let str_reloc_offset = elf0.add_text(&[
-            // mov edi, 0x0
-            //   R_X86_64_32 .data.format_str
-            0xbf, 0x00, 0x00, 0x00, 0x00
+            // lea rdi, [rip+0x0]
+            //   R_X86_64_PC32 .data.format_str-0x4
+            0x48, 0x8d, 0x3d, 0x00, 0x00, 0x00, 0x00
         ]);
 
         elf0.add_text(&[
@@ -791,7 +831,7 @@ mod test {
         ]);
 
         let printf_reloc_offset = elf0.add_text(&[
-            // call 0x17
+            // call 0x19
             //   R_X86_64_PLT32 printf-0x4
             0xe8, 0x00, 0x00, 0x00, 0x00
         ]);
@@ -810,7 +850,7 @@ mod test {
             ElfSymbolType::Func, 
             Section::Text, 
             0, 
-            0x1e
+            0x20
         );
 
         let main_addr_sym = elf0.undefined_symbol(
@@ -825,7 +865,7 @@ mod test {
             ElfSymbolType::Func
         );
 
-        let format_str = "0x%p\\n\x00".as_bytes();
+        let format_str = "%p\n\x00".as_bytes();
         let str_offset = elf0.add_data(format_str);
         let str_sym = elf0.define_symbol(
             ".data.format_str", 
@@ -837,10 +877,10 @@ mod test {
         );
 
         elf0.reloc_text(
-            str_reloc_offset + 0x01, 
+            str_reloc_offset + 0x03, 
             str_sym, 
-            RelocationType::R_X86_64_32, 
-            0x00
+            RelocationType::R_X86_64_PC32, 
+            -0x04
         );
 
         elf0.reloc_text(
@@ -852,7 +892,7 @@ mod test {
 
         // call is also PC-relative, and thus needs the same offset calculation as PC32 relocation
         elf0.reloc_text(
-            printf_reloc_offset, 
+            printf_reloc_offset + 0x01, 
             printf_sym, 
             RelocationType::R_X86_64_PLT32, 
             -0x04
