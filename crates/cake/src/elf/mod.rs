@@ -189,9 +189,26 @@ impl Elf {
             name, 
             binding, 
             symbol_type, 
-            section, 
+            Some(section), 
             value, 
             size
+        )
+    }
+
+    pub(crate) fn undefined_symbol(
+        &mut self,
+        name: &str,
+        binding: ElfSymbolBinding,
+        symbol_type: ElfSymbolType
+    ) -> SymbolTableIndex {
+        let name = self.string_table.add_string(name);
+        self.symbol_table.add_symbol(
+            name,
+            binding,
+            symbol_type,
+            None,
+            0usize,
+            0usize
         )
     }
 
@@ -200,7 +217,7 @@ impl Elf {
         offset: usize,
         symtab_idx: SymbolTableIndex,
         reloc_type: RelocationType,
-        addend: usize
+        addend: isize
     ) {
         self.rela_text.add_relocation(offset, symtab_idx, reloc_type, addend);
     }
@@ -210,7 +227,7 @@ impl Elf {
         offset: usize,
         symtab_idx: SymbolTableIndex,
         reloc_type: RelocationType,
-        addend: usize
+        addend: isize
     ) {
         self.rela_data.add_relocation(offset, symtab_idx, reloc_type, addend);
     }
@@ -291,7 +308,7 @@ impl Elf {
             writer.write_all(&zeros[..pad_bytes])?;
 
             Ok(())
-        };
+        }
 
         let text_offset = HEADER_SIZE as usize;
         let text_size = self.text.size().next_multiple_of(SECTION_ALIGN);
@@ -306,7 +323,7 @@ impl Elf {
         let bss_size = self.bss.size();
 
         let rela_text_offset = data_offset + data_size;
-        let rela_text_size = self.rela_data.size().next_multiple_of(SECTION_ALIGN);
+        let rela_text_size = self.rela_text.size().next_multiple_of(SECTION_ALIGN);
         self.rela_text.write(writer)?;
         write_padding(self.rela_text.size(), writer)?;
         
@@ -329,8 +346,6 @@ impl Elf {
         let section_names_size = self.section_names.size().next_multiple_of(SECTION_ALIGN);
         self.section_names.write(writer)?;
         write_padding(self.section_names.size(), writer)?;
-
-        dbg!(&self.section_names);
 
         fn write_section_header(
             writer: &mut impl std::io::Write, 
@@ -475,15 +490,22 @@ impl EmptySection {
 #[allow(nonstandard_style)]
 #[derive(Clone, Copy)]
 enum RelocationType {
-    R_AMD64_NONE,
-    R_AMD64_64
+    R_X86_64_NONE,
+    R_X86_64_64,
+    R_X86_64_PC32,
+    R_X86_64_PLT32,
+    R_X86_64_32,
+    
 }
 
 impl From<RelocationType> for u32 {
     fn from(value: RelocationType) -> Self {
         match value {
-            RelocationType::R_AMD64_NONE => 0,
-            RelocationType::R_AMD64_64 => 1,
+            RelocationType::R_X86_64_NONE => 0,
+            RelocationType::R_X86_64_64 => 1,
+            RelocationType::R_X86_64_PC32 => 2,
+            RelocationType::R_X86_64_PLT32 => 4,
+            RelocationType::R_X86_64_32 => 10
         }
     }
 }
@@ -493,7 +515,7 @@ struct Relocation {
     offset: usize,
     symtab_idx: SymbolTableIndex,
     reloc_type: RelocationType,
-    addend: usize
+    addend: isize
 }
 struct RelocationSection {
     relocations: Vec<Relocation>
@@ -509,7 +531,7 @@ impl RelocationSection {
         offset: usize, 
         symtab_idx: SymbolTableIndex, 
         reloc_type: RelocationType, 
-        addend: usize
+        addend: isize
     ) {
         let reloc = Relocation {
             offset,
@@ -529,7 +551,7 @@ impl RelocationSection {
             writer.write_u64::<LittleEndian>(rela_entry.offset as u64)?;
             writer.write_u32::<LittleEndian>(rela_entry.reloc_type.into())?;
             writer.write_u32::<LittleEndian>(rela_entry.symtab_idx.0)?;
-            writer.write_u64::<LittleEndian>(rela_entry.addend as u64)?;
+            writer.write_i64::<LittleEndian>(rela_entry.addend as i64)?;
         }
 
         Ok(())
@@ -570,7 +592,7 @@ struct Symbol {
     name: StringTableOffset,
     binding: ElfSymbolBinding,
     symbol_type: ElfSymbolType,
-    section: Section,
+    section: Option<Section>,
     value: usize,
     size: usize,
 }
@@ -591,7 +613,7 @@ impl SymbolTableSection {
         name: StringTableOffset, 
         binding: ElfSymbolBinding, 
         symbol_type: ElfSymbolType, 
-        section: Section, 
+        section: Option<Section>, 
         value: usize, 
         size: usize
     ) -> SymbolTableIndex {
@@ -619,9 +641,15 @@ impl SymbolTableSection {
             let info = symbol_info(symbol.symbol_type, symbol.binding);
             writer.write_u8(info)?;
             writer.write_u8(0)?;
+            
+            if let Some(section) = symbol.section {
+                let section_index = consts::section_index(section);
+                writer.write_u16::<LittleEndian>(section_index as u16)?;
+            }
+            else {
+                writer.write_u16::<LittleEndian>(consts::SHN_UNDEF as u16)?;
+            }
 
-            let section_index = consts::section_index(symbol.section);
-            writer.write_u16::<LittleEndian>(section_index as u16)?;
             writer.write_u64::<LittleEndian>(symbol.value as u64)?;
             writer.write_u64::<LittleEndian>(symbol.size as u64)?;
         }
@@ -633,17 +661,229 @@ impl SymbolTableSection {
 #[cfg(test)]
 mod test {
     use std::io::{BufWriter, Write};
+    use super::*;
 
-use super::*;
+    fn write_elf(elf: &Elf, path: impl AsRef<std::path::Path>) {
+        let f = std::fs::File::create(path)
+            .expect("failed to create file");
+    
+        let mut f_buffered = BufWriter::new(f);
+        elf.write(&mut f_buffered).expect("failed to write");
+        f_buffered.flush().expect("failed to write")
+    }
 
     #[test]
     fn test_create_empty_file() {
         let elf = Elf::new();
-        let f = std::fs::File::create("test.o")
-            .expect("failed to create file");
+        write_elf(&elf, "empty.o");
+    }
 
-        let mut f_buffered = BufWriter::new(f);
-        elf.write(&mut f_buffered).expect("failed to write");
-        f_buffered.flush().expect("failed to write");
+    #[test]
+    fn test_trivial() {
+        let mut elf = Elf::new();
+        let main_addr = elf.add_text(&[
+            // xor eax, eax
+            0x31, 0xc0,
+            // ret
+            0xc3
+        ]);
+
+        elf.define_symbol(
+            "main", 
+            ElfSymbolBinding::Global, 
+            ElfSymbolType::Func, 
+            Section::Text, 
+            main_addr, 
+            3 // 3 bytes
+        );
+        
+        write_elf(&elf, "trivial.o");
+    }
+
+    #[test]
+    fn test_basic() {
+        let mut elf = Elf::new();
+        let main_addr = elf.add_text(&[
+            // mov eax, DWORD_PTR [rip+0x0]
+            //   R_X86_64_PC32 result-0x4 
+            0x8b, 0x05, 0x00, 0x00, 0x00, 0x00,
+            // ret
+            0xc3
+        ]);
+
+        elf.define_symbol(
+            "main", 
+            ElfSymbolBinding::Global, 
+            ElfSymbolType::Func, 
+            Section::Text, 
+            main_addr, 
+            7 // 3 bytes
+        );
+
+        let result_addr = elf.add_data(&[
+            // 42
+            0x2a
+        ]);
+
+        let result_sym = elf.define_symbol(
+            "result", 
+            ElfSymbolBinding::Global, 
+            ElfSymbolType::Object, 
+            Section::Data, 
+            result_addr, 
+            4
+        );
+        
+        // rip points to the next instruction (main_addr + 0x06)
+        // whereas our patch is occurring at (main_addr + 0x02)
+        // our addend needs to be -4 in order for P - A = RIP, 
+        // so that RIP + (S + A - P) = RIP - (P - A) + S = S
+        elf.reloc_text(
+            main_addr + 0x02, 
+            result_sym, 
+            RelocationType::R_X86_64_PC32, 
+            -0x04
+        );
+        
+        write_elf(&elf, "basic.o");
+    }
+
+    #[test]
+    fn test_reloc_data_and_link() {
+        // the code roughly corresponds to this setup
+        // ```C
+        // #include <stdio.h>
+        // extern void *main_addr;
+        // int main() {
+        //   printf("0x%p", main_addr);
+        //   return 0;
+        // }
+        // ```
+
+        // ```C
+        // int main();
+        // void *main_addr = &main;
+        // ```
+
+        let mut elf0 = Elf::new();
+        let mut elf1 = Elf::new();
+        
+        elf0.add_text(&[
+            // sub rsp, 0x8
+            0x48, 0x83, 0xec, 0x08,
+        ]);
+
+        let main_addr_reloc_offset = elf0.add_text(&[
+            // mov rsi, QWORD_PTR [rip+0x0]
+            //   R_X86_64_PC32 main_addr-0x4
+            0x48, 0x8b, 0x35, 0x00, 0x00, 0x00, 0x00
+        ]);
+
+        let str_reloc_offset = elf0.add_text(&[
+            // mov edi, 0x0
+            //   R_X86_64_32 .data.format_str
+            0xbf, 0x00, 0x00, 0x00, 0x00
+        ]);
+
+        elf0.add_text(&[
+            // xor eax, eax
+            0x31, 0xc0,
+        ]);
+
+        let printf_reloc_offset = elf0.add_text(&[
+            // call 0x17
+            //   R_X86_64_PLT32 printf-0x4
+            0xe8, 0x00, 0x00, 0x00, 0x00
+        ]);
+
+        elf0.add_text(&[
+            // xor eax, eax
+            0x31, 0xc0,
+            // add rsp, 0x8
+            0x48, 0x83, 0xc4, 0x08,
+            // ret
+            0xc3
+        ]);
+
+        elf0.define_symbol("main", 
+            ElfSymbolBinding::Global, 
+            ElfSymbolType::Func, 
+            Section::Text, 
+            0, 
+            0x1e
+        );
+
+        let main_addr_sym = elf0.undefined_symbol(
+            "main_addr", 
+            ElfSymbolBinding::Global, 
+            ElfSymbolType::Object
+        );
+
+        let printf_sym = elf0.undefined_symbol(
+            "printf", 
+            ElfSymbolBinding::Global, 
+            ElfSymbolType::Func
+        );
+
+        let format_str = "0x%p\\n\x00".as_bytes();
+        let str_offset = elf0.add_data(format_str);
+        let str_sym = elf0.define_symbol(
+            ".data.format_str", 
+            ElfSymbolBinding::Local, 
+            ElfSymbolType::Object, 
+            Section::Data, 
+            str_offset, 
+            format_str.len()
+        );
+
+        elf0.reloc_text(
+            str_reloc_offset + 0x01, 
+            str_sym, 
+            RelocationType::R_X86_64_32, 
+            0x00
+        );
+
+        elf0.reloc_text(
+            main_addr_reloc_offset + 0x03, 
+            main_addr_sym, 
+            RelocationType::R_X86_64_PC32, 
+            -0x04
+        );
+
+        // call is also PC-relative, and thus needs the same offset calculation as PC32 relocation
+        elf0.reloc_text(
+            printf_reloc_offset, 
+            printf_sym, 
+            RelocationType::R_X86_64_PLT32, 
+            -0x04
+        );
+
+        let main_sym = elf1.undefined_symbol(
+            "main", 
+            ElfSymbolBinding::Global, 
+            ElfSymbolType::Func
+        );
+
+        let main_addr_reloc_offset = elf1.add_data(&[0x00; 8]);
+        let main_addr_sym = elf1.define_symbol(
+            "main_addr", 
+            ElfSymbolBinding::Global, 
+            ElfSymbolType::Object, 
+            Section::Data, 
+            main_addr_reloc_offset, 
+            8
+        );
+
+        elf1.reloc_data(
+            main_addr_reloc_offset, 
+            main_addr_sym, 
+            RelocationType::R_X86_64_64, 
+            0x00
+        );
+
+        write_elf(&elf0, "reloc0.o");
+        write_elf(&elf1, "reloc1.o");
+
+        // `clang reloc0.o reloc1.o``
     }
 }
