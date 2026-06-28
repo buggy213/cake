@@ -67,11 +67,6 @@ impl Frame {
         let idx = object_idx.get_inner() - self.object_range.0 as usize;
         self.stack_slots[idx]
     }
-
-    fn value(&self, ins: FuncInstBuilder, value_type: Type, object_idx: ObjectIdx) -> Value {
-        let stack_slot = self.stack_slots[object_idx.get_inner() - self.object_range.0 as usize];
-        ins.stack_load(value_type, stack_slot, 0)
-    }
 }
 
 enum StackOrMemory {

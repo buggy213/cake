@@ -1,5 +1,6 @@
 use cake_util::{add_additional_index, make_type_idx};
 
+#[derive(Debug)]
 pub(crate) struct Module {
     functions: Vec<Function>,
     signatures: Vec<Signature>,
@@ -7,6 +8,8 @@ pub(crate) struct Module {
 }
 
 make_type_idx!(DataRef, Data);
+
+#[derive(Debug)]
 pub(crate) struct Data {}
 
 impl Module {
@@ -38,11 +41,23 @@ impl Module {
             current_block: BlockRef(0),
         }
     }
+
+    pub(crate) fn functions(&self) -> &[Function] {
+        &self.functions
+    }
+
+    pub(crate) fn signatures(&self) -> &[Signature] {
+        &self.signatures
+    }
+
+    pub(crate) fn data(&self) -> &[Data] {
+        &self.data
+    }
 }
 
 // these are just the best names, what can i say
 #[allow(non_camel_case_types)]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Type {
     i8,
     u8,
@@ -58,7 +73,7 @@ pub(crate) enum Type {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Constant {
     i8(i8),
     u8(u8),
@@ -120,6 +135,8 @@ impl Type {
 }
 
 make_type_idx!(SigRef, Signature);
+
+#[derive(Debug)]
 pub(crate) struct Signature {
     argument_types: Vec<Type>,
     return_type: Option<Type>,
@@ -135,13 +152,17 @@ impl Signature {
 }
 
 make_type_idx!(FuncRef, Function);
+
+#[derive(Debug)]
 pub(crate) struct Function {
-    signature: SigRef,
-    blocks: Vec<Block>,
+    pub(crate) signature: SigRef,
+    pub(crate) blocks: Vec<Block>,
     stack_slots: Vec<StackSlot>,
 }
 
 make_type_idx!(StackSlotRef, StackSlot);
+
+#[derive(Debug)]
 pub(crate) struct StackSlot {
     size: u32,
     align: u32,
@@ -203,6 +224,12 @@ impl<'block> BlockBuilder<'block> {
         self.constant(Type::i64, Constant::i64(val))
     }
 
+    pub(crate) fn stack_addr(&mut self, slot: StackSlotRef) -> Value {
+        let op = Inst::StackAddr { slot };
+        self.block.inst_types.push(Type::u64);
+        Value::from_push(&mut self.block.insts, op)
+    }
+
     pub(crate) fn icast(&mut self, val: InstRef, to: Type) -> Value {
         let cast = Inst::CastInt {
             val,
@@ -247,6 +274,11 @@ impl<'block> BlockBuilder<'block> {
         self.block.insts.push(brif);
     }
 
+    pub(crate) fn ret(&mut self, value: Option<Value>) {
+        let ret = Inst::Return { value };
+        self.block.insts.push(ret);
+    }
+
     pub(crate) fn load(&mut self, addr: Value) -> Value {
         let load = Inst::Load { addr };
         Value::from_push(&mut self.block.insts, load)
@@ -259,9 +291,11 @@ impl<'block> BlockBuilder<'block> {
 }
 
 make_type_idx!(BlockRef, Block);
+
+#[derive(Debug)]
 pub(crate) struct Block {
-    insts: Vec<Inst>,
-    inst_types: Vec<Type>,
+    pub(crate) insts: Vec<Inst>,
+    pub(crate) inst_types: Vec<Type>,
 }
 
 impl Block {
@@ -277,6 +311,8 @@ pub(crate) type Value = InstRef;
 
 make_type_idx!(InstRef, Inst);
 add_additional_index!(InstRef, Type);
+
+#[derive(Debug)]
 pub(crate) enum Inst {
     BlockArgument,
 
@@ -308,7 +344,7 @@ pub(crate) enum Inst {
         addr: InstRef,
         val: InstRef,
     },
-    StackSlotAddr {
+    StackAddr {
         slot: StackSlotRef,
     },
 
@@ -336,11 +372,16 @@ pub(crate) enum Inst {
         alt: BlockRef,
     },
 
+    Return {
+        value: Option<InstRef>
+    },
+
     Jump {
         target: BlockRef,
     },
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum CompareMode {
     LessThan,
     GreaterThan,
@@ -350,7 +391,7 @@ pub(crate) enum CompareMode {
     NotEqual,
 }
 
-mod ast2cir;
+pub(crate) mod ast2cir;
 
 #[cfg(test)]
 mod test {

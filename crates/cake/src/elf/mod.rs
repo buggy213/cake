@@ -1,10 +1,7 @@
 //! Cake outputs object files directly
 
-use std::mem::size_of;
-
 use bitflags::bitflags;
-use byteorder::{LE, LittleEndian, ReadBytesExt, WriteBytesExt};
-use thiserror::Error;
+use byteorder::{LittleEndian, WriteBytesExt};
 
 pub(crate) type Elf64Addr = u64;
 pub(crate) type Elf64Off = u64;
@@ -115,7 +112,7 @@ mod consts {
     }
 }
 
-struct Elf {
+pub(crate) struct Elf {
     text: BasicSection,
     data: BasicSection,
     bss: EmptySection,
@@ -924,6 +921,8 @@ mod test {
         write_elf(&elf0, "reloc0.o");
         write_elf(&elf1, "reloc1.o");
 
-        // `clang reloc0.o reloc1.o``
+        // `clang reloc0.o reloc1.o`,
+        // expected output is some large, random pointer 
+        // (due to ASLR; clang driver usually compiles into position-independent executable by default)
     }
 }

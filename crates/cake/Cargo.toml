@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 bumpalo = { workspace = true }
 cranelift = { workspace = true }
 paste = { workspace = true }
+iced-x86 = { workspace = true }
 
 [build-dependencies]
 codegen = { workspace = true }
