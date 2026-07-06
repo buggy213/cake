@@ -16,10 +16,12 @@ fn lower_to_x86(module: Module) -> Elf {
         let func_sig_ref = func.signature;
         let func_sig = &sigs[func_sig_ref];
 
-        let mut block_labels: Vec<CodeLabel> = func.blocks.iter().map(|_| asm.create_label()).collect();
+        let mut block_labels: Vec<CodeLabel> =
+            func.blocks.iter().map(|_| asm.create_label()).collect();
         for (i, block) in func.blocks.iter().enumerate() {
             assert!(!block.insts.is_empty());
-            asm.set_label(&mut block_labels[i]).expect("label should be valid");
+            asm.set_label(&mut block_labels[i])
+                .expect("label should be valid");
 
             for (inst, ty) in std::iter::zip(&block.insts, &block.inst_types) {
                 match inst {
@@ -36,11 +38,10 @@ fn lower_to_x86(module: Module) -> Elf {
                             Constant::u64(v) => asm.mov(rax, v),
                             Constant::f32(_) => todo!("fp constants"),
                             Constant::f64(_) => todo!("fp constants"),
-                        }.expect("bad asm");
-                    },
-                    Inst::Add { a, b } => {
-                        
-                    },
+                        }
+                        .expect("bad asm");
+                    }
+                    Inst::Add { a, b } => {}
                     Inst::Sub { a, b } => todo!(),
                     Inst::Mul { a, b } => todo!(),
                     Inst::Div { a, b } => todo!(),
@@ -63,7 +64,10 @@ fn lower_to_x86(module: Module) -> Elf {
 
 #[cfg(test)]
 mod test {
-    use crate::{cir, semantics::resolver::resolve_ast_tests::{ResolveHarnessInput, resolve_harness}};
+    use crate::{
+        cir,
+        semantics::resolver::resolve_ast_tests::{ResolveHarnessInput, resolve_harness},
+    };
 
     #[test]
     fn test_basic() {
@@ -72,7 +76,7 @@ mod test {
             return 5 + 3;
         }
         "#;
-        
+
         let input = ResolveHarnessInput { code };
         let resolved = resolve_harness(input);
         let module = cir::ast2cir::lower_ast(resolved);

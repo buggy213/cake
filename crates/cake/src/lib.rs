@@ -5,12 +5,14 @@ pub(crate) mod scanner;
 pub(crate) mod semantics;
 pub(crate) mod types;
 
+pub use parser::{HandParser, ParseOutput};
 pub use platform::Platform;
 pub use scanner::preprocessor::Preprocessor;
-pub use parser::{HandParser, ParseOutput};
-pub use semantics::resolver::{Resolver, ResolveOutput};
+pub use semantics::resolver::{ResolveOutput, Resolver};
 
-mod codegen;
 mod cir;
+mod codegen;
+mod mir;
+mod regalloc;
 
 pub use codegen::CraneliftBackend;

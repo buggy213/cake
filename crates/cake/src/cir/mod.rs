@@ -26,6 +26,8 @@ impl Module {
             signature,
             blocks: vec![Block::new()],
             stack_slots: Vec::new(),
+
+            value_counter: 0,
         };
 
         FuncRef::from_push(&mut self.functions, func)
@@ -157,7 +159,9 @@ make_type_idx!(FuncRef, Function);
 pub(crate) struct Function {
     pub(crate) signature: SigRef,
     pub(crate) blocks: Vec<Block>,
-    stack_slots: Vec<StackSlot>,
+    pub(crate) stack_slots: Vec<StackSlot>,
+
+    value_counter: u32,
 }
 
 make_type_idx!(StackSlotRef, StackSlot);
@@ -192,20 +196,28 @@ impl<'func> FunctionBuilder<'func> {
     pub(crate) fn insert(&'_ mut self) -> BlockBuilder<'_> {
         BlockBuilder {
             block: &mut self.func.blocks[self.current_block],
+            value_counter: &mut self.func.value_counter,
         }
     }
 }
 
 pub(crate) struct BlockBuilder<'block> {
     block: &'block mut Block,
+    value_counter: &'block mut u32,
 }
 
 impl<'block> BlockBuilder<'block> {
+    fn make_value_ref(&mut self) -> Value {
+        let res = *self.value_counter;
+        *self.value_counter += 1;
+        InstRef(res)
+    }
+
     fn constant(&mut self, ty: Type, val: Constant) -> Value {
         let constant = Inst::Constant { val };
-        let res = InstRef::from_push(&mut self.block.insts, constant);
+        self.block.insts.push(constant);
         self.block.inst_types.push(ty);
-        res
+        self.make_value_ref()
     }
 
     pub(crate) fn const_u32(&mut self, val: u32) -> Value {
@@ -226,8 +238,9 @@ impl<'block> BlockBuilder<'block> {
 
     pub(crate) fn stack_addr(&mut self, slot: StackSlotRef) -> Value {
         let op = Inst::StackAddr { slot };
+        self.block.insts.push(op);
         self.block.inst_types.push(Type::u64);
-        Value::from_push(&mut self.block.insts, op)
+        self.make_value_ref()
     }
 
     pub(crate) fn icast(&mut self, val: InstRef, to: Type) -> Value {
@@ -235,9 +248,9 @@ impl<'block> BlockBuilder<'block> {
             val,
             target_type: to,
         };
-        let res = InstRef::from_push(&mut self.block.insts, cast);
+        self.block.insts.push(cast);
         self.block.inst_types.push(to);
-        res
+        self.make_value_ref()
     }
 
     // helper to copy the type of one of the operands.
@@ -248,9 +261,9 @@ impl<'block> BlockBuilder<'block> {
 
     fn binary_op(&mut self, a: Value, b: Value, op: fn(Value, Value) -> Inst) -> Value {
         let op = op(a, b);
-        let res = Value::from_push(&mut self.block.insts, op);
+        self.block.insts.push(op);
         self.copy_type(a);
-        res
+        self.make_value_ref()
     }
 
     pub(crate) fn add(&mut self, a: Value, b: Value) -> Value {
@@ -269,16 +282,6 @@ impl<'block> BlockBuilder<'block> {
         self.binary_op(a, b, |a, b| Inst::Div { a, b })
     }
 
-    pub(crate) fn brif(&mut self, cond: Value, con: BlockRef, alt: BlockRef) {
-        let brif = Inst::BranchIf { cond, con, alt };
-        self.block.insts.push(brif);
-    }
-
-    pub(crate) fn ret(&mut self, value: Option<Value>) {
-        let ret = Inst::Return { value };
-        self.block.insts.push(ret);
-    }
-
     pub(crate) fn load(&mut self, addr: Value) -> Value {
         let load = Inst::Load { addr };
         Value::from_push(&mut self.block.insts, load)
@@ -287,6 +290,17 @@ impl<'block> BlockBuilder<'block> {
     pub(crate) fn store(&mut self, addr: Value, val: Value) {
         let store = Inst::Store { addr, val };
         self.block.insts.push(store);
+    }
+
+    // terminators don't have associated values
+    pub(crate) fn brif(&mut self, cond: Value, con: BlockRef, alt: BlockRef) {
+        let brif = Inst::BranchIf { cond, con, alt };
+        self.block.insts.push(brif);
+    }
+
+    pub(crate) fn ret(&mut self, value: Option<Value>) {
+        let ret = Inst::Return { value };
+        self.block.insts.push(ret);
     }
 }
 
@@ -373,7 +387,7 @@ pub(crate) enum Inst {
     },
 
     Return {
-        value: Option<InstRef>
+        value: Option<InstRef>,
     },
 
     Jump {
