@@ -254,8 +254,9 @@ fn lower_expr(
                 ),
                 "only scalars supported for now"
             );
-
-            todo!()
+            
+            func_builder.insert().store(location, rhs_value);
+            rhs_value
         }
         TypedExpressionNode::AugmentedAssign(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::PostAugmentedAssign(ctype, expr_ref, expr_ref1) => todo!(),
@@ -332,7 +333,19 @@ fn lower_expr(
         TypedExpressionNode::DotAccess(ctype, expr_ref, member_ref) => todo!(),
         TypedExpressionNode::ArrowAccess(ctype, expr_ref, member_ref) => todo!(),
         TypedExpressionNode::ArrayDecay(ctype, expr_ref) => todo!(),
-        TypedExpressionNode::ObjectIdentifier(ctype, object_idx) => todo!(),
+        TypedExpressionNode::ObjectIdentifier(object_type, object_idx) => {
+            let location = lower_lvalue(ast, expr, func_builder, stack_frame);
+
+            let cir_type = match object_type {
+                CType::BasicType { basic_type, .. } => (*basic_type).into(),
+                CType::PointerType { .. } => Type::u64,
+                CType::StructureTypeRef { .. } | CType::UnionTypeRef { .. } => return location,
+                _ => todo!("other types"),
+            };
+
+            func_builder.insert()
+                .load(location, cir_type)
+        },
         TypedExpressionNode::FunctionIdentifier(ctype, function_idx) => todo!(),
         TypedExpressionNode::Constant(ctype, constant) => match *constant {
             ast::Constant::Int(v) => func_builder.insert().const_i32(v),
@@ -364,9 +377,7 @@ fn lower_lvalue(
             func_builder.insert().stack_addr(stack_slot)
         }
         _ => todo!("other lvalues not supported yet"),
-    };
-
-    todo!()
+    }
 }
 
 #[cfg(test)]
@@ -404,5 +415,24 @@ mod test {
         let module = cir::ast2cir::lower_ast(resolved);
 
         dbg!(module);
+    }
+
+    #[test]
+    fn test_compile_variables() {
+        let code = r#"
+        int main(int argc, char *argv[]) {
+            int two;
+            int three;
+            two = 2;
+            three = 3;
+            return two + three;
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+        let module = cir::ast2cir::lower_ast(resolved);
+
+        print!("{module}");
     }
 }

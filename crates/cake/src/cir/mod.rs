@@ -436,6 +436,80 @@ pub(crate) enum Inst {
     },
 }
 
+impl Inst {
+    pub(crate) fn mnemonic(&self) -> &str {
+        match self {
+            Inst::BlockArgument => "block_arg",
+            Inst::Constant { val } => "const",
+            Inst::Add { a, b } => "add",
+            Inst::Sub { a, b } => "sub",
+            Inst::Mul { a, b } => "mul",
+            Inst::Div { a, b } => "div",
+            Inst::Modulo { a, b } => "modulo",
+            Inst::Load { addr } => "load",
+            Inst::Store { addr, val } => "store",
+            Inst::StackAddr { slot } => "stack_addr",
+            Inst::CastInt { val, target_type } => "cast",
+            Inst::CompareInt { a, b, mode } => "cmp",
+            Inst::CompareFloat { a, b, mode } => "fcmp",
+            Inst::BranchIf { cond, con, alt } => "brif",
+            Inst::Return { value } => "ret",
+            Inst::Jump { target } => "jmp",
+        }
+    }
+}
+
+impl std::fmt::Display for Constant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Constant::i8(v) => write!(f, "{v}"),
+            Constant::u8(v) => write!(f, "{v}"),
+            Constant::i16(v) => write!(f, "{v}"),
+            Constant::u16(v) => write!(f, "{v}"),
+            Constant::i32(v) => write!(f, "{v}"),
+            Constant::u32(v) => write!(f, "{v}"),
+            Constant::i64(v) => write!(f, "{v}"),
+            Constant::u64(v) => write!(f, "{v}"),
+            Constant::f32(v) => write!(f, "{v}"),
+            Constant::f64(v) => write!(f, "{v}"),
+        }
+    }
+}
+
+impl std::fmt::Display for Inst {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let m = self.mnemonic();
+        match self {
+            Inst::BlockArgument => write!(f, "{m}"),
+            Inst::Constant { val } => write!(f, "{m} {val}"),
+            Inst::Add { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
+            Inst::Sub { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
+            Inst::Mul { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
+            Inst::Div { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
+            Inst::Modulo { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
+            Inst::Load { addr } => write!(f, "{m} (v{})", addr.0),
+            Inst::Store { addr, val } => write!(f, "{m} v{} (v{})", val.0, addr.0),
+            Inst::StackAddr { slot } => write!(f, "{m} ss{}", slot.0),
+            Inst::CastInt { val, target_type } => write!(f, "{m} v{} -> {target_type}", val.0),
+            Inst::CompareInt { a, b, mode } => {
+                todo!()
+            },
+            Inst::CompareFloat { a, b, mode } => {
+                todo!()
+            },
+            Inst::BranchIf { cond, con, alt } => write!(f, "{m} v{} b{} b{}", cond.0, con.0, alt.0),
+            Inst::Return { value } => if let Some(value) = value {
+                write!(f, "{m} v{}", value.0)
+            } else {
+                write!(f, "{m}")
+            },
+            Inst::Jump { target } => {
+                write!(f, "{m} b{}", target.0)
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum CompareMode {
     LessThan,
@@ -484,6 +558,32 @@ impl std::fmt::Display for Signature {
     }
 }
 
+impl std::fmt::Display for Function {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{} (sig {})", &self.name, self.signature.0)?;
+        
+        for (idx, slot) in self.stack_slots.iter().enumerate() {
+            writeln!(f, "ss{idx} = size {}, align {}", slot.size, slot.align)?;
+        }
+
+        for (idx, block) in self.blocks.iter().enumerate() {
+            writeln!(f, "b{idx}:")?;
+            for &iref in &block.inst_refs {
+                if let Some(value_ty) = self.inst_types[iref] {
+                    write!(f, "  ")?;
+                    writeln!(f, "v{} : {} = {}", iref.0, value_ty, &self.insts[iref])?;
+                }
+                else {
+                    write!(f, "  ")?;
+                    writeln!(f, "{}", &self.insts[iref])?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl std::fmt::Display for Module {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "fn signatures:")?;
@@ -493,6 +593,10 @@ impl std::fmt::Display for Module {
         }
 
         writeln!(f, "functions:")?;
+        for func in &self.functions {
+           write!(f, "{func}")?;
+        }
+
 
         Ok(())
     }
