@@ -187,7 +187,7 @@ pub(crate) struct ScopedSymtab {
 #[derive(Debug, PartialEq)]
 pub(crate) struct GlobalObject {
     pub(crate) object_ref: ObjectIdx,
-    pub(crate) initializer: Option<ExprRef>
+    pub(crate) initializer: Option<ExprRef>,
 }
 
 // subset of symbol table used after resolve
@@ -279,7 +279,7 @@ impl SymbolTable {
     pub(crate) fn get_object(&self, object_ref: ObjectIdx) -> &Object {
         &self.objects[object_ref]
     }
-    
+
     pub(crate) fn object_name(&self, object_ref: ObjectIdx) -> &str {
         &self.object_names[object_ref.0 as usize]
     }
@@ -311,6 +311,10 @@ impl SymbolTable {
 
     pub(crate) fn get_function(&self, function: FunctionIdx) -> &Function {
         &self.functions[function]
+    }
+
+    pub(crate) fn get_function_name(&self, function: FunctionIdx) -> &str {
+        &self.function_names[function.0 as usize]
     }
 
     pub(crate) fn get_function_type(&self, function_type: FunctionTypeIdx) -> &FunctionType {
@@ -480,11 +484,21 @@ impl ScopedSymtab {
     }
 
     pub(crate) fn register_global_object(&mut self, object_ref: ObjectIdx) {
-        self.global_objects.push(GlobalObject { object_ref, initializer: None });
+        self.global_objects.push(GlobalObject {
+            object_ref,
+            initializer: None,
+        });
     }
 
-    pub(crate) fn register_global_object_with_initializer(&mut self, object_ref: ObjectIdx, initializer: ExprRef) {
-        self.global_objects.push(GlobalObject { object_ref, initializer: Some(initializer) });
+    pub(crate) fn register_global_object_with_initializer(
+        &mut self,
+        object_ref: ObjectIdx,
+        initializer: ExprRef,
+    ) {
+        self.global_objects.push(GlobalObject {
+            object_ref,
+            initializer: Some(initializer),
+        });
     }
 
     pub(crate) fn begin_function_definition(&self) -> ObjectIdx {

@@ -21,13 +21,14 @@ impl Module {
         }
     }
 
-    pub(crate) fn add_function(&mut self, signature: SigRef) -> FuncRef {
+    pub(crate) fn add_function(&mut self, name: String, signature: SigRef) -> FuncRef {
         let func = Function {
+            name,
             signature,
+            insts: Vec::new(),
+            inst_types: Vec::new(),
             blocks: vec![Block::new()],
             stack_slots: Vec::new(),
-
-            value_counter: 0,
         };
 
         FuncRef::from_push(&mut self.functions, func)
@@ -59,7 +60,7 @@ impl Module {
 
 // these are just the best names, what can i say
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Type {
     i8,
     u8,
@@ -136,6 +137,23 @@ impl Type {
     }
 }
 
+impl Constant {
+    pub(crate) fn ty(self) -> Type {
+        match self {
+            Constant::i8(_) => Type::i8,
+            Constant::u8(_) => Type::u8,
+            Constant::i16(_) => Type::i16,
+            Constant::u16(_) => Type::u16,
+            Constant::i32(_) => Type::i32,
+            Constant::u32(_) => Type::u32,
+            Constant::i64(_) => Type::i64,
+            Constant::u64(_) => Type::u64,
+            Constant::f32(_) => Type::f32,
+            Constant::f64(_) => Type::f64,
+        }
+    }
+}
+
 make_type_idx!(SigRef, Signature);
 
 #[derive(Debug)]
@@ -157,11 +175,14 @@ make_type_idx!(FuncRef, Function);
 
 #[derive(Debug)]
 pub(crate) struct Function {
+    pub(crate) name: String,
     pub(crate) signature: SigRef,
-    pub(crate) blocks: Vec<Block>,
-    pub(crate) stack_slots: Vec<StackSlot>,
 
-    value_counter: u32,
+    pub(crate) insts: Vec<Inst>,
+    pub(crate) inst_types: Vec<Option<Type>>,
+    pub(crate) blocks: Vec<Block>,
+
+    pub(crate) stack_slots: Vec<StackSlot>,
 }
 
 make_type_idx!(StackSlotRef, StackSlot);
@@ -180,8 +201,7 @@ pub(crate) struct FunctionBuilder<'func> {
 impl<'func> FunctionBuilder<'func> {
     pub(crate) fn add_block(&mut self) -> BlockRef {
         let block = Block {
-            insts: Vec::new(),
-            inst_types: Vec::new(),
+            inst_refs: Vec::new(),
         };
 
         BlockRef::from_push(&mut self.func.blocks, block)
@@ -193,31 +213,34 @@ impl<'func> FunctionBuilder<'func> {
         StackSlotRef::from_push(&mut self.func.stack_slots, slot)
     }
 
+    pub(crate) fn set_block(&mut self, block: BlockRef) {
+        self.current_block = block;
+    }
+
     pub(crate) fn insert(&'_ mut self) -> BlockBuilder<'_> {
         BlockBuilder {
             block: &mut self.func.blocks[self.current_block],
-            value_counter: &mut self.func.value_counter,
+            insts: &mut self.func.insts,
+            inst_types: &mut self.func.inst_types,
         }
     }
 }
 
 pub(crate) struct BlockBuilder<'block> {
     block: &'block mut Block,
-    value_counter: &'block mut u32,
+    insts: &'block mut Vec<Inst>,
+    inst_types: &'block mut Vec<Option<Type>>,
 }
 
 impl<'block> BlockBuilder<'block> {
-    fn make_value_ref(&mut self) -> Value {
-        let res = *self.value_counter;
-        *self.value_counter += 1;
-        InstRef(res)
-    }
-
     fn constant(&mut self, ty: Type, val: Constant) -> Value {
+        assert!(val.ty() == ty, "type mismatch while inserting constant");
+
         let constant = Inst::Constant { val };
-        self.block.insts.push(constant);
-        self.block.inst_types.push(ty);
-        self.make_value_ref()
+        self.inst_types.push(Some(ty));
+        let v = Value::from_push(self.insts, constant);
+        self.block.inst_refs.push(v);
+        v
     }
 
     pub(crate) fn const_u32(&mut self, val: u32) -> Value {
@@ -238,9 +261,10 @@ impl<'block> BlockBuilder<'block> {
 
     pub(crate) fn stack_addr(&mut self, slot: StackSlotRef) -> Value {
         let op = Inst::StackAddr { slot };
-        self.block.insts.push(op);
-        self.block.inst_types.push(Type::u64);
-        self.make_value_ref()
+        self.inst_types.push(Some(Type::u64));
+        let v = Value::from_push(self.insts, op);
+        self.block.inst_refs.push(v);
+        v
     }
 
     pub(crate) fn icast(&mut self, val: InstRef, to: Type) -> Value {
@@ -248,22 +272,25 @@ impl<'block> BlockBuilder<'block> {
             val,
             target_type: to,
         };
-        self.block.insts.push(cast);
-        self.block.inst_types.push(to);
-        self.make_value_ref()
+
+        self.inst_types.push(Some(to));
+        let v = Value::from_push(self.insts, cast);
+        self.block.inst_refs.push(v);
+        v
     }
 
     // helper to copy the type of one of the operands.
     // legalization to make sure operand types are actually compatible is deferred
     fn copy_type(&mut self, from: InstRef) {
-        self.block.inst_types.push(self.block.inst_types[from]);
+        self.inst_types.push(self.inst_types[from]);
     }
 
     fn binary_op(&mut self, a: Value, b: Value, op: fn(Value, Value) -> Inst) -> Value {
         let op = op(a, b);
-        self.block.insts.push(op);
+        let v = Value::from_push(self.insts, op);
         self.copy_type(a);
-        self.make_value_ref()
+        self.block.inst_refs.push(v);
+        v
     }
 
     pub(crate) fn add(&mut self, a: Value, b: Value) -> Value {
@@ -282,25 +309,37 @@ impl<'block> BlockBuilder<'block> {
         self.binary_op(a, b, |a, b| Inst::Div { a, b })
     }
 
-    pub(crate) fn load(&mut self, addr: Value) -> Value {
+    pub(crate) fn modulo(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Modulo { a, b })
+    }
+
+    pub(crate) fn load(&mut self, addr: Value, ty: Type) -> Value {
         let load = Inst::Load { addr };
-        Value::from_push(&mut self.block.insts, load)
+        let v = Value::from_push(self.insts, load);
+        self.block.inst_refs.push(v);
+        self.inst_types.push(Some(ty));
+        v
     }
 
     pub(crate) fn store(&mut self, addr: Value, val: Value) {
         let store = Inst::Store { addr, val };
-        self.block.insts.push(store);
+        let v = InstRef::from_push(self.insts, store);
+        self.block.inst_refs.push(v);
+        self.inst_types.push(None);
     }
 
-    // terminators don't have associated values
     pub(crate) fn brif(&mut self, cond: Value, con: BlockRef, alt: BlockRef) {
         let brif = Inst::BranchIf { cond, con, alt };
-        self.block.insts.push(brif);
+        let v = Value::from_push(self.insts, brif);
+        self.block.inst_refs.push(v);
+        self.inst_types.push(None);
     }
 
     pub(crate) fn ret(&mut self, value: Option<Value>) {
         let ret = Inst::Return { value };
-        self.block.insts.push(ret);
+        let v = InstRef::from_push(self.insts, ret);
+        self.block.inst_refs.push(v);
+        self.inst_types.push(None);
     }
 }
 
@@ -308,15 +347,13 @@ make_type_idx!(BlockRef, Block);
 
 #[derive(Debug)]
 pub(crate) struct Block {
-    pub(crate) insts: Vec<Inst>,
-    pub(crate) inst_types: Vec<Type>,
+    pub(crate) inst_refs: Vec<InstRef>,
 }
 
 impl Block {
     fn new() -> Block {
         Block {
-            insts: Vec::new(),
-            inst_types: Vec::new(),
+            inst_refs: Vec::new(),
         }
     }
 }
@@ -324,7 +361,7 @@ impl Block {
 pub(crate) type Value = InstRef;
 
 make_type_idx!(InstRef, Inst);
-add_additional_index!(InstRef, Type);
+add_additional_index!(InstRef, Option<Type>);
 
 #[derive(Debug)]
 pub(crate) enum Inst {
@@ -347,6 +384,10 @@ pub(crate) enum Inst {
         b: InstRef,
     },
     Div {
+        a: InstRef,
+        b: InstRef,
+    },
+    Modulo {
         a: InstRef,
         b: InstRef,
     },
@@ -405,6 +446,58 @@ pub(crate) enum CompareMode {
     NotEqual,
 }
 
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let variant_name = match *self {
+            Type::i8 => "i8",
+            Type::u8 => "u8",
+            Type::i16 => "i16",
+            Type::u16 => "u16",
+            Type::i32 => "i32",
+            Type::u32 => "u32",
+            Type::i64 => "i64",
+            Type::u64 => "u64",
+            Type::f32 => "f32",
+            Type::f64 => "f64",
+        };
+
+        f.write_str(variant_name)?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Signature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "fn(")?;
+        for (i, arg) in self.argument_types.iter().enumerate() {
+            write!(f, "{}", *arg)?;
+            if i + 1 < self.argument_types.len() {
+                write!(f, ", ")?;
+            }
+        }
+        write!(f, ")")?;
+        if let Some(ret_type) = self.return_type {
+            write!(f, " -> {}", ret_type)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Module {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "fn signatures:")?;
+        for (i, sig) in self.signatures.iter().enumerate() {
+            write!(f, "  ")?;
+            writeln!(f, "{}: {}", i, sig)?;
+        }
+
+        writeln!(f, "functions:")?;
+
+        Ok(())
+    }
+}
+
 pub(crate) mod ast2cir;
 
 #[cfg(test)]
@@ -419,7 +512,7 @@ mod test {
             return_type: None,
         });
 
-        let func = module.add_function(main_sig);
+        let func = module.add_function("test_basic_ops".to_string(), main_sig);
         let mut fn_builder = module.fn_builder(func);
 
         let a = fn_builder.insert().const_i32(1);

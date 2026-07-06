@@ -69,7 +69,7 @@ macro_rules! make_type_idx {
 
 #[macro_export]
 macro_rules! add_additional_index {
-    ($type_idx_name:tt, $type_name:tt) => {
+    ($type_idx_name:tt, $type_name:ty) => {
         impl std::ops::Index<$type_idx_name> for [$type_name] {
             type Output = $type_name;
 

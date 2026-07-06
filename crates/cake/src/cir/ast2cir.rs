@@ -1,7 +1,12 @@
 use crate::{
-    cir::{FunctionBuilder, Module, Signature, StackSlotRef, Type, Value}, parser::ast, semantics::{
-        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode}, resolver::ResolvedAST, symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
-    }, types::{BasicType, CType, layout::Layouts},
+    cir::{FunctionBuilder, Module, Signature, StackSlotRef, Type, Value},
+    parser::ast,
+    semantics::{
+        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
+        resolver::ResolvedAST,
+        symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
+    },
+    types::{BasicType, CType, layout::Layouts},
 };
 
 impl From<BasicType> for Type {
@@ -62,7 +67,7 @@ fn create_frame(
     for local_var in locals {
         let size = local_var.object_type.size(layouts);
         let align = local_var.object_type.align(layouts);
-        
+
         let stack_slot = fn_builder.add_stack_slot(size, align);
         stack_slots.push(stack_slot);
     }
@@ -89,6 +94,7 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
         };
 
         let ast_func = ast.symtab.get_function(*symbol_idx);
+        let func_name = ast.symtab.get_function_name(*symbol_idx);
         let ast_func_type = ast.symtab.get_function_type(ast_func.function_type);
         let ast_func_args = &ast_func_type.parameter_types;
         let ast_func_args: Vec<CType> = ast_func_args.iter().map(|arg| arg.1.clone()).collect();
@@ -100,18 +106,26 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
         let func_ret = if let CType::Void { .. } = ast_func_type.return_type {
             None
         } else {
-            assert!(ast_func_type.return_type.is_scalar_type(), "only scalar types supported for now");
+            assert!(
+                ast_func_type.return_type.is_scalar_type(),
+                "only scalar types supported for now"
+            );
             Some((&ast_func_type.return_type).try_into().unwrap())
         };
 
         let func_sig = Signature::new(func_args, func_ret);
         let func_sig_ref = module.add_signature(func_sig);
-        let func_ref = module.add_function(func_sig_ref);
+        let func_ref = module.add_function(func_name.to_string(), func_sig_ref);
 
         let mut func_builder = module.fn_builder(func_ref);
 
         let func_object_range = ast.symtab.function_object_range(*symbol_idx);
-        let stack_frame = create_frame(&mut func_builder, &ast.symtab, &ast.layouts, func_object_range);
+        let stack_frame = create_frame(
+            &mut func_builder,
+            &ast.symtab,
+            &ast.layouts,
+            func_object_range,
+        );
 
         lower_function_body(&ast, *body, &mut func_builder, &stack_frame);
     }
@@ -120,10 +134,10 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
 }
 
 fn lower_function_body(
-    ast: &ResolvedAST, 
-    fn_body: NodeRef, 
+    ast: &ResolvedAST,
+    fn_body: NodeRef,
     func_builder: &mut FunctionBuilder,
-    stack_frame: &Frame
+    stack_frame: &Frame,
 ) {
     let ResolvedASTNode::CompoundStatement { stmts, .. } = &ast.nodes[fn_body.0 as usize] else {
         panic!("corrupted ast")
@@ -136,9 +150,9 @@ fn lower_function_body(
 }
 
 fn lower_stmt(
-    ast: &ResolvedAST, 
-    stmt: NodeRef, 
-    func_builder: &mut FunctionBuilder, 
+    ast: &ResolvedAST,
+    stmt: NodeRef,
+    func_builder: &mut FunctionBuilder,
     stack_frame: &Frame,
 ) {
     let stmt_node = &ast.nodes[stmt.0 as usize];
@@ -204,7 +218,7 @@ fn lower_stmt(
         } => {
             let return_value = return_value.map(|e| lower_expr(ast, e, func_builder, stack_frame));
             func_builder.insert().ret(return_value);
-        },
+        }
         ResolvedASTNode::Initializer {
             parent,
             object,
@@ -219,8 +233,8 @@ fn ptrtype() -> Type {
 }
 
 fn lower_expr(
-    ast: &ResolvedAST, 
-    expr: ExprRef, 
+    ast: &ResolvedAST,
+    expr: ExprRef,
     func_builder: &mut FunctionBuilder,
     stack_frame: &Frame,
 ) -> Value {
@@ -229,19 +243,20 @@ fn lower_expr(
     match expr_node {
         TypedExpressionNode::CommaExpr(ctype, expr_range_ref) => todo!(),
         TypedExpressionNode::SimpleAssign(ctype, lhs, rhs) => {
-            let location =
-                lower_lvalue(ast, *lhs, func_builder, stack_frame);
+            let location = lower_lvalue(ast, *lhs, func_builder, stack_frame);
 
-            let rhs_value =
-                lower_expr(ast, *rhs, func_builder, stack_frame);
+            let rhs_value = lower_expr(ast, *rhs, func_builder, stack_frame);
 
             assert!(
-                matches!(ctype, CType::BasicType { .. } | CType::PointerType { .. } | CType::EnumTypeRef { .. }), 
+                matches!(
+                    ctype,
+                    CType::BasicType { .. } | CType::PointerType { .. } | CType::EnumTypeRef { .. }
+                ),
                 "only scalars supported for now"
             );
 
             todo!()
-        },
+        }
         TypedExpressionNode::AugmentedAssign(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::PostAugmentedAssign(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::Ternary(ctype, expr_ref, expr_ref1, expr_ref2) => todo!(),
@@ -263,9 +278,19 @@ fn lower_expr(
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
 
             func_builder.insert().mul(lhs, rhs)
-        },
-        TypedExpressionNode::Divide(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::Modulo(ctype, expr_ref, expr_ref1) => todo!(),
+        }
+        TypedExpressionNode::Divide(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().div(lhs, rhs)
+        }
+        TypedExpressionNode::Modulo(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().modulo(lhs, rhs)
+        }
         TypedExpressionNode::Add(ctype, expr_ref, expr_ref1) => {
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
@@ -309,23 +334,21 @@ fn lower_expr(
         TypedExpressionNode::ArrayDecay(ctype, expr_ref) => todo!(),
         TypedExpressionNode::ObjectIdentifier(ctype, object_idx) => todo!(),
         TypedExpressionNode::FunctionIdentifier(ctype, function_idx) => todo!(),
-        TypedExpressionNode::Constant(ctype, constant) => {
-            match *constant {
-                ast::Constant::Int(v) => func_builder.insert().const_i32(v),
-                ast::Constant::LongInt(v) => func_builder.insert().const_i64(v),
-                ast::Constant::UInt(v) => func_builder.insert().const_u32(v),
-                ast::Constant::ULongInt(v) => func_builder.insert().const_u64(v),
-                ast::Constant::Float(_) => todo!("fp constants"),
-                ast::Constant::Double(_) => todo!("fp constants"),
-            }
+        TypedExpressionNode::Constant(ctype, constant) => match *constant {
+            ast::Constant::Int(v) => func_builder.insert().const_i32(v),
+            ast::Constant::LongInt(v) => func_builder.insert().const_i64(v),
+            ast::Constant::UInt(v) => func_builder.insert().const_u32(v),
+            ast::Constant::ULongInt(v) => func_builder.insert().const_u64(v),
+            ast::Constant::Float(_) => todo!("fp constants"),
+            ast::Constant::Double(_) => todo!("fp constants"),
         },
         TypedExpressionNode::StringLiteral(ctype, _) => todo!(),
     }
 }
 
 fn lower_lvalue(
-    ast: &ResolvedAST, 
-    lvalue_ref: ExprRef, 
+    ast: &ResolvedAST,
+    lvalue_ref: ExprRef,
     func_builder: &mut FunctionBuilder,
     stack_frame: &Frame,
 ) -> Value {
@@ -336,14 +359,50 @@ fn lower_lvalue(
                 stack_frame.contains(*object_idx),
                 "only local variables supported for now"
             );
-            
+
             let stack_slot = stack_frame.get_object_stack_slot(*object_idx);
-            func_builder
-                .insert()
-                .stack_addr(stack_slot)
+            func_builder.insert().stack_addr(stack_slot)
         }
-        _ => todo!("other lvalues not supported yet")
+        _ => todo!("other lvalues not supported yet"),
     };
 
     todo!()
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{
+        cir,
+        semantics::resolver::resolve_ast_tests::{ResolveHarnessInput, resolve_harness},
+    };
+
+    #[test]
+    fn test_basic() {
+        let code = r#"
+        int main() {
+            return 5 + 3;
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+        let module = cir::ast2cir::lower_ast(resolved);
+
+        dbg!(module);
+    }
+
+    #[test]
+    fn test_compile_expr() {
+        let code = r#"
+        int main(int argc, char *argv[]) {
+            return 5 + 3 * 2 / (6 % 5);
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+        let module = cir::ast2cir::lower_ast(resolved);
+
+        dbg!(module);
+    }
 }

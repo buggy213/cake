@@ -34,7 +34,7 @@ fn compile_code(test_name: &'static str, code: &'static str) {
     std::fs::write(&resolved_ast_file, format!("{:#?}", &resolved))
         .expect("failed to write resolved AST to file");
 
-    let mut cranelift_backend = CraneliftBackend::new("test_compile_expr",  &resolved.symtab);
+    let mut cranelift_backend = CraneliftBackend::new("test_compile_expr", &resolved.symtab);
     let mut function_builder_ctx = FunctionBuilderContext::new();
     cranelift_backend.lower_translation_unit(&resolved, &mut function_builder_ctx);
 
@@ -162,23 +162,46 @@ make_test!(compile_variables);
 make_test!(compile_function_call);
 make_test!(compile_string_literal);
 make_test!(array);
-make_test!(conditional, 
+make_test!(
+    conditional,
     (&[], "", "argc=4? n\n", 0),
     (&["x", "x", "x"], "", "argc=4? y\n", 0)
 );
 make_test!(complicated_conditional);
 make_test!(while);
-make_test!(calculator,
-    (&[], "3\n4\n+\n", "Enter first number: \nEnter second number: \nChoose operation (+, -, *, /): \nThe answer is: 7\n", 0),
-    (&[], "9\n2\n-\n", "Enter first number: \nEnter second number: \nChoose operation (+, -, *, /): \nThe answer is: 7\n", 0),
-    (&[], "4\n3\n*\n", "Enter first number: \nEnter second number: \nChoose operation (+, -, *, /): \nThe answer is: 12\n", 0),
-    (&[], "20\n4\n/\n", "Enter first number: \nEnter second number: \nChoose operation (+, -, *, /): \nThe answer is: 5\n", 0)
+make_test!(
+    calculator,
+    (
+        &[],
+        "3\n4\n+\n",
+        "Enter first number: \nEnter second number: \nChoose operation (+, -, *, /): \nThe answer is: 7\n",
+        0
+    ),
+    (
+        &[],
+        "9\n2\n-\n",
+        "Enter first number: \nEnter second number: \nChoose operation (+, -, *, /): \nThe answer is: 7\n",
+        0
+    ),
+    (
+        &[],
+        "4\n3\n*\n",
+        "Enter first number: \nEnter second number: \nChoose operation (+, -, *, /): \nThe answer is: 12\n",
+        0
+    ),
+    (
+        &[],
+        "20\n4\n/\n",
+        "Enter first number: \nEnter second number: \nChoose operation (+, -, *, /): \nThe answer is: 5\n",
+        0
+    )
 );
 make_test!(short_circuit);
 make_test!(for_loop);
 make_test!(continue_break);
 make_test!(nested_continue);
-make_test!(switch,
+make_test!(
+    switch,
     (&[], "1\n", "one!\n", 0),
     (&[], "2\n", "two!\n", 0),
     (&[], "3\n", "three!\n", 0),
