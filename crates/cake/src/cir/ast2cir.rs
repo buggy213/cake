@@ -1,12 +1,11 @@
+use std::ops::Range;
+
 use crate::{
-    cir::{FunctionBuilder, Module, Signature, StackSlotRef, Type, Value},
-    parser::ast,
-    semantics::{
+    cir::{FunctionBuilder, Module, Signature, StackSlotRef, Type, Value}, parser::ast, semantics::{
         resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
         resolver::ResolvedAST,
         symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
-    },
-    types::{BasicType, CType, layout::Layouts},
+    }, types::{BasicType, CType, layout::Layouts},
 };
 
 impl From<BasicType> for Type {
@@ -328,8 +327,37 @@ fn lower_expr(
         TypedExpressionNode::UnaryMinus(ctype, expr_ref) => todo!(),
         TypedExpressionNode::BitwiseNot(ctype, expr_ref) => todo!(),
         TypedExpressionNode::Not(ctype, expr_ref) => todo!(),
-        TypedExpressionNode::DirectFunctionCall(ctype, function_idx, expr_range_ref) => todo!(),
-        TypedExpressionNode::IndirectFunctionCall(ctype, expr_ref, expr_range_ref) => todo!(),
+        TypedExpressionNode::DirectFunctionCall(result_type, function, arguments) => {
+            // let func_id = self.function_refs[*function];
+            
+            let arg_range: Range<usize> = (*arguments).into();
+            let mut arg_values = Vec::with_capacity(arg_range.len());
+            let arg_range = &ast.expr_indices[arg_range];
+            for &arg_expr in arg_range {
+                let arg_value = lower_expr(
+                    ast,
+                    arg_expr,
+                    func_builder,
+                    stack_frame
+                );
+                arg_values.push(arg_value);
+            }
+
+            let func_ref = todo!();
+    
+            func_builder.insert().call(func_ref, &arg_values);
+        
+
+            if result_type.is_void() {
+                // TODO: fix this. void expressions should be allowed
+                func_builder.insert().const_u64(0)
+            } else {
+                todo!()
+            }
+        },
+        TypedExpressionNode::IndirectFunctionCall(ctype, expr_ref, expr_range_ref) => {
+            todo!()
+        },
         TypedExpressionNode::DotAccess(ctype, expr_ref, member_ref) => todo!(),
         TypedExpressionNode::ArrowAccess(ctype, expr_ref, member_ref) => todo!(),
         TypedExpressionNode::ArrayDecay(ctype, expr_ref) => todo!(),
@@ -426,6 +454,25 @@ mod test {
             two = 2;
             three = 3;
             return two + three;
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+        let module = cir::ast2cir::lower_ast(resolved);
+
+        print!("{module}");
+    }
+
+    #[test]
+    fn test_compile_function_call() {
+        let code = r#"
+        int square_three() {
+            return 3 * 3;
+        }
+
+        int main(int argc, char *argv[]) {
+            return square_three();
         }
         "#;
 

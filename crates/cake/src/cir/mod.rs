@@ -29,6 +29,8 @@ impl Module {
             inst_types: Vec::new(),
             blocks: vec![Block::new()],
             stack_slots: Vec::new(),
+            
+            call_arguments: Vec::new(),
         };
 
         FuncRef::from_push(&mut self.functions, func)
@@ -183,6 +185,8 @@ pub(crate) struct Function {
     pub(crate) blocks: Vec<Block>,
 
     pub(crate) stack_slots: Vec<StackSlot>,
+
+    call_arguments: Vec<InstRef>,
 }
 
 make_type_idx!(StackSlotRef, StackSlot);
@@ -341,6 +345,10 @@ impl<'block> BlockBuilder<'block> {
         self.block.inst_refs.push(v);
         self.inst_types.push(None);
     }
+
+    pub(crate) fn call(&mut self, func_ref: FuncRef, arg_values: &[InstRef]) {
+        todo!()
+    }
 }
 
 make_type_idx!(BlockRef, Block);
@@ -362,6 +370,9 @@ pub(crate) type Value = InstRef;
 
 make_type_idx!(InstRef, Inst);
 add_additional_index!(InstRef, Option<Type>);
+
+#[derive(Debug)]
+pub(crate) struct FuncArgsRef(u32, u32);
 
 #[derive(Debug)]
 pub(crate) enum Inst {
@@ -434,6 +445,19 @@ pub(crate) enum Inst {
     Jump {
         target: BlockRef,
     },
+
+    Call {
+        func: FuncRef,
+        arguments: FuncArgsRef,        
+    },
+    CallIndirect {
+        callee_sig: SigRef,
+        arguments: FuncArgsRef
+    },
+
+    FuncAddr {
+        func: FuncRef
+    }
 }
 
 impl Inst {
@@ -455,6 +479,9 @@ impl Inst {
             Inst::BranchIf { cond, con, alt } => "brif",
             Inst::Return { value } => "ret",
             Inst::Jump { target } => "jmp",
+            Inst::Call { func, arguments } => "call",
+            Inst::CallIndirect { callee_sig, arguments } => "call_indirect",
+            Inst::FuncAddr { func } => "func_addr",
         }
     }
 }
@@ -506,6 +533,15 @@ impl std::fmt::Display for Inst {
             Inst::Jump { target } => {
                 write!(f, "{m} b{}", target.0)
             },
+            Inst::Call { func, arguments } => {
+                todo!("write call inst formatter")
+            },
+            Inst::CallIndirect { callee_sig, arguments } => {
+                todo!("write indirect call inst formatter")
+            },
+            Inst::FuncAddr { func } => {
+                write!(f, "{m} f{}", func.0)
+            }
         }
     }
 }
