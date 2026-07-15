@@ -112,7 +112,7 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
             Some((&ast_func_type.return_type).try_into().unwrap())
         };
 
-        let func_sig = Signature::new(func_args, func_ret);
+        let func_sig = Signature::new(func_args, func_ret.as_slice().to_vec());
         let func_sig_ref = module.add_signature(func_sig);
         let func_ref = module.add_function(func_name.to_string(), func_sig_ref);
 
@@ -216,7 +216,7 @@ fn lower_stmt(
             return_value,
         } => {
             let return_value = return_value.map(|e| lower_expr(ast, e, func_builder, stack_frame));
-            func_builder.insert().ret(return_value);
+            func_builder.insert().ret(return_value.as_slice());
         }
         ResolvedASTNode::Initializer {
             parent,

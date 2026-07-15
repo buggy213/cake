@@ -29,8 +29,6 @@ impl Module {
             inst_types: Vec::new(),
             blocks: vec![Block::new()],
             stack_slots: Vec::new(),
-            
-            call_arguments: Vec::new(),
         };
 
         FuncRef::from_push(&mut self.functions, func)
@@ -161,14 +159,14 @@ make_type_idx!(SigRef, Signature);
 #[derive(Debug)]
 pub(crate) struct Signature {
     argument_types: Vec<Type>,
-    return_type: Option<Type>,
+    return_types: Vec<Type>,
 }
 
 impl Signature {
-    pub(crate) fn new(argument_types: Vec<Type>, return_type: Option<Type>) -> Signature {
+    pub(crate) fn new(argument_types: Vec<Type>, return_types: Vec<Type>) -> Signature {
         Signature {
             argument_types,
-            return_type,
+            return_types,
         }
     }
 }
@@ -185,8 +183,6 @@ pub(crate) struct Function {
     pub(crate) blocks: Vec<Block>,
 
     pub(crate) stack_slots: Vec<StackSlot>,
-
-    call_arguments: Vec<InstRef>,
 }
 
 make_type_idx!(StackSlotRef, StackSlot);
@@ -206,6 +202,7 @@ impl<'func> FunctionBuilder<'func> {
     pub(crate) fn add_block(&mut self) -> BlockRef {
         let block = Block {
             inst_refs: Vec::new(),
+            block_args: Vec::new(),
         };
 
         BlockRef::from_push(&mut self.func.blocks, block)
@@ -242,9 +239,9 @@ impl<'block> BlockBuilder<'block> {
 
         let constant = Inst::Constant { val };
         self.inst_types.push(Some(ty));
-        let v = Value::from_push(self.insts, constant);
-        self.block.inst_refs.push(v);
-        v
+        let iref = InstRef::from_push(self.insts, constant);
+        self.block.inst_refs.push(iref);
+        Value::Inst(iref)
     }
 
     pub(crate) fn const_u32(&mut self, val: u32) -> Value {
@@ -266,35 +263,40 @@ impl<'block> BlockBuilder<'block> {
     pub(crate) fn stack_addr(&mut self, slot: StackSlotRef) -> Value {
         let op = Inst::StackAddr { slot };
         self.inst_types.push(Some(Type::u64));
-        let v = Value::from_push(self.insts, op);
-        self.block.inst_refs.push(v);
-        v
+        let iref = InstRef::from_push(self.insts, op);
+        self.block.inst_refs.push(iref);
+        Value::Inst(iref)
     }
 
-    pub(crate) fn icast(&mut self, val: InstRef, to: Type) -> Value {
+    pub(crate) fn icast(&mut self, val: Value, to: Type) -> Value {
         let cast = Inst::CastInt {
             val,
             target_type: to,
         };
 
         self.inst_types.push(Some(to));
-        let v = Value::from_push(self.insts, cast);
-        self.block.inst_refs.push(v);
-        v
+        let iref = InstRef::from_push(self.insts, cast);
+        self.block.inst_refs.push(iref);
+        Value::Inst(iref)
     }
 
     // helper to copy the type of one of the operands.
     // legalization to make sure operand types are actually compatible is deferred
-    fn copy_type(&mut self, from: InstRef) {
-        self.inst_types.push(self.inst_types[from]);
+    fn copy_type(&mut self, from: Value) {
+        let ty = match from {
+            Value::Inst(inst_ref) => self.inst_types[inst_ref],
+            Value::BlockArgument(idx) => Some(self.block.block_args[idx as usize]),
+        };
+
+        self.inst_types.push(ty);
     }
 
     fn binary_op(&mut self, a: Value, b: Value, op: fn(Value, Value) -> Inst) -> Value {
         let op = op(a, b);
-        let v = Value::from_push(self.insts, op);
+        let iref = InstRef::from_push(self.insts, op);
         self.copy_type(a);
-        self.block.inst_refs.push(v);
-        v
+        self.block.inst_refs.push(iref);
+        Value::Inst(iref)
     }
 
     pub(crate) fn add(&mut self, a: Value, b: Value) -> Value {
@@ -319,34 +321,34 @@ impl<'block> BlockBuilder<'block> {
 
     pub(crate) fn load(&mut self, addr: Value, ty: Type) -> Value {
         let load = Inst::Load { addr };
-        let v = Value::from_push(self.insts, load);
-        self.block.inst_refs.push(v);
+        let iref = InstRef::from_push(self.insts, load);
+        self.block.inst_refs.push(iref);
         self.inst_types.push(Some(ty));
-        v
+        Value::Inst(iref)
     }
 
     pub(crate) fn store(&mut self, addr: Value, val: Value) {
         let store = Inst::Store { addr, val };
-        let v = InstRef::from_push(self.insts, store);
-        self.block.inst_refs.push(v);
+        let iref = InstRef::from_push(self.insts, store);
+        self.block.inst_refs.push(iref);
         self.inst_types.push(None);
     }
 
     pub(crate) fn brif(&mut self, cond: Value, con: BlockRef, alt: BlockRef) {
         let brif = Inst::BranchIf { cond, con, alt };
-        let v = Value::from_push(self.insts, brif);
-        self.block.inst_refs.push(v);
+        let iref = InstRef::from_push(self.insts, brif);
+        self.block.inst_refs.push(iref);
         self.inst_types.push(None);
     }
 
-    pub(crate) fn ret(&mut self, value: Option<Value>) {
-        let ret = Inst::Return { value };
+    pub(crate) fn ret(&mut self, values: &[Value]) {
+        let ret = Inst::Return { values: values.to_vec() };
         let v = InstRef::from_push(self.insts, ret);
         self.block.inst_refs.push(v);
         self.inst_types.push(None);
     }
 
-    pub(crate) fn call(&mut self, func_ref: FuncRef, arg_values: &[InstRef]) {
+    pub(crate) fn call(&mut self, func_ref: FuncRef, arg_values: &[Value]) {
         todo!()
     }
 }
@@ -356,59 +358,60 @@ make_type_idx!(BlockRef, Block);
 #[derive(Debug)]
 pub(crate) struct Block {
     pub(crate) inst_refs: Vec<InstRef>,
+    pub(crate) block_args: Vec<Type>,
 }
 
 impl Block {
     fn new() -> Block {
         Block {
             inst_refs: Vec::new(),
+            block_args: Vec::new(),
         }
     }
 }
 
-pub(crate) type Value = InstRef;
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Value {
+    Inst(InstRef),
+    BlockArgument(u32)
+}
 
 make_type_idx!(InstRef, Inst);
 add_additional_index!(InstRef, Option<Type>);
 
 #[derive(Debug)]
-pub(crate) struct FuncArgsRef(u32, u32);
-
-#[derive(Debug)]
 pub(crate) enum Inst {
-    BlockArgument,
-
     Constant {
         val: Constant,
     },
 
     Add {
-        a: InstRef,
-        b: InstRef,
+        a: Value,
+        b: Value,
     },
     Sub {
-        a: InstRef,
-        b: InstRef,
+        a: Value,
+        b: Value,
     },
     Mul {
-        a: InstRef,
-        b: InstRef,
+        a: Value,
+        b: Value,
     },
     Div {
-        a: InstRef,
-        b: InstRef,
+        a: Value,
+        b: Value,
     },
     Modulo {
-        a: InstRef,
-        b: InstRef,
+        a: Value,
+        b: Value,
     },
 
     Load {
-        addr: InstRef,
+        addr: Value,
     },
     Store {
-        addr: InstRef,
-        val: InstRef,
+        addr: Value,
+        val: Value,
     },
     StackAddr {
         slot: StackSlotRef,
@@ -416,30 +419,30 @@ pub(crate) enum Inst {
 
     // cast between integer types
     CastInt {
-        val: InstRef,
+        val: Value,
         target_type: Type,
     },
 
     CompareInt {
-        a: InstRef,
-        b: InstRef,
+        a: Value,
+        b: Value,
         mode: CompareMode,
     },
 
     CompareFloat {
-        a: InstRef,
-        b: InstRef,
+        a: Value,
+        b: Value,
         mode: CompareMode,
     },
 
     BranchIf {
-        cond: InstRef,
+        cond: Value,
         con: BlockRef,
         alt: BlockRef,
     },
 
     Return {
-        value: Option<InstRef>,
+        values: Vec<Value>,
     },
 
     Jump {
@@ -448,11 +451,11 @@ pub(crate) enum Inst {
 
     Call {
         func: FuncRef,
-        arguments: FuncArgsRef,        
+        arguments: Vec<Value>,        
     },
     CallIndirect {
         callee_sig: SigRef,
-        arguments: FuncArgsRef
+        arguments: Vec<Value>
     },
 
     FuncAddr {
@@ -463,7 +466,6 @@ pub(crate) enum Inst {
 impl Inst {
     pub(crate) fn mnemonic(&self) -> &str {
         match self {
-            Inst::BlockArgument => "block_arg",
             Inst::Constant { val } => "const",
             Inst::Add { a, b } => "add",
             Inst::Sub { a, b } => "sub",
@@ -477,7 +479,7 @@ impl Inst {
             Inst::CompareInt { a, b, mode } => "cmp",
             Inst::CompareFloat { a, b, mode } => "fcmp",
             Inst::BranchIf { cond, con, alt } => "brif",
-            Inst::Return { value } => "ret",
+            Inst::Return { values} => "ret",
             Inst::Jump { target } => "jmp",
             Inst::Call { func, arguments } => "call",
             Inst::CallIndirect { callee_sig, arguments } => "call_indirect",
@@ -503,32 +505,45 @@ impl std::fmt::Display for Constant {
     }
 }
 
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Inst(inst_ref) => write!(f, "v{}", inst_ref.0),
+            Value::BlockArgument(idx) => write!(f, "p{}", *idx),
+        }
+    }
+}
+
 impl std::fmt::Display for Inst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let m = self.mnemonic();
         match self {
-            Inst::BlockArgument => write!(f, "{m}"),
             Inst::Constant { val } => write!(f, "{m} {val}"),
-            Inst::Add { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
-            Inst::Sub { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
-            Inst::Mul { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
-            Inst::Div { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
-            Inst::Modulo { a, b } => write!(f, "{m} v{} v{}", a.0, b.0),
-            Inst::Load { addr } => write!(f, "{m} (v{})", addr.0),
-            Inst::Store { addr, val } => write!(f, "{m} v{} (v{})", val.0, addr.0),
+            Inst::Add { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Sub { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Mul { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Div { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Modulo { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Load { addr } => write!(f, "{m} ({})", addr),
+            Inst::Store { addr, val } => write!(f, "{m} {val} ({addr})"),
             Inst::StackAddr { slot } => write!(f, "{m} ss{}", slot.0),
-            Inst::CastInt { val, target_type } => write!(f, "{m} v{} -> {target_type}", val.0),
+            Inst::CastInt { val, target_type } => write!(f, "{m} {val} -> {target_type}"),
             Inst::CompareInt { a, b, mode } => {
                 todo!()
             },
             Inst::CompareFloat { a, b, mode } => {
                 todo!()
             },
-            Inst::BranchIf { cond, con, alt } => write!(f, "{m} v{} b{} b{}", cond.0, con.0, alt.0),
-            Inst::Return { value } => if let Some(value) = value {
-                write!(f, "{m} v{}", value.0)
-            } else {
-                write!(f, "{m}")
+            Inst::BranchIf { cond, con, alt } => write!(f, "{m} {cond} b{} b{}", con.0, alt.0),
+            Inst::Return { values } => {
+                write!(f, "ret (");
+                for (idx, v) in values.iter().enumerate() {
+                    write!(f, "{v}");
+                    if idx + 1 < values.len() {
+                        write!(f, ", ");
+                    }
+                }
+                write!(f, ")")
             },
             Inst::Jump { target } => {
                 write!(f, "{m} b{}", target.0)
@@ -586,8 +601,21 @@ impl std::fmt::Display for Signature {
             }
         }
         write!(f, ")")?;
-        if let Some(ret_type) = self.return_type {
-            write!(f, " -> {}", ret_type)?;
+        if self.return_types.len() >= 1 {
+            write!(f, " -> ", )?;
+            if self.return_types.len() == 1 {
+                write!(f, "{}", self.return_types[0]);
+            }
+            else {
+                write!(f, "(");
+                for (idx, t) in self.return_types.iter().enumerate() {
+                    write!(f, "{t}");
+                    if idx + 1 < self.return_types.len() {
+                        write!(f, ", ");
+                    }
+                }
+                write!(f, ")");
+            }
         }
 
         Ok(())
@@ -649,7 +677,7 @@ mod test {
         let mut module = Module::new();
         let main_sig = module.add_signature(Signature {
             argument_types: vec![],
-            return_type: None,
+            return_types: vec![],
         });
 
         let func = module.add_function("test_basic_ops".to_string(), main_sig);
