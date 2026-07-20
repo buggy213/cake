@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::{
-    cir::{FunctionBuilder, Module, Signature, StackSlotRef, Type, Value}, parser::ast, semantics::{
+    cir::{CompareMode, FuncRef, FunctionBuilder, Module, Signature, StackSlotRef, Type, Value}, parser::ast, semantics::{
         resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
         resolver::ResolvedAST,
         symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
@@ -77,6 +77,8 @@ fn create_frame(
     }
 }
 
+
+
 pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
     let Some(ResolvedASTNode::TranslationUnit { children }) = ast.nodes.first() else {
         panic!("corrupted ast")
@@ -113,10 +115,9 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
         };
 
         let func_sig = Signature::new(func_args, func_ret.as_slice().to_vec());
-        let func_sig_ref = module.add_signature(func_sig);
-        let func_ref = module.add_function(func_name.to_string(), func_sig_ref);
+        let func_ref = module.add_function(func_name.to_string(), func_sig);
 
-        let mut func_builder = module.fn_builder(func_ref);
+        let mut func_builder = module.define_function(func_ref);
 
         let func_object_range = ast.symtab.function_object_range(*symbol_idx);
         let stack_frame = create_frame(
@@ -260,19 +261,49 @@ fn lower_expr(
         TypedExpressionNode::AugmentedAssign(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::PostAugmentedAssign(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::Ternary(ctype, expr_ref, expr_ref1, expr_ref2) => todo!(),
-        TypedExpressionNode::LogicalAnd(ctype, expr_ref, expr_ref1) => todo!(),
+        TypedExpressionNode::LogicalAnd(ctype, expr_ref, expr_ref1) => {
+            todo!("short circuit eval")
+        },
         TypedExpressionNode::LogicalOr(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::BitwiseAnd(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::BitwiseOr(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::BitwiseXor(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::Equal(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::NotEqual(ctype, expr_ref, expr_ref1) => todo!(),
+        TypedExpressionNode::Equal(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().icmp(CompareMode::Equal, lhs, rhs)
+        },
+        TypedExpressionNode::NotEqual(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().icmp(CompareMode::NotEqual, lhs, rhs) 
+        },
         TypedExpressionNode::LessThan(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::GreaterThan(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::LessThanOrEqual(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::GreaterThanOrEqual(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::LShift(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::RShift(ctype, expr_ref, expr_ref1) => todo!(),
+        TypedExpressionNode::LShift(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().shl(lhs, rhs)
+        },
+        TypedExpressionNode::RShift(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            let lhs_ty = ast.exprs[*expr_ref1].expr_type().as_basic()
+                .expect("lhs of shift instruction should be basic type from typecheck");
+            
+            if lhs_ty.is_signed() {
+                func_builder.insert().ashr(lhs, rhs)
+            }
+            else {
+                func_builder.insert().lshr(lhs, rhs)
+            }
+        },
         TypedExpressionNode::Multiply(ctype, expr_ref, expr_ref1) => {
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
@@ -313,7 +344,9 @@ fn lower_expr(
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
             let sizeof_object = ctype.as_pointee().unwrap().size(todo!("plumb in layouts"));
             let sizeof_object_val = func_builder.insert().const_u64(sizeof_object as u64);
-            let rhs_ptrtype = func_builder.insert().icast(rhs, ptrtype());
+            
+            let rhs_ty = ast.exprs[*expr_ref1].expr_type().as_basic().expect("rhs should be scalar");
+            let rhs_ptrtype = todo!();
             let byte_offset = func_builder.insert().mul(rhs_ptrtype, sizeof_object_val);
 
             todo!()
@@ -343,16 +376,15 @@ fn lower_expr(
                 arg_values.push(arg_value);
             }
 
-            let func_ref = todo!();
-    
-            func_builder.insert().call(func_ref, &arg_values);
+            let func_ref = FuncRef(function.get_inner() as u32);    
+            let call_inst = func_builder.insert().call(func_ref, &arg_values);
         
 
             if result_type.is_void() {
                 // TODO: fix this. void expressions should be allowed
                 func_builder.insert().const_u64(0)
             } else {
-                todo!()
+                Value::TupleElement(call_inst, 0)
             }
         },
         TypedExpressionNode::IndirectFunctionCall(ctype, expr_ref, expr_range_ref) => {
@@ -480,6 +512,7 @@ mod test {
         let resolved = resolve_harness(input);
         let module = cir::ast2cir::lower_ast(resolved);
 
+        dbg!(&module);
         print!("{module}");
     }
 }

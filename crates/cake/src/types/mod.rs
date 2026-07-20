@@ -463,6 +463,13 @@ impl CType {
         }
     }
 
+    pub(crate) fn as_basic(&self) -> Option<BasicType> {
+        match self {
+            CType::BasicType { basic_type, qualifier } => Some(*basic_type),
+            _ => None
+        }
+    }
+
     pub(crate) fn as_struct(&self) -> Option<StructureTypeIdx> {
         match self {
             CType::StructureTypeRef { symtab_idx, .. } => Some(*symtab_idx),

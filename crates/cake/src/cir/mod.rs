@@ -21,36 +21,43 @@ impl Module {
         }
     }
 
-    pub(crate) fn add_function(&mut self, name: String, signature: SigRef) -> FuncRef {
+    pub(crate) fn add_function(&mut self, name: String, signature: Signature) -> FuncRef {
+        self.signatures.push(signature);
         let func = Function {
             name,
-            signature,
-            insts: Vec::new(),
-            inst_types: Vec::new(),
-            blocks: vec![Block::new()],
-            stack_slots: Vec::new(),
+            
+            external_signatures: vec![],
+            definition: None,
         };
 
         FuncRef::from_push(&mut self.functions, func)
     }
 
-    pub(crate) fn add_signature(&mut self, signature: Signature) -> SigRef {
-        SigRef::from_push(&mut self.signatures, signature)
-    }
+    pub(crate) fn define_function(&'_ mut self, func: FuncRef) -> FunctionBuilder<'_> {
+        let Function { 
+            name: _, 
+            external_signatures, 
+            definition 
+        } = &mut self.functions[func];
+        
+        *definition = Some(FunctionDefinition { 
+            insts: vec![], 
+            inst_types: vec![], 
+            blocks: vec![Block::new()], 
+            stack_slots: vec![]
+        });
 
-    pub(crate) fn fn_builder(&'_ mut self, func: FuncRef) -> FunctionBuilder<'_> {
         FunctionBuilder {
-            func: &mut self.functions[func],
+            func: definition.as_mut().unwrap(),
             current_block: BlockRef(0),
+            sigs: external_signatures,
+
+            module_sigs: &self.signatures 
         }
     }
 
     pub(crate) fn functions(&self) -> &[Function] {
         &self.functions
-    }
-
-    pub(crate) fn signatures(&self) -> &[Signature] {
-        &self.signatures
     }
 
     pub(crate) fn data(&self) -> &[Data] {
@@ -109,31 +116,11 @@ impl Type {
     }
 
     pub(crate) fn is_integral(self) -> bool {
-        match self {
-            Type::i8
-            | Type::u8
-            | Type::i16
-            | Type::u16
-            | Type::i32
-            | Type::u32
-            | Type::i64
-            | Type::u64 => true,
-            Type::f32 | Type::f64 => false,
-        }
+        !self.is_fp()
     }
 
     pub(crate) fn is_fp(self) -> bool {
-        match self {
-            Type::i8
-            | Type::u8
-            | Type::i16
-            | Type::u16
-            | Type::i32
-            | Type::u32
-            | Type::i64
-            | Type::u64 => false,
-            Type::f32 | Type::f64 => true,
-        }
+        matches!(self, Type::f32 | Type::f64)
     }
 }
 
@@ -156,7 +143,7 @@ impl Constant {
 
 make_type_idx!(SigRef, Signature);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Signature {
     argument_types: Vec<Type>,
     return_types: Vec<Type>,
@@ -176,10 +163,15 @@ make_type_idx!(FuncRef, Function);
 #[derive(Debug)]
 pub(crate) struct Function {
     pub(crate) name: String,
-    pub(crate) signature: SigRef,
+    pub(crate) external_signatures: Vec<Signature>,
+    
+    pub(crate) definition: Option<FunctionDefinition> 
+}
 
+#[derive(Debug)]
+pub(crate) struct FunctionDefinition {
     pub(crate) insts: Vec<Inst>,
-    pub(crate) inst_types: Vec<Option<Type>>,
+    pub(crate) inst_types: Vec<Vec<Type>>,
     pub(crate) blocks: Vec<Block>,
 
     pub(crate) stack_slots: Vec<StackSlot>,
@@ -194,8 +186,11 @@ pub(crate) struct StackSlot {
 }
 
 pub(crate) struct FunctionBuilder<'func> {
-    func: &'func mut Function,
+    func: &'func mut FunctionDefinition,
     current_block: BlockRef,
+    sigs: &'func mut Vec<Signature>,
+
+    module_sigs: &'func [Signature]
 }
 
 impl<'func> FunctionBuilder<'func> {
@@ -223,6 +218,9 @@ impl<'func> FunctionBuilder<'func> {
             block: &mut self.func.blocks[self.current_block],
             insts: &mut self.func.insts,
             inst_types: &mut self.func.inst_types,
+
+            sigs: self.sigs,
+            module_sigs: self.module_sigs,
         }
     }
 }
@@ -230,7 +228,10 @@ impl<'func> FunctionBuilder<'func> {
 pub(crate) struct BlockBuilder<'block> {
     block: &'block mut Block,
     insts: &'block mut Vec<Inst>,
-    inst_types: &'block mut Vec<Option<Type>>,
+    inst_types: &'block mut Vec<Vec<Type>>,
+    
+    sigs: &'block [Signature],
+    module_sigs: &'block [Signature]
 }
 
 impl<'block> BlockBuilder<'block> {
@@ -238,7 +239,7 @@ impl<'block> BlockBuilder<'block> {
         assert!(val.ty() == ty, "type mismatch while inserting constant");
 
         let constant = Inst::Constant { val };
-        self.inst_types.push(Some(ty));
+        self.inst_types.push(vec![ty]);
         let iref = InstRef::from_push(self.insts, constant);
         self.block.inst_refs.push(iref);
         Value::Inst(iref)
@@ -262,30 +263,38 @@ impl<'block> BlockBuilder<'block> {
 
     pub(crate) fn stack_addr(&mut self, slot: StackSlotRef) -> Value {
         let op = Inst::StackAddr { slot };
-        self.inst_types.push(Some(Type::u64));
+        self.inst_types.push(vec![Type::u64]);
         let iref = InstRef::from_push(self.insts, op);
         self.block.inst_refs.push(iref);
         Value::Inst(iref)
     }
 
-    pub(crate) fn icast(&mut self, val: Value, to: Type) -> Value {
-        let cast = Inst::CastInt {
-            val,
-            target_type: to,
-        };
-
-        self.inst_types.push(Some(to));
-        let iref = InstRef::from_push(self.insts, cast);
+    fn type_conversion(&mut self, val: Value, to: Type, op: fn(Value) -> Inst) -> Value {
+        let op = op(val);
+        self.inst_types.push(vec![to]);
+        let iref = InstRef::from_push(self.insts, op);
         self.block.inst_refs.push(iref);
         Value::Inst(iref)
     }
+
+    pub(crate) fn zext(&mut self, val: Value, to: Type) -> Value {
+        self.type_conversion(val, to, |val| Inst::Zext { val })
+    }
+    pub(crate) fn sext(&mut self, val: Value, to: Type) -> Value {
+        self.type_conversion(val, to, |val| Inst::Sext { val })
+    }
+    pub(crate) fn trunc(&mut self, val: Value, to: Type) -> Value {
+        self.type_conversion(val, to, |val| Inst::Truncate { val })
+    }
+
 
     // helper to copy the type of one of the operands.
     // legalization to make sure operand types are actually compatible is deferred
     fn copy_type(&mut self, from: Value) {
         let ty = match from {
-            Value::Inst(inst_ref) => self.inst_types[inst_ref],
-            Value::BlockArgument(idx) => Some(self.block.block_args[idx as usize]),
+            Value::Inst(inst_ref) => self.inst_types[inst_ref].clone(),
+            Value::BlockArgument(idx) => vec![self.block.block_args[idx as usize]],
+            Value::TupleElement(inst_ref, component) => vec![self.inst_types[inst_ref][component as usize]]
         };
 
         self.inst_types.push(ty);
@@ -319,11 +328,31 @@ impl<'block> BlockBuilder<'block> {
         self.binary_op(a, b, |a, b| Inst::Modulo { a, b })
     }
 
+    pub(crate) fn shl(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Shl { a, b })
+    }
+
+    pub(crate) fn ashr(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Ashr { a, b })
+    }
+
+    pub(crate) fn lshr(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Lshr { a, b })
+    }
+
+    pub(crate) fn icmp(&mut self, mode: CompareMode, a: Value, b: Value) -> Value {
+        let icmp = Inst::Icmp { mode, a, b };
+        let iref = InstRef::from_push(self.insts, icmp);
+        self.inst_types.push(vec![Type::i8]);
+        self.block.inst_refs.push(iref);
+        Value::Inst(iref)
+    }
+
     pub(crate) fn load(&mut self, addr: Value, ty: Type) -> Value {
         let load = Inst::Load { addr };
         let iref = InstRef::from_push(self.insts, load);
         self.block.inst_refs.push(iref);
-        self.inst_types.push(Some(ty));
+        self.inst_types.push(vec![ty]);
         Value::Inst(iref)
     }
 
@@ -331,25 +360,32 @@ impl<'block> BlockBuilder<'block> {
         let store = Inst::Store { addr, val };
         let iref = InstRef::from_push(self.insts, store);
         self.block.inst_refs.push(iref);
-        self.inst_types.push(None);
+        self.inst_types.push(vec![]);
     }
 
     pub(crate) fn brif(&mut self, cond: Value, con: BlockRef, alt: BlockRef) {
         let brif = Inst::BranchIf { cond, con, alt };
         let iref = InstRef::from_push(self.insts, brif);
         self.block.inst_refs.push(iref);
-        self.inst_types.push(None);
+        self.inst_types.push(vec![]);
     }
 
     pub(crate) fn ret(&mut self, values: &[Value]) {
         let ret = Inst::Return { values: values.to_vec() };
         let v = InstRef::from_push(self.insts, ret);
         self.block.inst_refs.push(v);
-        self.inst_types.push(None);
+        self.inst_types.push(vec![]);
     }
 
-    pub(crate) fn call(&mut self, func_ref: FuncRef, arg_values: &[Value]) {
-        todo!()
+    pub(crate) fn call(&mut self, func_ref: FuncRef, arg_values: &[Value]) -> InstRef {
+        let call = Inst::Call { func: func_ref, arguments: arg_values.to_vec() };
+        let v = InstRef::from_push(self.insts, call);
+
+        let callee_sig = &self.module_sigs[func_ref.get_inner()];
+        self.block.inst_refs.push(v);
+        self.inst_types.push(callee_sig.return_types.clone());
+
+        v
     }
 }
 
@@ -373,11 +409,12 @@ impl Block {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Value {
     Inst(InstRef),
-    BlockArgument(u32)
+    BlockArgument(u32),
+    TupleElement(InstRef, u32)
 }
 
 make_type_idx!(InstRef, Inst);
-add_additional_index!(InstRef, Option<Type>);
+add_additional_index!(InstRef, Vec<Type>);
 
 #[derive(Debug)]
 pub(crate) enum Inst {
@@ -405,6 +442,23 @@ pub(crate) enum Inst {
         a: Value,
         b: Value,
     },
+    Shl {
+        a: Value,
+        b: Value
+    },
+    Ashr {
+        a: Value,
+        b: Value
+    },
+    Lshr {
+        a: Value,
+        b: Value
+    },
+    Icmp {
+        mode: CompareMode,
+        a: Value,
+        b: Value
+    },
 
     Load {
         addr: Value,
@@ -418,9 +472,14 @@ pub(crate) enum Inst {
     },
 
     // cast between integer types
-    CastInt {
-        val: Value,
-        target_type: Type,
+    Zext {
+        val: Value
+    },
+    Sext {
+        val: Value
+    },
+    Truncate {
+        val: Value
     },
 
     CompareInt {
@@ -472,10 +531,16 @@ impl Inst {
             Inst::Mul { a, b } => "mul",
             Inst::Div { a, b } => "div",
             Inst::Modulo { a, b } => "modulo",
+            Inst::Shl { a, b } => "shl",
+            Inst::Ashr { a, b } => "ashr",
+            Inst::Lshr { a, b } => "lshr",
+            Inst::Icmp { mode, a, b } => "icmp",
             Inst::Load { addr } => "load",
             Inst::Store { addr, val } => "store",
             Inst::StackAddr { slot } => "stack_addr",
-            Inst::CastInt { val, target_type } => "cast",
+            Inst::Zext { val } => "zext",
+            Inst::Sext { val } => "sext",
+            Inst::Truncate { val } => "trunc",
             Inst::CompareInt { a, b, mode } => "cmp",
             Inst::CompareFloat { a, b, mode } => "fcmp",
             Inst::BranchIf { cond, con, alt } => "brif",
@@ -505,11 +570,27 @@ impl std::fmt::Display for Constant {
     }
 }
 
+impl std::fmt::Display for CompareMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            CompareMode::LessThan => "lt",
+            CompareMode::GreaterThan => "gt",
+            CompareMode::LessThanOrEqual => "lte",
+            CompareMode::GreaterThanOrEqual => "gte",
+            CompareMode::Equal => "eq",
+            CompareMode::NotEqual => "neq",
+        };
+
+        write!(f, "{name}")
+    }
+}
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Inst(inst_ref) => write!(f, "v{}", inst_ref.0),
             Value::BlockArgument(idx) => write!(f, "p{}", *idx),
+            Value::TupleElement(inst_ref, component) => write!(f, "v{}.{}", inst_ref.0, component)
         }
     }
 }
@@ -524,10 +605,16 @@ impl std::fmt::Display for Inst {
             Inst::Mul { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Div { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Modulo { a, b } => write!(f, "{m} {a} {b}"),
-            Inst::Load { addr } => write!(f, "{m} ({})", addr),
-            Inst::Store { addr, val } => write!(f, "{m} {val} ({addr})"),
+            Inst::Shl { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Ashr { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Lshr { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Icmp { mode, a, b } => write!(f, "{m} {mode} {a} {b}"),
+            Inst::Load { addr } => write!(f, "{m} [{}]", addr),
+            Inst::Store { addr, val } => write!(f, "{m} {val} [{addr}]"),
+            Inst::Zext { val } | 
+            Inst::Sext { val } | 
+            Inst::Truncate { val } => write!(f, "{m} {val}"),
             Inst::StackAddr { slot } => write!(f, "{m} ss{}", slot.0),
-            Inst::CastInt { val, target_type } => write!(f, "{m} {val} -> {target_type}"),
             Inst::CompareInt { a, b, mode } => {
                 todo!()
             },
@@ -536,20 +623,34 @@ impl std::fmt::Display for Inst {
             },
             Inst::BranchIf { cond, con, alt } => write!(f, "{m} {cond} b{} b{}", con.0, alt.0),
             Inst::Return { values } => {
-                write!(f, "ret (");
+                write!(f, "ret ")?;
+                if values.len() > 1 {
+                    write!(f, "(")?;
+                }
                 for (idx, v) in values.iter().enumerate() {
-                    write!(f, "{v}");
+                    write!(f, "{v}")?;
                     if idx + 1 < values.len() {
-                        write!(f, ", ");
+                        write!(f, ", ")?;
                     }
                 }
-                write!(f, ")")
+                if values.len() > 1 {
+                    write!(f, ")")?;
+                }
+
+                Ok(())
             },
             Inst::Jump { target } => {
                 write!(f, "{m} b{}", target.0)
             },
             Inst::Call { func, arguments } => {
-                todo!("write call inst formatter")
+                write!(f, "call f{}(", func.0)?;
+                for (idx, argument) in arguments.iter().enumerate() {
+                    write!(f, "{argument}")?;
+                    if idx + 1 < arguments.len() {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ")")
             },
             Inst::CallIndirect { callee_sig, arguments } => {
                 todo!("write indirect call inst formatter")
@@ -604,17 +705,17 @@ impl std::fmt::Display for Signature {
         if self.return_types.len() >= 1 {
             write!(f, " -> ", )?;
             if self.return_types.len() == 1 {
-                write!(f, "{}", self.return_types[0]);
+                write!(f, "{}", self.return_types[0])?;
             }
             else {
-                write!(f, "(");
+                write!(f, "(")?;
                 for (idx, t) in self.return_types.iter().enumerate() {
-                    write!(f, "{t}");
+                    write!(f, "{t}")?;
                     if idx + 1 < self.return_types.len() {
-                        write!(f, ", ");
+                        write!(f, ", ")?;
                     }
                 }
-                write!(f, ")");
+                write!(f, ")")?;
             }
         }
 
@@ -624,22 +725,39 @@ impl std::fmt::Display for Signature {
 
 impl std::fmt::Display for Function {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{} (sig {})", &self.name, self.signature.0)?;
+        writeln!(f, "{}", &self.name)?;
         
-        for (idx, slot) in self.stack_slots.iter().enumerate() {
+        let Some(defn) = &self.definition else {
+            return Ok(());
+        };
+
+        for (idx, slot) in defn.stack_slots.iter().enumerate() {
             writeln!(f, "ss{idx} = size {}, align {}", slot.size, slot.align)?;
         }
 
-        for (idx, block) in self.blocks.iter().enumerate() {
+        for (idx, block) in defn.blocks.iter().enumerate() {
             writeln!(f, "b{idx}:")?;
             for &iref in &block.inst_refs {
-                if let Some(value_ty) = self.inst_types[iref] {
+                let iref_types = &defn.inst_types[iref];
+                if iref_types.len() > 1 {
                     write!(f, "  ")?;
-                    writeln!(f, "v{} : {} = {}", iref.0, value_ty, &self.insts[iref])?;
+                    write!(f, "v{} : (", iref.0)?;
+                    for (idx, component_ty) in iref_types.iter().enumerate() {
+                        write!(f, "{component_ty}")?;
+                        if idx + 1 < iref_types.len() {
+                            write!(f, ", ")?;
+                        }
+                    }
+                    write!(f, ") = {}", &defn.insts[iref])?;
+
+                } 
+                else if let Some(value_ty) = iref_types.first() {
+                    write!(f, "  ")?;
+                    writeln!(f, "v{} : {} = {}", iref.0, value_ty, &defn.insts[iref])?;
                 }
                 else {
                     write!(f, "  ")?;
-                    writeln!(f, "{}", &self.insts[iref])?;
+                    writeln!(f, "{}", &defn.insts[iref])?;
                 }
             }
         }
@@ -650,15 +768,12 @@ impl std::fmt::Display for Function {
 
 impl std::fmt::Display for Module {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "fn signatures:")?;
-        for (i, sig) in self.signatures.iter().enumerate() {
-            write!(f, "  ")?;
-            writeln!(f, "{}: {}", i, sig)?;
-        }
-
         writeln!(f, "functions:")?;
-        for func in &self.functions {
-           write!(f, "{func}")?;
+        let mut idx = 0;
+        for (func, sig) in std::iter::zip(&self.functions, &self.signatures) {
+            write!(f, "f{idx}: {sig}, ")?;
+            writeln!(f, "{func}")?;
+            idx += 1;
         }
 
 
@@ -675,13 +790,13 @@ mod test {
     #[test]
     fn test_basic_ops() {
         let mut module = Module::new();
-        let main_sig = module.add_signature(Signature {
+        let main_sig = Signature {
             argument_types: vec![],
             return_types: vec![],
-        });
+        };
 
         let func = module.add_function("test_basic_ops".to_string(), main_sig);
-        let mut fn_builder = module.fn_builder(func);
+        let mut fn_builder = module.define_function(func);
 
         let a = fn_builder.insert().const_i32(1);
         let b = fn_builder.insert().const_i32(2);
