@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{mem::MaybeUninit, ops::Range, str::FromStr};
 
 use crate::{
     cir::{CompareMode, FuncRef, FunctionBuilder, Module, Signature, StackSlotRef, Type, Value}, parser::ast, semantics::{
@@ -240,11 +240,15 @@ fn lower_expr(
 ) -> Value {
     use crate::semantics::resolved_ast::TypedExpressionNode;
     let expr_node = &ast.exprs[expr];
+    let lower_binary_expr = |lhs: ExprRef, rhs: ExprRef, op: fn(Value, Value) -> Value| {
+        let lhs = lower_expr(ast, lhs, func_builder, stack_frame);
+        let rhs = lower_expr(ast, rhs, func_builder, stack_frame);
+        op(lhs, rhs)
+    };
     match expr_node {
         TypedExpressionNode::CommaExpr(ctype, expr_range_ref) => todo!(),
         TypedExpressionNode::SimpleAssign(ctype, lhs, rhs) => {
             let location = lower_lvalue(ast, *lhs, func_builder, stack_frame);
-
             let rhs_value = lower_expr(ast, *rhs, func_builder, stack_frame);
 
             assert!(
@@ -265,9 +269,27 @@ fn lower_expr(
             todo!("short circuit eval")
         },
         TypedExpressionNode::LogicalOr(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::BitwiseAnd(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::BitwiseOr(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::BitwiseXor(ctype, expr_ref, expr_ref1) => todo!(),
+        TypedExpressionNode::BitwiseAnd(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().and(lhs, rhs)
+        },
+
+        TypedExpressionNode::BitwiseOr(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().or(lhs, rhs)
+        },
+
+        TypedExpressionNode::BitwiseXor(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().xor(lhs, rhs)
+        },
+
         TypedExpressionNode::Equal(ctype, expr_ref, expr_ref1) => {
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
@@ -280,10 +302,30 @@ fn lower_expr(
 
             func_builder.insert().icmp(CompareMode::NotEqual, lhs, rhs) 
         },
-        TypedExpressionNode::LessThan(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::GreaterThan(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::LessThanOrEqual(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::GreaterThanOrEqual(ctype, expr_ref, expr_ref1) => todo!(),
+        TypedExpressionNode::LessThan(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().icmp(CompareMode::LessThan, lhs, rhs) 
+        },
+        TypedExpressionNode::GreaterThan(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().icmp(CompareMode::GreaterThan, lhs, rhs) 
+        },
+        TypedExpressionNode::LessThanOrEqual(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().icmp(CompareMode::LessThanOrEqual, lhs, rhs) 
+        }
+        TypedExpressionNode::GreaterThanOrEqual(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().icmp(CompareMode::GreaterThanOrEqual, lhs, rhs) 
+        }
         TypedExpressionNode::LShift(ctype, expr_ref, expr_ref1) => {
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
@@ -294,9 +336,7 @@ fn lower_expr(
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
 
-            let lhs_ty = ast.exprs[*expr_ref1].expr_type().as_basic()
-                .expect("lhs of shift instruction should be basic type from typecheck");
-            
+            let lhs_ty = ast.exprs[*expr_ref1].expr_type().as_basic().unwrap();
             if lhs_ty.is_signed() {
                 func_builder.insert().ashr(lhs, rhs)
             }
@@ -358,8 +398,20 @@ fn lower_expr(
         TypedExpressionNode::Dereference(ctype, expr_ref) => todo!(),
         TypedExpressionNode::UnaryPlus(ctype, expr_ref) => todo!(),
         TypedExpressionNode::UnaryMinus(ctype, expr_ref) => todo!(),
-        TypedExpressionNode::BitwiseNot(ctype, expr_ref) => todo!(),
-        TypedExpressionNode::Not(ctype, expr_ref) => todo!(),
+        TypedExpressionNode::BitwiseNot(ctype, expr_ref) => {
+            let val = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let ones = func_builder.insert().iconst_trunc(val, u64::MAX);
+
+            func_builder.insert().xor(val, ones)
+        }
+        TypedExpressionNode::Not(ctype, expr_ref) => {
+            let val = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let zero = func_builder.insert().iconst_trunc(val, 0);
+            let one = func_builder.insert().iconst_trunc(val, 1);
+            let cmp = func_builder.insert().icmp(CompareMode::Equal, val, zero);
+
+            func_builder.insert().select(cmp, one, zero)
+        },
         TypedExpressionNode::DirectFunctionCall(result_type, function, arguments) => {
             // let func_id = self.function_refs[*function];
             
@@ -390,7 +442,9 @@ fn lower_expr(
         TypedExpressionNode::IndirectFunctionCall(ctype, expr_ref, expr_range_ref) => {
             todo!()
         },
-        TypedExpressionNode::DotAccess(ctype, expr_ref, member_ref) => todo!(),
+        TypedExpressionNode::DotAccess(ctype, expr_ref, member_ref) => {
+            todo!()
+        },
         TypedExpressionNode::ArrowAccess(ctype, expr_ref, member_ref) => todo!(),
         TypedExpressionNode::ArrayDecay(ctype, expr_ref) => todo!(),
         TypedExpressionNode::ObjectIdentifier(object_type, object_idx) => {
@@ -415,7 +469,17 @@ fn lower_expr(
             ast::Constant::Float(_) => todo!("fp constants"),
             ast::Constant::Double(_) => todo!("fp constants"),
         },
-        TypedExpressionNode::StringLiteral(ctype, _) => todo!(),
+        TypedExpressionNode::StringLiteral(ctype, s) => {
+            let id = func_builder.declare_anonymous_data(true);
+
+            // SAFETY: u8 can be 0
+            let cstr: Box<[MaybeUninit<u8>]> = Box::new_zeroed_slice(s.len() + 1);
+            let mut cstr = unsafe { cstr.assume_init() };
+            cstr[..s.len()].copy_from_slice(s.as_bytes());
+
+            func_builder.define_data(id, cstr);
+            func_builder.insert().data_addr(id)
+        },
     }
 }
 

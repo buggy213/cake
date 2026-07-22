@@ -10,7 +10,11 @@ pub(crate) struct Module {
 make_type_idx!(DataRef, Data);
 
 #[derive(Debug)]
-pub(crate) struct Data {}
+pub(crate) struct Data {
+    name: Option<String>,
+    read_only: bool,
+    contents: Option<Box<[u8]>>
+}
 
 impl Module {
     pub(crate) fn new() -> Module {
@@ -52,7 +56,8 @@ impl Module {
             current_block: BlockRef(0),
             sigs: external_signatures,
 
-            module_sigs: &self.signatures 
+            module_sigs: &self.signatures,
+            module_data: &mut self.data,
         }
     }
 
@@ -190,7 +195,8 @@ pub(crate) struct FunctionBuilder<'func> {
     current_block: BlockRef,
     sigs: &'func mut Vec<Signature>,
 
-    module_sigs: &'func [Signature]
+    module_sigs: &'func [Signature],
+    module_data: &'func mut Vec<Data>
 }
 
 impl<'func> FunctionBuilder<'func> {
@@ -223,6 +229,19 @@ impl<'func> FunctionBuilder<'func> {
             module_sigs: self.module_sigs,
         }
     }
+
+    pub(crate) fn declare_anonymous_data(&mut self, read_only: bool) -> DataRef {
+        let data = Data {
+            name: None,
+            read_only,
+            contents: None,
+        };
+        DataRef::from_push(self.module_data, data)
+    }
+
+    pub(crate) fn define_data(&mut self, data_ref: DataRef, contents: Box<[u8]>) {
+        self.module_data[data_ref].contents = Some(contents);
+    }
 }
 
 pub(crate) struct BlockBuilder<'block> {
@@ -235,6 +254,20 @@ pub(crate) struct BlockBuilder<'block> {
 }
 
 impl<'block> BlockBuilder<'block> {
+    pub(crate) fn type_of(&mut self, val: Value) -> Type { 
+        match val {
+            Value::Inst(inst_ref) => {
+                self.inst_types[inst_ref][0]
+            },
+            Value::BlockArgument(idx) => {
+                self.block.block_args[idx as usize]
+            },
+            Value::TupleElement(inst_ref, idx) => {
+                self.inst_types[inst_ref][idx as usize]
+            },
+        }
+    }
+
     fn constant(&mut self, ty: Type, val: Constant) -> Value {
         assert!(val.ty() == ty, "type mismatch while inserting constant");
 
@@ -261,6 +294,26 @@ impl<'block> BlockBuilder<'block> {
         self.constant(Type::i64, Constant::i64(val))
     }
 
+    // creates a compatible constant from a u64 by truncating
+    pub(crate) fn iconst_trunc(&mut self, val: Value, c: u64) -> Value {
+        let ty = self.type_of(val);
+        assert!(ty.is_integral(), "only integer typed values");
+
+        let v = match ty {
+            Type::i8 => Constant::i8(c as i8),
+            Type::u8 => Constant::u8(c as u8),
+            Type::i16 => Constant::i16(c as i16),
+            Type::u16 => Constant::u16(c as u16),
+            Type::i32 => Constant::i32(c as i32),
+            Type::u32 => Constant::u32(c as u32),
+            Type::i64 => Constant::i64(c as i64),
+            Type::u64 => Constant::u64(c),
+            _ => unreachable!()
+        };
+
+        self.constant(ty, v)
+    }
+
     pub(crate) fn stack_addr(&mut self, slot: StackSlotRef) -> Value {
         let op = Inst::StackAddr { slot };
         self.inst_types.push(vec![Type::u64]);
@@ -277,16 +330,9 @@ impl<'block> BlockBuilder<'block> {
         Value::Inst(iref)
     }
 
-    pub(crate) fn zext(&mut self, val: Value, to: Type) -> Value {
-        self.type_conversion(val, to, |val| Inst::Zext { val })
+    pub(crate) fn icast(&mut self, val: Value, to: Type) -> Value {
+        self.type_conversion(val, to, |v| Inst::IntegerCast { v })
     }
-    pub(crate) fn sext(&mut self, val: Value, to: Type) -> Value {
-        self.type_conversion(val, to, |val| Inst::Sext { val })
-    }
-    pub(crate) fn trunc(&mut self, val: Value, to: Type) -> Value {
-        self.type_conversion(val, to, |val| Inst::Truncate { val })
-    }
-
 
     // helper to copy the type of one of the operands.
     // legalization to make sure operand types are actually compatible is deferred
@@ -328,6 +374,18 @@ impl<'block> BlockBuilder<'block> {
         self.binary_op(a, b, |a, b| Inst::Modulo { a, b })
     }
 
+    pub(crate) fn and(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::And { a, b })
+    }
+
+    pub(crate) fn or(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Or { a, b })
+    }
+
+    pub(crate) fn xor(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Xor { a, b })
+    }
+
     pub(crate) fn shl(&mut self, a: Value, b: Value) -> Value {
         self.binary_op(a, b, |a, b| Inst::Shl { a, b })
     }
@@ -363,6 +421,14 @@ impl<'block> BlockBuilder<'block> {
         self.inst_types.push(vec![]);
     }
 
+    pub(crate) fn select(&mut self, cond: Value, x: Value, y: Value) -> Value {
+        let select = Inst::Select { cond, x, y };
+        let iref = InstRef::from_push(self.insts, select);
+        self.block.inst_refs.push(iref);
+        self.copy_type(x);
+        Value::Inst(iref) 
+    }
+
     pub(crate) fn brif(&mut self, cond: Value, con: BlockRef, alt: BlockRef) {
         let brif = Inst::BranchIf { cond, con, alt };
         let iref = InstRef::from_push(self.insts, brif);
@@ -386,6 +452,14 @@ impl<'block> BlockBuilder<'block> {
         self.inst_types.push(callee_sig.return_types.clone());
 
         v
+    }
+
+    pub(crate) fn data_addr(&mut self, data_ref: DataRef) -> Value {
+        let data_addr = Inst::DataAddr { data: data_ref };
+        let iref = InstRef::from_push(self.insts, data_addr);
+        self.block.inst_refs.push(iref);
+        self.inst_types.push(vec![Type::u64 /* TODO: ptrtype */]);
+        Value::Inst(iref)
     }
 }
 
@@ -442,6 +516,18 @@ pub(crate) enum Inst {
         a: Value,
         b: Value,
     },
+    And {
+        a: Value,
+        b: Value
+    },
+    Or {
+        a: Value,
+        b: Value,
+    },
+    Xor {
+        a: Value,
+        b: Value
+    },
     Shl {
         a: Value,
         b: Value
@@ -471,15 +557,8 @@ pub(crate) enum Inst {
         slot: StackSlotRef,
     },
 
-    // cast between integer types
-    Zext {
-        val: Value
-    },
-    Sext {
-        val: Value
-    },
-    Truncate {
-        val: Value
+    IntegerCast {
+        v: Value,
     },
 
     CompareInt {
@@ -487,11 +566,16 @@ pub(crate) enum Inst {
         b: Value,
         mode: CompareMode,
     },
-
     CompareFloat {
         a: Value,
         b: Value,
         mode: CompareMode,
+    },
+
+    Select {
+        cond: Value,
+        x: Value,
+        y: Value
     },
 
     BranchIf {
@@ -514,12 +598,16 @@ pub(crate) enum Inst {
     },
     CallIndirect {
         callee_sig: SigRef,
+        func_ptr: Value,
         arguments: Vec<Value>
     },
 
     FuncAddr {
         func: FuncRef
-    }
+    },
+    DataAddr {
+        data: DataRef,
+    },
 }
 
 impl Inst {
@@ -531,6 +619,9 @@ impl Inst {
             Inst::Mul { a, b } => "mul",
             Inst::Div { a, b } => "div",
             Inst::Modulo { a, b } => "modulo",
+            Inst::And { a, b } => "and",
+            Inst::Or { a, b } => "or",
+            Inst::Xor { a, b } => "xor",
             Inst::Shl { a, b } => "shl",
             Inst::Ashr { a, b } => "ashr",
             Inst::Lshr { a, b } => "lshr",
@@ -538,17 +629,17 @@ impl Inst {
             Inst::Load { addr } => "load",
             Inst::Store { addr, val } => "store",
             Inst::StackAddr { slot } => "stack_addr",
-            Inst::Zext { val } => "zext",
-            Inst::Sext { val } => "sext",
-            Inst::Truncate { val } => "trunc",
-            Inst::CompareInt { a, b, mode } => "cmp",
+            Inst::IntegerCast { v } => "icast",
+            Inst::CompareInt { a, b, mode } => "icmp",
             Inst::CompareFloat { a, b, mode } => "fcmp",
+            Inst::Select { cond, x, y } => "select",
             Inst::BranchIf { cond, con, alt } => "brif",
             Inst::Return { values} => "ret",
             Inst::Jump { target } => "jmp",
             Inst::Call { func, arguments } => "call",
-            Inst::CallIndirect { callee_sig, arguments } => "call_indirect",
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } => "call_indirect",
             Inst::FuncAddr { func } => "func_addr",
+            Inst::DataAddr { data } => "data_addr",
         }
     }
 }
@@ -605,22 +696,20 @@ impl std::fmt::Display for Inst {
             Inst::Mul { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Div { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Modulo { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::And { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Or { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Xor { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Shl { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Ashr { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Lshr { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Icmp { mode, a, b } => write!(f, "{m} {mode} {a} {b}"),
             Inst::Load { addr } => write!(f, "{m} [{}]", addr),
             Inst::Store { addr, val } => write!(f, "{m} {val} [{addr}]"),
-            Inst::Zext { val } | 
-            Inst::Sext { val } | 
-            Inst::Truncate { val } => write!(f, "{m} {val}"),
+            Inst::IntegerCast { v } => write!(f, "{m} {v}"),
             Inst::StackAddr { slot } => write!(f, "{m} ss{}", slot.0),
-            Inst::CompareInt { a, b, mode } => {
-                todo!()
-            },
-            Inst::CompareFloat { a, b, mode } => {
-                todo!()
-            },
+            Inst::CompareInt { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
+            Inst::CompareFloat { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
+            Inst::Select { cond, x, y } => write!(f, "{m} {cond} {x} {y}"),
             Inst::BranchIf { cond, con, alt } => write!(f, "{m} {cond} b{} b{}", con.0, alt.0),
             Inst::Return { values } => {
                 write!(f, "ret ")?;
@@ -652,11 +741,21 @@ impl std::fmt::Display for Inst {
                 }
                 write!(f, ")")
             },
-            Inst::CallIndirect { callee_sig, arguments } => {
-                todo!("write indirect call inst formatter")
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } => {
+                write!(f, "call_indirect ({func_ptr})(")?;
+                for (idx, argument) in arguments.iter().enumerate() {
+                    write!(f, "{argument}")?;
+                    if idx + 1 < arguments.len() {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ")")
             },
             Inst::FuncAddr { func } => {
                 write!(f, "{m} f{}", func.0)
+            },
+            Inst::DataAddr { data } => {
+                write!(f, "{m} d{}", data.0)
             }
         }
     }
