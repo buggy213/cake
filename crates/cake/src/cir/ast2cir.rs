@@ -262,13 +262,74 @@ fn lower_expr(
             func_builder.insert().store(location, rhs_value);
             rhs_value
         }
-        TypedExpressionNode::AugmentedAssign(ctype, expr_ref, expr_ref1) => todo!(),
+        TypedExpressionNode::AugmentedAssign(ctype, expr_ref, expr_ref1) => {
+            let lhs = lower_lvalue(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+
+            func_builder.insert().load(lhs, ty)
+
+            todo!();
+        }
         TypedExpressionNode::PostAugmentedAssign(ctype, expr_ref, expr_ref1) => todo!(),
-        TypedExpressionNode::Ternary(ctype, expr_ref, expr_ref1, expr_ref2) => todo!(),
+        TypedExpressionNode::Ternary(ctype, expr_ref, expr_ref1, expr_ref2) => {
+            let cond = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let x = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let y = lower_expr(ast, *expr_ref2, func_builder, stack_frame);
+
+            func_builder.insert().select(cond, x, y)
+        }
         TypedExpressionNode::LogicalAnd(ctype, expr_ref, expr_ref1) => {
-            todo!("short circuit eval")
+            let ty: Type = ctype.as_basic().unwrap().into();
+            let early_exit = func_builder.add_block();
+            let eval_rhs = func_builder.add_block();
+            let footer = func_builder.add_block();
+
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let zero = func_builder.insert().iconst_trunc(lhs, 0);
+            let one = func_builder.insert().iconst_trunc(lhs, 1);
+            let lhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, lhs, zero);
+            func_builder.insert().brif(lhs_is_zero, early_exit, &[], eval_rhs, &[]);
+
+            func_builder.set_block(early_exit);
+            func_builder.insert().jmp(footer, &[zero]);
+
+            func_builder.set_block(eval_rhs);
+            let rhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero);
+            let result = func_builder.insert().select(rhs_is_zero, zero, one);
+            func_builder.insert().jmp(footer, &[result]);
+
+            func_builder.set_block(footer);
+            let phi_result = func_builder.add_block_arg(ty);
+
+            phi_result
         },
-        TypedExpressionNode::LogicalOr(ctype, expr_ref, expr_ref1) => todo!(),
+        TypedExpressionNode::LogicalOr(ctype, expr_ref, expr_ref1) => {
+            let ty: Type = ctype.as_basic().unwrap().into();
+            let early_exit = func_builder.add_block();
+            let eval_rhs = func_builder.add_block();
+            let footer = func_builder.add_block();
+
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let zero = func_builder.insert().iconst_trunc(lhs, 0);
+            let one = func_builder.insert().iconst_trunc(lhs, 1);
+            let lhs_is_one = func_builder.insert().icmp(CompareMode::Equal, lhs, one);
+            func_builder.insert().brif(lhs_is_one, early_exit, &[], eval_rhs, &[]);
+
+            func_builder.set_block(early_exit);
+            func_builder.insert().jmp(footer, &[one]);
+
+            func_builder.set_block(eval_rhs);
+            let rhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero);
+            let result = func_builder.insert().select(rhs_is_zero, zero, one);
+            func_builder.insert().jmp(footer, &[result]);
+
+            func_builder.set_block(footer);
+            let phi_result = func_builder.add_block_arg(ty);
+
+            phi_result
+        },
         TypedExpressionNode::BitwiseAnd(ctype, expr_ref, expr_ref1) => {
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
@@ -413,8 +474,6 @@ fn lower_expr(
             func_builder.insert().select(cmp, one, zero)
         },
         TypedExpressionNode::DirectFunctionCall(result_type, function, arguments) => {
-            // let func_id = self.function_refs[*function];
-            
             let arg_range: Range<usize> = (*arguments).into();
             let mut arg_values = Vec::with_capacity(arg_range.len());
             let arg_range = &ast.expr_indices[arg_range];

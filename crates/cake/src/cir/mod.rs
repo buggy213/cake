@@ -227,6 +227,13 @@ impl<'func> FunctionBuilder<'func> {
         self.current_block = block;
     }
 
+    pub(crate) fn add_block_arg(&mut self, ty: Type) -> Value {
+        let block_args = &mut self.func.blocks[self.current_block].block_args;
+        let block_arg_idx = block_args.len();
+        block_args.push(ty);
+        Value::BlockArgument(block_arg_idx as u32)
+    }
+
     pub(crate) fn insert(&'_ mut self) -> BlockBuilder<'_> {
         BlockBuilder {
             block: &mut self.func.blocks[self.current_block],
@@ -480,6 +487,14 @@ impl<'block> BlockBuilder<'block> {
         self.inst_types.push(SmallVec::from_slice(&callee_sig.return_types));
 
         v
+    }
+
+    pub(crate) fn jmp(&mut self, target: BlockRef, arg_values: &[Value]) {
+        let arg_values = ValueVecRef::from_push(self.value_vecs, arg_values.to_smallvec());
+        let jmp = Inst::Jump { target, arguments: arg_values };
+        let iref = InstRef::from_push(self.insts, jmp);
+        self.block.inst_refs.push(iref);
+        self.inst_types.push(smallvec![]);
     }
 
     pub(crate) fn data_addr(&mut self, data_ref: DataRef) -> Value {
