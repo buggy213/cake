@@ -1,4 +1,5 @@
 use cake_util::{add_additional_index, make_type_idx};
+use smallvec::{SmallVec, ToSmallVec, smallvec};
 
 #[derive(Debug)]
 pub(crate) struct Module {
@@ -46,7 +47,8 @@ impl Module {
         
         *definition = Some(FunctionDefinition { 
             insts: vec![], 
-            inst_types: vec![], 
+            inst_types: vec![],
+            value_vecs: vec![],
             blocks: vec![Block::new()], 
             stack_slots: vec![]
         });
@@ -146,6 +148,11 @@ impl Constant {
     }
 }
 
+type TypeVec = SmallVec<[Type; 4]>;
+type ValueVec = SmallVec<[Value; 8]>;
+
+make_type_idx!(ValueVecRef, ValueVec);
+
 make_type_idx!(SigRef, Signature);
 
 #[derive(Debug, Clone)]
@@ -176,7 +183,8 @@ pub(crate) struct Function {
 #[derive(Debug)]
 pub(crate) struct FunctionDefinition {
     pub(crate) insts: Vec<Inst>,
-    pub(crate) inst_types: Vec<Vec<Type>>,
+    pub(crate) inst_types: Vec<TypeVec>,
+    pub(crate) value_vecs: Vec<ValueVec>,
     pub(crate) blocks: Vec<Block>,
 
     pub(crate) stack_slots: Vec<StackSlot>,
@@ -224,6 +232,7 @@ impl<'func> FunctionBuilder<'func> {
             block: &mut self.func.blocks[self.current_block],
             insts: &mut self.func.insts,
             inst_types: &mut self.func.inst_types,
+            value_vecs: &mut self.func.value_vecs,
 
             sigs: self.sigs,
             module_sigs: self.module_sigs,
@@ -247,7 +256,8 @@ impl<'func> FunctionBuilder<'func> {
 pub(crate) struct BlockBuilder<'block> {
     block: &'block mut Block,
     insts: &'block mut Vec<Inst>,
-    inst_types: &'block mut Vec<Vec<Type>>,
+    inst_types: &'block mut Vec<TypeVec>,
+    value_vecs: &'block mut Vec<ValueVec>,
     
     sigs: &'block [Signature],
     module_sigs: &'block [Signature]
@@ -272,7 +282,7 @@ impl<'block> BlockBuilder<'block> {
         assert!(val.ty() == ty, "type mismatch while inserting constant");
 
         let constant = Inst::Constant { val };
-        self.inst_types.push(vec![ty]);
+        self.inst_types.push(smallvec![ty]);
         let iref = InstRef::from_push(self.insts, constant);
         self.block.inst_refs.push(iref);
         Value::Inst(iref)
@@ -316,7 +326,7 @@ impl<'block> BlockBuilder<'block> {
 
     pub(crate) fn stack_addr(&mut self, slot: StackSlotRef) -> Value {
         let op = Inst::StackAddr { slot };
-        self.inst_types.push(vec![Type::u64]);
+        self.inst_types.push(smallvec![Type::u64]);
         let iref = InstRef::from_push(self.insts, op);
         self.block.inst_refs.push(iref);
         Value::Inst(iref)
@@ -324,7 +334,7 @@ impl<'block> BlockBuilder<'block> {
 
     fn type_conversion(&mut self, val: Value, to: Type, op: fn(Value) -> Inst) -> Value {
         let op = op(val);
-        self.inst_types.push(vec![to]);
+        self.inst_types.push(smallvec![to]);
         let iref = InstRef::from_push(self.insts, op);
         self.block.inst_refs.push(iref);
         Value::Inst(iref)
@@ -339,8 +349,8 @@ impl<'block> BlockBuilder<'block> {
     fn copy_type(&mut self, from: Value) {
         let ty = match from {
             Value::Inst(inst_ref) => self.inst_types[inst_ref].clone(),
-            Value::BlockArgument(idx) => vec![self.block.block_args[idx as usize]],
-            Value::TupleElement(inst_ref, component) => vec![self.inst_types[inst_ref][component as usize]]
+            Value::BlockArgument(idx) => smallvec![self.block.block_args[idx as usize]],
+            Value::TupleElement(inst_ref, component) => smallvec![self.inst_types[inst_ref][component as usize]]
         };
 
         self.inst_types.push(ty);
@@ -401,7 +411,7 @@ impl<'block> BlockBuilder<'block> {
     pub(crate) fn icmp(&mut self, mode: CompareMode, a: Value, b: Value) -> Value {
         let icmp = Inst::Icmp { mode, a, b };
         let iref = InstRef::from_push(self.insts, icmp);
-        self.inst_types.push(vec![Type::i8]);
+        self.inst_types.push(smallvec![Type::i8]);
         self.block.inst_refs.push(iref);
         Value::Inst(iref)
     }
@@ -410,7 +420,7 @@ impl<'block> BlockBuilder<'block> {
         let load = Inst::Load { addr };
         let iref = InstRef::from_push(self.insts, load);
         self.block.inst_refs.push(iref);
-        self.inst_types.push(vec![ty]);
+        self.inst_types.push(smallvec![ty]);
         Value::Inst(iref)
     }
 
@@ -418,7 +428,7 @@ impl<'block> BlockBuilder<'block> {
         let store = Inst::Store { addr, val };
         let iref = InstRef::from_push(self.insts, store);
         self.block.inst_refs.push(iref);
-        self.inst_types.push(vec![]);
+        self.inst_types.push(smallvec![]);
     }
 
     pub(crate) fn select(&mut self, cond: Value, x: Value, y: Value) -> Value {
@@ -429,27 +439,45 @@ impl<'block> BlockBuilder<'block> {
         Value::Inst(iref) 
     }
 
-    pub(crate) fn brif(&mut self, cond: Value, con: BlockRef, alt: BlockRef) {
-        let brif = Inst::BranchIf { cond, con, alt };
+    pub(crate) fn brif(
+        &mut self, 
+        cond: Value, 
+        con: BlockRef,
+        con_args: &[Value],
+        alt: BlockRef,
+        alt_args: &[Value]
+    ) {
+        let con_args = ValueVecRef::from_push(self.value_vecs, con_args.to_smallvec());
+        let alt_args = ValueVecRef::from_push(self.value_vecs, alt_args.to_smallvec());
+
+        let brif = Inst::BranchIf { 
+            cond, 
+            con, 
+            con_args,
+            alt,
+            alt_args
+        };
         let iref = InstRef::from_push(self.insts, brif);
         self.block.inst_refs.push(iref);
-        self.inst_types.push(vec![]);
+        self.inst_types.push(smallvec![]);
     }
 
     pub(crate) fn ret(&mut self, values: &[Value]) {
-        let ret = Inst::Return { values: values.to_vec() };
+        let values = ValueVecRef::from_push(self.value_vecs, values.to_smallvec());
+        let ret = Inst::Return { values };
         let v = InstRef::from_push(self.insts, ret);
         self.block.inst_refs.push(v);
-        self.inst_types.push(vec![]);
+        self.inst_types.push(smallvec![]);
     }
 
     pub(crate) fn call(&mut self, func_ref: FuncRef, arg_values: &[Value]) -> InstRef {
-        let call = Inst::Call { func: func_ref, arguments: arg_values.to_vec() };
+        let arg_values = ValueVecRef::from_push(self.value_vecs, arg_values.to_smallvec());
+        let call = Inst::Call { func: func_ref, arguments: arg_values };
         let v = InstRef::from_push(self.insts, call);
 
         let callee_sig = &self.module_sigs[func_ref.get_inner()];
         self.block.inst_refs.push(v);
-        self.inst_types.push(callee_sig.return_types.clone());
+        self.inst_types.push(SmallVec::from_slice(&callee_sig.return_types));
 
         v
     }
@@ -458,7 +486,7 @@ impl<'block> BlockBuilder<'block> {
         let data_addr = Inst::DataAddr { data: data_ref };
         let iref = InstRef::from_push(self.insts, data_addr);
         self.block.inst_refs.push(iref);
-        self.inst_types.push(vec![Type::u64 /* TODO: ptrtype */]);
+        self.inst_types.push(smallvec![Type::u64 /* TODO: ptrtype */]);
         Value::Inst(iref)
     }
 }
@@ -488,7 +516,7 @@ pub(crate) enum Value {
 }
 
 make_type_idx!(InstRef, Inst);
-add_additional_index!(InstRef, Vec<Type>);
+add_additional_index!(InstRef, TypeVec);
 
 #[derive(Debug)]
 pub(crate) enum Inst {
@@ -581,25 +609,28 @@ pub(crate) enum Inst {
     BranchIf {
         cond: Value,
         con: BlockRef,
+        con_args: ValueVecRef,
         alt: BlockRef,
+        alt_args: ValueVecRef,
     },
 
     Return {
-        values: Vec<Value>,
+        values: ValueVecRef,
     },
 
     Jump {
         target: BlockRef,
+        arguments: ValueVecRef,
     },
 
     Call {
         func: FuncRef,
-        arguments: Vec<Value>,        
+        arguments: ValueVecRef,        
     },
     CallIndirect {
         callee_sig: SigRef,
         func_ptr: Value,
-        arguments: Vec<Value>
+        arguments: ValueVecRef
     },
 
     FuncAddr {
@@ -633,9 +664,9 @@ impl Inst {
             Inst::CompareInt { a, b, mode } => "icmp",
             Inst::CompareFloat { a, b, mode } => "fcmp",
             Inst::Select { cond, x, y } => "select",
-            Inst::BranchIf { cond, con, alt } => "brif",
+            Inst::BranchIf { cond, con, con_args, alt, alt_args } => "brif",
             Inst::Return { values} => "ret",
-            Inst::Jump { target } => "jmp",
+            Inst::Jump { target, arguments } => "jmp",
             Inst::Call { func, arguments } => "call",
             Inst::CallIndirect { callee_sig, func_ptr, arguments } => "call_indirect",
             Inst::FuncAddr { func } => "func_addr",
@@ -686,10 +717,15 @@ impl std::fmt::Display for Value {
     }
 }
 
-impl std::fmt::Display for Inst {
+// to print out an Inst properly, we need additional context 
+// (block argument lists are "outlined" to small vectors held by FunctionDefinition)
+struct DisplayInst<'inst>(&'inst Inst, &'inst FunctionDefinition);
+
+impl std::fmt::Display for DisplayInst<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let m = self.mnemonic();
-        match self {
+        let DisplayInst(i, FunctionDefinition { value_vecs, ..}) = self;
+        let m = i.mnemonic();
+        match i {
             Inst::Constant { val } => write!(f, "{m} {val}"),
             Inst::Add { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Sub { a, b } => write!(f, "{m} {a} {b}"),
@@ -710,8 +746,11 @@ impl std::fmt::Display for Inst {
             Inst::CompareInt { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
             Inst::CompareFloat { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
             Inst::Select { cond, x, y } => write!(f, "{m} {cond} {x} {y}"),
-            Inst::BranchIf { cond, con, alt } => write!(f, "{m} {cond} b{} b{}", con.0, alt.0),
+            Inst::BranchIf { cond, con, con_args, alt, alt_args } => {
+                write!(f, "{m} {cond} b{} b{}", con.0, alt.0)
+            },
             Inst::Return { values } => {
+                let values = &value_vecs[*values];
                 write!(f, "ret ")?;
                 if values.len() > 1 {
                     write!(f, "(")?;
@@ -728,10 +767,12 @@ impl std::fmt::Display for Inst {
 
                 Ok(())
             },
-            Inst::Jump { target } => {
+            Inst::Jump { target, arguments } => {
+                let arguments = &value_vecs[*arguments];
                 write!(f, "{m} b{}", target.0)
             },
             Inst::Call { func, arguments } => {
+                let arguments = &value_vecs[*arguments];
                 write!(f, "call f{}(", func.0)?;
                 for (idx, argument) in arguments.iter().enumerate() {
                     write!(f, "{argument}")?;
@@ -742,6 +783,7 @@ impl std::fmt::Display for Inst {
                 write!(f, ")")
             },
             Inst::CallIndirect { callee_sig, func_ptr, arguments } => {
+                let arguments = &value_vecs[*arguments];
                 write!(f, "call_indirect ({func_ptr})(")?;
                 for (idx, argument) in arguments.iter().enumerate() {
                     write!(f, "{argument}")?;
@@ -847,16 +889,16 @@ impl std::fmt::Display for Function {
                             write!(f, ", ")?;
                         }
                     }
-                    write!(f, ") = {}", &defn.insts[iref])?;
+                    write!(f, ") = {}", DisplayInst(&defn.insts[iref], defn))?;
 
                 } 
                 else if let Some(value_ty) = iref_types.first() {
                     write!(f, "  ")?;
-                    writeln!(f, "v{} : {} = {}", iref.0, value_ty, &defn.insts[iref])?;
+                    writeln!(f, "v{} : {} = {}", iref.0, value_ty, DisplayInst(&defn.insts[iref], defn))?;
                 }
                 else {
                     write!(f, "  ")?;
-                    writeln!(f, "{}", &defn.insts[iref])?;
+                    writeln!(f, "{}", DisplayInst(&defn.insts[iref], defn))?;
                 }
             }
         }

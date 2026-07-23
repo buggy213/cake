@@ -460,7 +460,9 @@ fn lower_expr(
             func_builder.insert()
                 .load(location, cir_type)
         },
-        TypedExpressionNode::FunctionIdentifier(ctype, function_idx) => todo!(),
+        TypedExpressionNode::FunctionIdentifier(ctype, function_idx) => {
+            todo!()
+        }
         TypedExpressionNode::Constant(ctype, constant) => match *constant {
             ast::Constant::Int(v) => func_builder.insert().const_i32(v),
             ast::Constant::LongInt(v) => func_builder.insert().const_i64(v),
