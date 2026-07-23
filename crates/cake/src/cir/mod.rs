@@ -725,6 +725,16 @@ impl std::fmt::Display for DisplayInst<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let DisplayInst(i, FunctionDefinition { value_vecs, ..}) = self;
         let m = i.mnemonic();
+        let write_values = |f: &mut std::fmt::Formatter<'_>, values: &[Value]| -> std::fmt::Result {
+            for (idx, val) in values.iter().enumerate() {
+                write!(f, "{val}")?;
+                if idx + 1 < values.len() {
+                    write!(f, ", ")?;
+                } 
+            }
+
+            Ok(())
+        };
         match i {
             Inst::Constant { val } => write!(f, "{m} {val}"),
             Inst::Add { a, b } => write!(f, "{m} {a} {b}"),
@@ -746,8 +756,16 @@ impl std::fmt::Display for DisplayInst<'_> {
             Inst::CompareInt { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
             Inst::CompareFloat { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
             Inst::Select { cond, x, y } => write!(f, "{m} {cond} {x} {y}"),
-            Inst::BranchIf { cond, con, con_args, alt, alt_args } => {
-                write!(f, "{m} {cond} b{} b{}", con.0, alt.0)
+            Inst::BranchIf { cond, con, con_args, alt, alt_args } => {      
+                write!(f, "{m} {cond}")?;
+                let mut write_block_call = |block: BlockRef, args: ValueVecRef| -> std::fmt::Result {
+                    let args = &value_vecs[args];
+                    write!(f, "b{}(", block.0)?;
+                    write_values(f, args)?; 
+                    write!(f, ")")
+                };
+                write_block_call(*con, *con_args)?;
+                write_block_call(*alt, *alt_args)
             },
             Inst::Return { values } => {
                 let values = &value_vecs[*values];
@@ -755,12 +773,7 @@ impl std::fmt::Display for DisplayInst<'_> {
                 if values.len() > 1 {
                     write!(f, "(")?;
                 }
-                for (idx, v) in values.iter().enumerate() {
-                    write!(f, "{v}")?;
-                    if idx + 1 < values.len() {
-                        write!(f, ", ")?;
-                    }
-                }
+                write_values(f, values)?;
                 if values.len() > 1 {
                     write!(f, ")")?;
                 }
@@ -769,28 +782,20 @@ impl std::fmt::Display for DisplayInst<'_> {
             },
             Inst::Jump { target, arguments } => {
                 let arguments = &value_vecs[*arguments];
-                write!(f, "{m} b{}", target.0)
+                write!(f, "{m} b{}(", target.0)?;
+                write_values(f, arguments)?;
+                write!(f, ")")
             },
             Inst::Call { func, arguments } => {
                 let arguments = &value_vecs[*arguments];
                 write!(f, "call f{}(", func.0)?;
-                for (idx, argument) in arguments.iter().enumerate() {
-                    write!(f, "{argument}")?;
-                    if idx + 1 < arguments.len() {
-                        write!(f, ", ")?;
-                    }
-                }
+                write_values(f, arguments)?;
                 write!(f, ")")
             },
             Inst::CallIndirect { callee_sig, func_ptr, arguments } => {
                 let arguments = &value_vecs[*arguments];
                 write!(f, "call_indirect ({func_ptr})(")?;
-                for (idx, argument) in arguments.iter().enumerate() {
-                    write!(f, "{argument}")?;
-                    if idx + 1 < arguments.len() {
-                        write!(f, ", ")?;
-                    }
-                }
+                write_values(f, arguments)?;
                 write!(f, ")")
             },
             Inst::FuncAddr { func } => {
