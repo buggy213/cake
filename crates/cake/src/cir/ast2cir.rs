@@ -1,5 +1,7 @@
 use std::{mem::MaybeUninit, ops::Range, str::FromStr};
 
+use rustc_hash::FxHashMap;
+
 use crate::{
     cir::{CompareMode, FuncRef, FunctionBuilder, Module, Signature, StackSlotRef, Type, Value}, parser::ast, semantics::{
         resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
@@ -77,7 +79,15 @@ fn create_frame(
     }
 }
 
+struct LowerFunctionContext {
+    expr_ref_to_value: FxHashMap<ExprRef, Value>
+}
 
+impl LowerFunctionContext {
+    fn new() -> Self {
+        LowerFunctionContext { expr_ref_to_value: FxHashMap::default() }
+    }
+}
 
 pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
     let Some(ResolvedASTNode::TranslationUnit { children }) = ast.nodes.first() else {
@@ -143,9 +153,10 @@ fn lower_function_body(
         panic!("corrupted ast")
     };
 
+    let mut lower_fn_ctx = LowerFunctionContext::new();
     let (start, end) = (stmts.0 as usize, stmts.1 as usize);
     for &stmt_ref in &ast.ast_indices[start..end] {
-        lower_stmt(ast, stmt_ref, func_builder, stack_frame);
+        lower_stmt(ast, stmt_ref, func_builder, stack_frame, &mut lower_fn_ctx);
     }
 }
 
@@ -154,6 +165,7 @@ fn lower_stmt(
     stmt: NodeRef,
     func_builder: &mut FunctionBuilder,
     stack_frame: &Frame,
+    lower_fn_ctx: &mut LowerFunctionContext
 ) {
     let stmt_node = &ast.nodes[stmt.0 as usize];
     match stmt_node {
@@ -174,11 +186,11 @@ fn lower_stmt(
         ResolvedASTNode::CompoundStatement { parent, stmts } => {
             let (start, end) = (stmts.0 as usize, stmts.1 as usize);
             for &stmt_ref in &ast.ast_indices[start..end] {
-                lower_stmt(ast, stmt_ref, func_builder, stack_frame);
+                lower_stmt(ast, stmt_ref, func_builder, stack_frame, lower_fn_ctx);
             }
         }
         ResolvedASTNode::ExpressionStatement { parent, expr } => {
-            lower_expr(ast, *expr, func_builder, stack_frame);
+            lower_expr(ast, *expr, func_builder, stack_frame, lower_fn_ctx);
         }
         ResolvedASTNode::IfStatement {
             parent,
@@ -216,7 +228,7 @@ fn lower_stmt(
             parent,
             return_value,
         } => {
-            let return_value = return_value.map(|e| lower_expr(ast, e, func_builder, stack_frame));
+            let return_value = return_value.map(|e| lower_expr(ast, e, func_builder, stack_frame, lower_fn_ctx));
             func_builder.insert().ret(return_value.as_slice());
         }
         ResolvedASTNode::Initializer {
@@ -237,19 +249,20 @@ fn lower_expr(
     expr: ExprRef,
     func_builder: &mut FunctionBuilder,
     stack_frame: &Frame,
+    lower_fn_ctx: &mut LowerFunctionContext
 ) -> Value {
     use crate::semantics::resolved_ast::TypedExpressionNode;
     let expr_node = &ast.exprs[expr];
     let lower_binary_expr = |lhs: ExprRef, rhs: ExprRef, op: fn(Value, Value) -> Value| {
-        let lhs = lower_expr(ast, lhs, func_builder, stack_frame);
-        let rhs = lower_expr(ast, rhs, func_builder, stack_frame);
+        let lhs = lower_expr(ast, lhs, func_builder, stack_frame, lower_fn_ctx);
+        let rhs = lower_expr(ast, rhs, func_builder, stack_frame, lower_fn_ctx);
         op(lhs, rhs)
     };
-    match expr_node {
+    let value = match expr_node {
         TypedExpressionNode::CommaExpr(ctype, expr_range_ref) => todo!(),
         TypedExpressionNode::SimpleAssign(ctype, lhs, rhs) => {
             let location = lower_lvalue(ast, *lhs, func_builder, stack_frame);
-            let rhs_value = lower_expr(ast, *rhs, func_builder, stack_frame);
+            let rhs_value = lower_expr(ast, *rhs, func_builder, stack_frame, lower_fn_ctx);
 
             assert!(
                 matches!(
@@ -263,18 +276,17 @@ fn lower_expr(
             rhs_value
         }
         TypedExpressionNode::AugmentedAssign(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_lvalue(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let operation = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
+            
 
-            func_builder.insert().load(lhs, ty)
 
             todo!();
         }
         TypedExpressionNode::PostAugmentedAssign(ctype, expr_ref, expr_ref1) => todo!(),
         TypedExpressionNode::Ternary(ctype, expr_ref, expr_ref1, expr_ref2) => {
-            let cond = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let x = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
-            let y = lower_expr(ast, *expr_ref2, func_builder, stack_frame);
+            let cond = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let x = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
+            let y = lower_expr(ast, *expr_ref2, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().select(cond, x, y)
         }
@@ -284,7 +296,7 @@ fn lower_expr(
             let eval_rhs = func_builder.add_block();
             let footer = func_builder.add_block();
 
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let zero = func_builder.insert().iconst_trunc(lhs, 0);
             let one = func_builder.insert().iconst_trunc(lhs, 1);
             let lhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, lhs, zero);
@@ -294,7 +306,7 @@ fn lower_expr(
             func_builder.insert().jmp(footer, &[zero]);
 
             func_builder.set_block(eval_rhs);
-            let rhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero);
             let result = func_builder.insert().select(rhs_is_zero, zero, one);
             func_builder.insert().jmp(footer, &[result]);
@@ -310,7 +322,7 @@ fn lower_expr(
             let eval_rhs = func_builder.add_block();
             let footer = func_builder.add_block();
 
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let zero = func_builder.insert().iconst_trunc(lhs, 0);
             let one = func_builder.insert().iconst_trunc(lhs, 1);
             let lhs_is_one = func_builder.insert().icmp(CompareMode::Equal, lhs, one);
@@ -320,7 +332,7 @@ fn lower_expr(
             func_builder.insert().jmp(footer, &[one]);
 
             func_builder.set_block(eval_rhs);
-            let rhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let rhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero);
             let result = func_builder.insert().select(rhs_is_zero, zero, one);
             func_builder.insert().jmp(footer, &[result]);
@@ -331,71 +343,71 @@ fn lower_expr(
             phi_result
         },
         TypedExpressionNode::BitwiseAnd(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().and(lhs, rhs)
         },
 
         TypedExpressionNode::BitwiseOr(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().or(lhs, rhs)
         },
 
         TypedExpressionNode::BitwiseXor(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().xor(lhs, rhs)
         },
 
         TypedExpressionNode::Equal(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().icmp(CompareMode::Equal, lhs, rhs)
         },
         TypedExpressionNode::NotEqual(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().icmp(CompareMode::NotEqual, lhs, rhs) 
         },
         TypedExpressionNode::LessThan(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().icmp(CompareMode::LessThan, lhs, rhs) 
         },
         TypedExpressionNode::GreaterThan(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().icmp(CompareMode::GreaterThan, lhs, rhs) 
         },
         TypedExpressionNode::LessThanOrEqual(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().icmp(CompareMode::LessThanOrEqual, lhs, rhs) 
         }
         TypedExpressionNode::GreaterThanOrEqual(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().icmp(CompareMode::GreaterThanOrEqual, lhs, rhs) 
         }
         TypedExpressionNode::LShift(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().shl(lhs, rhs)
         },
         TypedExpressionNode::RShift(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             let lhs_ty = ast.exprs[*expr_ref1].expr_type().as_basic().unwrap();
             if lhs_ty.is_signed() {
@@ -406,32 +418,32 @@ fn lower_expr(
             }
         },
         TypedExpressionNode::Multiply(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().mul(lhs, rhs)
         }
         TypedExpressionNode::Divide(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().div(lhs, rhs)
         }
         TypedExpressionNode::Modulo(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().modulo(lhs, rhs)
         }
         TypedExpressionNode::Add(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().add(lhs, rhs)
         }
         TypedExpressionNode::Subtract(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
 
             func_builder.insert().add(lhs, rhs)
         }
@@ -441,8 +453,8 @@ fn lower_expr(
                 "pointer arithmetic requires pointer type"
             );
 
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame);
+            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
             let sizeof_object = ctype.as_pointee().unwrap().size(todo!("plumb in layouts"));
             let sizeof_object_val = func_builder.insert().const_u64(sizeof_object as u64);
             
@@ -460,13 +472,13 @@ fn lower_expr(
         TypedExpressionNode::UnaryPlus(ctype, expr_ref) => todo!(),
         TypedExpressionNode::UnaryMinus(ctype, expr_ref) => todo!(),
         TypedExpressionNode::BitwiseNot(ctype, expr_ref) => {
-            let val = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let val = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let ones = func_builder.insert().iconst_trunc(val, u64::MAX);
 
             func_builder.insert().xor(val, ones)
         }
         TypedExpressionNode::Not(ctype, expr_ref) => {
-            let val = lower_expr(ast, *expr_ref, func_builder, stack_frame);
+            let val = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let zero = func_builder.insert().iconst_trunc(val, 0);
             let one = func_builder.insert().iconst_trunc(val, 1);
             let cmp = func_builder.insert().icmp(CompareMode::Equal, val, zero);
@@ -482,7 +494,8 @@ fn lower_expr(
                     ast,
                     arg_expr,
                     func_builder,
-                    stack_frame
+                    stack_frame,
+                    lower_fn_ctx
                 );
                 arg_values.push(arg_value);
             }
@@ -541,7 +554,10 @@ fn lower_expr(
             func_builder.define_data(id, cstr);
             func_builder.insert().data_addr(id)
         },
-    }
+    };
+
+    lower_fn_ctx.expr_ref_to_value.insert(expr, value);
+    value
 }
 
 fn lower_lvalue(

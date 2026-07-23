@@ -231,7 +231,7 @@ impl<'func> FunctionBuilder<'func> {
         let block_args = &mut self.func.blocks[self.current_block].block_args;
         let block_arg_idx = block_args.len();
         block_args.push(ty);
-        Value::BlockArgument(block_arg_idx as u32)
+        Value::BlockArgument(self.current_block, block_arg_idx as u32)
     }
 
     pub(crate) fn insert(&'_ mut self) -> BlockBuilder<'_> {
@@ -276,7 +276,7 @@ impl<'block> BlockBuilder<'block> {
             Value::Inst(inst_ref) => {
                 self.inst_types[inst_ref][0]
             },
-            Value::BlockArgument(idx) => {
+            Value::BlockArgument(block_ref, idx) => {
                 self.block.block_args[idx as usize]
             },
             Value::TupleElement(inst_ref, idx) => {
@@ -356,7 +356,7 @@ impl<'block> BlockBuilder<'block> {
     fn copy_type(&mut self, from: Value) {
         let ty = match from {
             Value::Inst(inst_ref) => self.inst_types[inst_ref].clone(),
-            Value::BlockArgument(idx) => smallvec![self.block.block_args[idx as usize]],
+            Value::BlockArgument(block_ref, idx) => smallvec![self.block.block_args[idx as usize]],
             Value::TupleElement(inst_ref, component) => smallvec![self.inst_types[inst_ref][component as usize]]
         };
 
@@ -526,7 +526,7 @@ impl Block {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Value {
     Inst(InstRef),
-    BlockArgument(u32),
+    BlockArgument(BlockRef, u32),
     TupleElement(InstRef, u32)
 }
 
@@ -726,7 +726,7 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Inst(inst_ref) => write!(f, "v{}", inst_ref.0),
-            Value::BlockArgument(idx) => write!(f, "p{}", *idx),
+            Value::BlockArgument(block_ref, idx) => write!(f, "p{}", *idx),
             Value::TupleElement(inst_ref, component) => write!(f, "v{}.{}", inst_ref.0, component)
         }
     }
