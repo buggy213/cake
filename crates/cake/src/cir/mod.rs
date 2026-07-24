@@ -313,6 +313,13 @@ impl<'block> BlockBuilder<'block> {
         self.constant(Type::i64, Constant::i64(val))
     }
 
+    pub(crate) fn const_f32(&mut self, val: f32) -> Value {
+        self.constant(Type::f32, Constant::f32(val))
+    }
+    pub(crate) fn const_f64(&mut self, val: f64) -> Value {
+        self.constant(Type::f64, Constant::f64(val))
+    }
+
     // creates a compatible constant from a u64 by truncating
     pub(crate) fn iconst_trunc(&mut self, val: Value, c: u64) -> Value {
         let ty = self.type_of(val);
@@ -425,6 +432,30 @@ impl<'block> BlockBuilder<'block> {
         Value::Inst(iref)
     }
 
+    pub(crate) fn fadd(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Fadd { a, b })
+    }
+
+    pub(crate) fn fsub(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Fsub { a, b })
+    }
+
+    pub(crate) fn fmul(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Fmul { a, b })
+    }
+
+    pub(crate) fn fdiv(&mut self, a: Value, b: Value) -> Value {
+        self.binary_op(a, b, |a, b| Inst::Fdiv { a, b })
+    }
+
+    pub(crate) fn fcmp(&mut self, mode: CompareMode, a: Value, b: Value) -> Value {
+        let fcmp = Inst::Fcmp { mode, a, b };
+        let iref = InstRef::from_push(self.insts, fcmp);
+        self.inst_types.push(smallvec![Type::i8]);
+        self.block.inst_refs.borrow_mut().push(iref);
+        Value::Inst(iref)
+    }
+
     pub(crate) fn load(&mut self, addr: Value, ty: Type) -> Value {
         let load = Inst::Load { addr };
         let iref = InstRef::from_push(self.insts, load);
@@ -502,6 +533,14 @@ impl<'block> BlockBuilder<'block> {
     pub(crate) fn data_addr(&mut self, data_ref: DataRef) -> Value {
         let data_addr = Inst::DataAddr { data: data_ref };
         let iref = InstRef::from_push(self.insts, data_addr);
+        self.block.inst_refs.borrow_mut().push(iref);
+        self.inst_types.push(smallvec![Type::u64 /* TODO: ptrtype */]);
+        Value::Inst(iref)
+    }
+
+    pub(crate) fn func_addr(&mut self, func_ref: FuncRef) -> Value {
+        let func_addr = Inst::FuncAddr { func: func_ref };
+        let iref = InstRef::from_push(self.insts, func_addr);
         self.block.inst_refs.borrow_mut().push(iref);
         self.inst_types.push(smallvec![Type::u64 /* TODO: ptrtype */]);
         Value::Inst(iref)
@@ -590,6 +629,28 @@ pub(crate) enum Inst {
         a: Value,
         b: Value
     },
+    
+    Fadd {
+        a: Value,
+        b: Value
+    },
+    Fsub {
+        a: Value,
+        b: Value
+    },
+    Fmul {
+        a: Value,
+        b: Value
+    },
+    Fdiv {
+        a: Value,
+        b: Value,
+    },
+    Fcmp {
+        mode: CompareMode,
+        a: Value,
+        b: Value
+    },
 
     Load {
         addr: Value,
@@ -661,33 +722,38 @@ pub(crate) enum Inst {
 impl Inst {
     pub(crate) fn mnemonic(&self) -> &str {
         match self {
-            Inst::Constant { val } => "const",
-            Inst::Add { a, b } => "add",
-            Inst::Sub { a, b } => "sub",
-            Inst::Mul { a, b } => "mul",
-            Inst::Div { a, b } => "div",
-            Inst::Modulo { a, b } => "modulo",
-            Inst::And { a, b } => "and",
-            Inst::Or { a, b } => "or",
-            Inst::Xor { a, b } => "xor",
-            Inst::Shl { a, b } => "shl",
-            Inst::Ashr { a, b } => "ashr",
-            Inst::Lshr { a, b } => "lshr",
-            Inst::Icmp { mode, a, b } => "icmp",
-            Inst::Load { addr } => "load",
-            Inst::Store { addr, val } => "store",
-            Inst::StackAddr { slot } => "stack_addr",
-            Inst::IntegerCast { v } => "icast",
-            Inst::CompareInt { a, b, mode } => "icmp",
-            Inst::CompareFloat { a, b, mode } => "fcmp",
-            Inst::Select { cond, x, y } => "select",
-            Inst::BranchIf { cond, con, con_args, alt, alt_args } => "brif",
-            Inst::Return { values} => "ret",
-            Inst::Jump { target, arguments } => "jmp",
-            Inst::Call { func, arguments } => "call",
-            Inst::CallIndirect { callee_sig, func_ptr, arguments } => "call_indirect",
-            Inst::FuncAddr { func } => "func_addr",
-            Inst::DataAddr { data } => "data_addr",
+            Inst::Constant { .. } => "const",
+            Inst::Add { .. } => "add",
+            Inst::Sub { .. } => "sub",
+            Inst::Mul { .. } => "mul",
+            Inst::Div { .. } => "div",
+            Inst::Modulo { .. } => "modulo",
+            Inst::And { .. } => "and",
+            Inst::Or { .. } => "or",
+            Inst::Xor { .. } => "xor",
+            Inst::Shl { .. } => "shl",
+            Inst::Ashr { .. } => "ashr",
+            Inst::Lshr { .. } => "lshr",
+            Inst::Icmp { .. } => "icmp",
+            Inst::Fadd { .. } => "fadd",
+            Inst::Fsub { .. } => "fsub",
+            Inst::Fmul { .. } => "fmul",
+            Inst::Fdiv { .. } => "fdiv",
+            Inst::Fcmp { .. } => "fcmp",
+            Inst::Load { .. } => "load",
+            Inst::Store { .. } => "store",
+            Inst::StackAddr { .. } => "stack_addr",
+            Inst::IntegerCast { .. } => "icast",
+            Inst::CompareInt { .. } => "icmp",
+            Inst::CompareFloat { .. } => "fcmp",
+            Inst::Select { .. } => "select",
+            Inst::BranchIf { .. } => "brif",
+            Inst::Return { .. } => "ret",
+            Inst::Jump { .. } => "jmp",
+            Inst::Call { .. } => "call",
+            Inst::CallIndirect { .. } => "call_indirect",
+            Inst::FuncAddr { .. } => "func_addr",
+            Inst::DataAddr { .. } => "data_addr",
         }
     }
 }
@@ -768,6 +834,11 @@ impl std::fmt::Display for DisplayInst<'_> {
             Inst::Ashr { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Lshr { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Icmp { mode, a, b } => write!(f, "{m} {mode} {a} {b}"),
+            Inst::Fadd { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Fsub { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Fmul { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Fdiv { a, b } => write!(f, "{m} {a} {b}"),
+            Inst::Fcmp { mode, a, b } => write!(f, "{m} {mode} {a} {b}"), 
             Inst::Load { addr } => write!(f, "{m} [{}]", addr),
             Inst::Store { addr, val } => write!(f, "{m} {val} [{addr}]"),
             Inst::IntegerCast { v } => write!(f, "{m} {v}"),
