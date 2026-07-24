@@ -195,7 +195,7 @@ impl ParserState {
     }
 
     fn open_scope(&mut self, scope_type: ScopeType) {
-        let new_scope = Scope::new(scope_type, self.current_scope.index, self.scopes.len());
+        let new_scope = Scope::new(scope_type, self.current_scope.index as usize, self.scopes.len());
         self.scopes.push(new_scope);
         self.typedefs.push(Default::default());
         self.current_scope = new_scope;
@@ -206,7 +206,7 @@ impl ParserState {
             .current_scope
             .parent_scope
             .ok_or(ParseError::ClosedFileScope)?;
-        self.current_scope = self.scopes[parent_index];
+        self.current_scope = self.scopes[parent_index as usize];
 
         Ok(())
     }
@@ -232,7 +232,7 @@ impl ParserState {
             return Err(ParseError::RedeclaredTypedef.into());
         }
 
-        self.typedefs[self.current_scope.index].insert(name, typedef);
+        self.typedefs[self.current_scope.index as usize].insert(name, typedef);
         Ok(())
     }
 
@@ -241,12 +241,12 @@ impl ParserState {
     fn is_typedef(&mut self, name: &str) -> Option<&CType> {
         let mut scope = self.current_scope;
         loop {
-            if let Some(typedef) = self.typedefs[scope.index].get(name) {
+            if let Some(typedef) = self.typedefs[scope.index as usize].get(name) {
                 return Some(typedef);
             }
 
             if let Some(parent) = scope.parent_scope {
-                scope = self.scopes[parent];
+                scope = self.scopes[parent as usize];
             } else {
                 return None;
             }

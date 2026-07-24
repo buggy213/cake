@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    cir::{BlockRef, CompareMode, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::ast, semantics::{
+    cir::{BlockRef, CompareMode, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::ast::{self, Identifier}, semantics::{
         resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
         resolver::ResolvedAST,
         symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
@@ -83,14 +83,19 @@ fn create_frame(
 struct LowerFunctionContext {
     expr_ref_to_value: FxHashMap<ExprRef, Value>,
 
+    // TODO: string interning. in AST / resolved AST / lexer too...
+    label_to_block: FxHashMap<String, BlockRef>,
+
     break_target: SmallVec<[BlockRef; 8]>,
-    continue_target: SmallVec<[BlockRef; 8]>
+    continue_target: SmallVec<[BlockRef; 8]>,
 }
 
 impl LowerFunctionContext {
     fn new() -> Self {
         LowerFunctionContext { 
             expr_ref_to_value: FxHashMap::default(),
+
+            label_to_block: FxHashMap::default(),
         
             break_target: smallvec![],
             continue_target: smallvec![] 
@@ -185,13 +190,20 @@ fn lower_stmt(
             parent,
             symbol_idx,
             body,
-        } => todo!(),
-        ResolvedASTNode::Label { parent, labelee } => todo!(),
+        } => todo!("call lower_function_body"),
+        ResolvedASTNode::Label { parent, ident, labelee } => {
+            let labeled_block = func_builder.add_block();
+            lower_fn_ctx.label_to_block.insert(ident.name.clone(), labeled_block);
+
+            func_builder.insert().jmp(labeled_block, &[]);
+            func_builder.set_block(labeled_block);
+            lower_stmt(ast, *labelee, func_builder, stack_frame, lower_fn_ctx);
+        },
         ResolvedASTNode::CaseLabel {
             parent,
             labelee,
             case_index,
-        } => todo!(),
+        } => todo!("switch stmt"),
         ResolvedASTNode::DefaultLabel { parent, labelee } => todo!(),
         ResolvedASTNode::NullStatement { parent } => {}
         ResolvedASTNode::CompoundStatement { parent, stmts } => {
@@ -327,15 +339,23 @@ fn lower_stmt(
 
             func_builder.set_block(after_block);
         },
-        ResolvedASTNode::GotoStatement { parent, target } => todo!(),
+        ResolvedASTNode::GotoStatement { parent, target } => {
+            let goto_target = lower_fn_ctx.label_to_block[&target.name];
+            func_builder.insert().jmp(goto_target, &[]);
+
+            let unreachable_block = func_builder.add_block();
+            func_builder.set_block(unreachable_block);
+        },
         ResolvedASTNode::ContinueStatement { parent, target } => {
             let continue_target = lower_fn_ctx.continue_target.last().expect("underflowed continue target stack");
+            func_builder.insert().jmp(*continue_target, &[]);
 
             let unreachable_block = func_builder.add_block();
             func_builder.set_block(unreachable_block);
         },
         ResolvedASTNode::BreakStatement { parent, target } => {
             let break_target = lower_fn_ctx.break_target.last().expect("underflowed break target stack");
+            func_builder.insert().jmp(*break_target, &[]);
 
             let unreachable_block = func_builder.add_block();
             func_builder.set_block(unreachable_block);
@@ -475,7 +495,6 @@ fn lower_expr(
         }
         TypedExpressionNode::LogicalAnd(ctype, expr_ref, expr_ref1) => {
             let ty: Type = ctype.as_basic().unwrap().into();
-            let early_exit = func_builder.add_block();
             let eval_rhs = func_builder.add_block();
             let footer = func_builder.add_block();
 
@@ -483,13 +502,10 @@ fn lower_expr(
             let zero = func_builder.insert().iconst_trunc(lhs, 0);
             let one = func_builder.insert().iconst_trunc(lhs, 1);
             let lhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, lhs, zero);
-            func_builder.insert().brif(lhs_is_zero, early_exit, &[], eval_rhs, &[]);
-
-            func_builder.set_block(early_exit);
-            func_builder.insert().jmp(footer, &[zero]);
+            func_builder.insert().brif(lhs_is_zero, footer, &[zero], eval_rhs, &[]);
 
             func_builder.set_block(eval_rhs);
-            let rhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
             let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero);
             let result = func_builder.insert().select(rhs_is_zero, zero, one);
             func_builder.insert().jmp(footer, &[result]);
@@ -501,7 +517,6 @@ fn lower_expr(
         },
         TypedExpressionNode::LogicalOr(ctype, expr_ref, expr_ref1) => {
             let ty: Type = ctype.as_basic().unwrap().into();
-            let early_exit = func_builder.add_block();
             let eval_rhs = func_builder.add_block();
             let footer = func_builder.add_block();
 
@@ -509,13 +524,10 @@ fn lower_expr(
             let zero = func_builder.insert().iconst_trunc(lhs, 0);
             let one = func_builder.insert().iconst_trunc(lhs, 1);
             let lhs_is_one = func_builder.insert().icmp(CompareMode::Equal, lhs, one);
-            func_builder.insert().brif(lhs_is_one, early_exit, &[], eval_rhs, &[]);
-
-            func_builder.set_block(early_exit);
-            func_builder.insert().jmp(footer, &[one]);
+            func_builder.insert().brif(lhs_is_one, footer, &[one], eval_rhs, &[]);
 
             func_builder.set_block(eval_rhs);
-            let rhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
             let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero);
             let result = func_builder.insert().select(rhs_is_zero, zero, one);
             func_builder.insert().jmp(footer, &[result]);
