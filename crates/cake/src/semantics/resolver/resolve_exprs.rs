@@ -658,7 +658,9 @@ pub(super) fn resolve_expr(
                     let pointee_type = pointee_type.as_ref().clone();
                     let deref = TypedExpressionNode::Dereference(pointee_type, pointer_ref);
                     let deref_ref = ExprRef::from_push(resolved_expr_vec, deref);
-                    Ok(deref_ref)
+
+                    // handle array decay
+                    Ok(array_decay(resolved_expr_vec, deref_ref))
                 }
                 _ => Err(ResolveExprError::BadDereferenceOperand),
             }
