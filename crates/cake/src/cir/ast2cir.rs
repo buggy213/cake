@@ -1,9 +1,10 @@
 use std::{mem::MaybeUninit, ops::Range, str::FromStr};
 
 use rustc_hash::FxHashMap;
+use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    cir::{CompareMode, FuncRef, FunctionBuilder, Inst, Module, Signature, StackSlotRef, Type, Value}, parser::ast, semantics::{
+    cir::{BlockRef, CompareMode, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::ast, semantics::{
         resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
         resolver::ResolvedAST,
         symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
@@ -80,12 +81,20 @@ fn create_frame(
 }
 
 struct LowerFunctionContext {
-    expr_ref_to_value: FxHashMap<ExprRef, Value>
+    expr_ref_to_value: FxHashMap<ExprRef, Value>,
+
+    break_target: SmallVec<[BlockRef; 8]>,
+    continue_target: SmallVec<[BlockRef; 8]>
 }
 
 impl LowerFunctionContext {
     fn new() -> Self {
-        LowerFunctionContext { expr_ref_to_value: FxHashMap::default() }
+        LowerFunctionContext { 
+            expr_ref_to_value: FxHashMap::default(),
+        
+            break_target: smallvec![],
+            continue_target: smallvec![] 
+        }
     }
 }
 
@@ -169,7 +178,9 @@ fn lower_stmt(
 ) {
     let stmt_node = &ast.nodes[stmt.0 as usize];
     match stmt_node {
-        ResolvedASTNode::TranslationUnit { children } => todo!(),
+        ResolvedASTNode::TranslationUnit { children } => {
+            unreachable!("call lower_translation_unit - TODO maybe it shouldn't be a node")
+        },
         ResolvedASTNode::FunctionDefinition {
             parent,
             symbol_idx,
@@ -197,45 +208,155 @@ fn lower_stmt(
             condition,
             taken,
             not_taken,
-        } => todo!(),
+        } => {
+            let taken_block = func_builder.add_block();
+            let not_taken_block = func_builder.add_block();
+            let after_block = func_builder.add_block();
+
+            let condition = lower_expr(ast, *condition, func_builder, stack_frame, lower_fn_ctx);
+            func_builder.insert().brif(condition, taken_block, &[], not_taken_block, &[]);
+            
+            func_builder.set_block(taken_block);
+            lower_stmt(ast, *taken, func_builder, stack_frame, lower_fn_ctx);
+            func_builder.insert().jmp(after_block, &[]);
+
+            func_builder.set_block(not_taken_block);
+            if let Some(not_taken_node) = *not_taken {
+                lower_stmt(ast, not_taken_node, func_builder, stack_frame, lower_fn_ctx);
+            }
+            func_builder.insert().jmp(after_block, &[]);
+
+            func_builder.set_block(after_block);
+        },
         ResolvedASTNode::SwitchStatement {
             parent,
             controlling_expr,
             body,
             context,
-        } => todo!(),
+        } => todo!("switch stmt"),
         ResolvedASTNode::WhileStatement {
             parent,
             condition,
             body,
-        } => todo!(),
+        } => {
+            let condition_header = func_builder.add_block();
+            let loop_body = func_builder.add_block();
+            let after_block = func_builder.add_block();
+            
+            func_builder.insert().jmp(condition_header, &[]);
+
+            func_builder.set_block(condition_header);
+            let controlling_value = lower_expr(ast, *condition, func_builder, stack_frame, lower_fn_ctx);
+            func_builder.insert().brif(controlling_value, loop_body, &[], after_block, &[]);
+            
+            func_builder.set_block(loop_body);
+            lower_fn_ctx.break_target.push(after_block);
+            lower_fn_ctx.continue_target.push(condition_header);
+            lower_stmt(ast, *body, func_builder, stack_frame, lower_fn_ctx);
+            lower_fn_ctx.break_target.pop();
+            lower_fn_ctx.continue_target.pop();
+            func_builder.insert().jmp(condition_header, &[]);
+
+            func_builder.set_block(after_block);
+        },
         ResolvedASTNode::DoWhileStatement {
             parent,
             condition,
             body,
-        } => todo!(),
+        } => {
+            let loop_body = func_builder.add_block();
+            let condition_footer = func_builder.add_block();
+            let after_block = func_builder.add_block();
+
+            func_builder.insert().jmp(loop_body, &[]);
+
+            func_builder.set_block(loop_body);
+            lower_fn_ctx.break_target.push(after_block);
+            lower_fn_ctx.continue_target.push(condition_footer);
+            lower_stmt(ast, *body, func_builder, stack_frame, lower_fn_ctx);
+            lower_fn_ctx.break_target.pop();
+            lower_fn_ctx.continue_target.pop();
+            func_builder.insert().jmp(condition_footer, &[]);
+
+            func_builder.set_block(condition_footer);
+            let controlling_value = lower_expr(ast, *condition, func_builder, stack_frame, lower_fn_ctx);
+            func_builder.insert().brif(controlling_value, loop_body, &[], after_block, &[]);
+
+            func_builder.set_block(after_block);
+        },
         ResolvedASTNode::ForStatement {
             parent,
             init,
             condition,
             post_body,
             body,
-        } => todo!(),
+        } => {
+            if let Some(init) = *init {
+                _ = lower_expr(ast, init, func_builder, stack_frame, lower_fn_ctx);
+            }
+
+            let for_preamble = func_builder.add_block();
+            let for_body = func_builder.add_block();
+            let for_postamble = func_builder.add_block();
+            let after_block = func_builder.add_block();
+
+            func_builder.insert().jmp(for_preamble, &[]);
+
+            func_builder.set_block(for_preamble);
+            if let Some(condition) = *condition {
+                let controlling_value = lower_expr(ast, condition, func_builder, stack_frame, lower_fn_ctx);
+                func_builder.insert().brif(controlling_value, for_body, &[], after_block, &[]);
+            }
+            else {
+                func_builder.insert().jmp(for_body, &[]);
+            }
+
+            func_builder.set_block(for_body);
+            lower_fn_ctx.break_target.push(after_block);
+            lower_fn_ctx.continue_target.push(for_postamble);
+            lower_stmt(ast, *body, func_builder, stack_frame, lower_fn_ctx);
+            lower_fn_ctx.break_target.pop();
+            lower_fn_ctx.continue_target.pop();
+            func_builder.insert().jmp(for_postamble, &[]);
+
+            func_builder.set_block(for_postamble);
+            if let Some(post_body) = *post_body {
+                _ = lower_expr(ast, post_body, func_builder, stack_frame, lower_fn_ctx);
+            }
+            func_builder.insert().jmp(for_preamble, &[]);
+
+            func_builder.set_block(after_block);
+        },
         ResolvedASTNode::GotoStatement { parent, target } => todo!(),
-        ResolvedASTNode::ContinueStatement { parent, target } => todo!(),
-        ResolvedASTNode::BreakStatement { parent, target } => todo!(),
+        ResolvedASTNode::ContinueStatement { parent, target } => {
+            let continue_target = lower_fn_ctx.continue_target.last().expect("underflowed continue target stack");
+
+            let unreachable_block = func_builder.add_block();
+            func_builder.set_block(unreachable_block);
+        },
+        ResolvedASTNode::BreakStatement { parent, target } => {
+            let break_target = lower_fn_ctx.break_target.last().expect("underflowed break target stack");
+
+            let unreachable_block = func_builder.add_block();
+            func_builder.set_block(unreachable_block);
+        },
         ResolvedASTNode::ReturnStatement {
             parent,
             return_value,
         } => {
             let return_value = return_value.map(|e| lower_expr(ast, e, func_builder, stack_frame, lower_fn_ctx));
             func_builder.insert().ret(return_value.as_slice());
+
+            let unreachable_block = func_builder.add_block();
+            func_builder.set_block(unreachable_block);
         }
         ResolvedASTNode::Initializer {
             parent,
             object,
             assignment,
-        } => todo!(),
+        } => {
+            lower_expr(ast, *assignment, func_builder, stack_frame, lower_fn_ctx);
+        },
     }
 }
 
@@ -454,7 +575,7 @@ fn lower_expr(
 
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
-            let sizeof_object = ctype.as_pointee().unwrap().size(todo!("plumb in layouts"));
+            let sizeof_object = ctype.as_pointee().unwrap().size(&ast.layouts);
             let sizeof_object_val = func_builder.insert().const_u64(sizeof_object as u64);
             
             let rhs_ptrtype = func_builder.insert().icast(rhs, ptrtype());
@@ -465,7 +586,7 @@ fn lower_expr(
         TypedExpressionNode::PointerSub(ctype, expr_ref, expr_ref1) => {
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
-            let sizeof_object = ctype.as_pointee().unwrap().size(todo!("plumb in layouts"));
+            let sizeof_object = ctype.as_pointee().unwrap().size(&ast.layouts);
             let sizeof_object_val = func_builder.insert().const_u64(sizeof_object as u64);
 
             let rhs_ptrtype = func_builder.insert().icast(rhs, ptrtype());
@@ -476,13 +597,34 @@ fn lower_expr(
         TypedExpressionNode::PointerDiff(ctype, expr_ref, expr_ref1) => {
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
-            let sizeof_object = ctype.as_pointee().unwrap().size(todo!("plumb in layouts"));
+            let sizeof_object = ctype.as_pointee().unwrap().size(&ast.layouts);
             let sizeof_object_val = func_builder.insert().const_u64(sizeof_object as u64);
 
             let byte_diff = func_builder.insert().sub(rhs, lhs);
             func_builder.insert().div(byte_diff, sizeof_object_val)
         },
-        TypedExpressionNode::Cast(ctype, expr_ref, ctype1) => todo!(),
+        TypedExpressionNode::Cast(ctype, expr_ref, ctype1) => {
+            let val = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+
+            let cir_type_from_scalar_ctype = |ty: &CType| -> Type {
+                match ty {
+                    CType::BasicType { basic_type, .. } => (*basic_type).into(),
+                    CType::PointerType { .. } => ptrtype(),
+                    CType::EnumTypeRef { .. } => todo!("handle enum types"),
+                    _ => panic!("type check should ensure only scalar types")
+                }
+            };
+
+            let src_ty = cir_type_from_scalar_ctype(ctype1);
+            let dst_ty = cir_type_from_scalar_ctype(ctype);
+
+            match (src_ty.is_integral(), dst_ty.is_integral()) {
+                (true, true) => func_builder.insert().icast(val, dst_ty),
+                (true, false) => func_builder.insert().i2fp(val, dst_ty),
+                (false, true) => func_builder.insert().fp2i(val, dst_ty),
+                (false, false) => func_builder.insert().fcast(val, dst_ty),
+            } 
+        }
         TypedExpressionNode::AddressOf(ctype, expr_ref) => {
             if let TypedExpressionNode::FunctionIdentifier(_, function_idx) = ast.exprs[*expr_ref] {
                 func_builder.insert().func_addr(todo!("function_idx to FuncRef"))
@@ -549,18 +691,38 @@ fn lower_expr(
             let func_ref = FuncRef(function.get_inner() as u32);    
             let call_inst = func_builder.insert().call(func_ref, &arg_values);
         
-
             if result_type.is_void() {
-                // TODO: fix this. void expressions should be allowed
+                // void expression is never used, so this should get optimized away
                 func_builder.insert().const_u64(0)
             } else {
                 Value::TupleElement(call_inst, 0)
             }
         },
-        TypedExpressionNode::IndirectFunctionCall(ctype, expr_ref, expr_range_ref) => {
-            todo!()
+        TypedExpressionNode::IndirectFunctionCall(result_type, expr_ref, expr_range_ref) => {
+            let func_ptr_value = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
+
+            let func_ptr_type = ast.exprs[*expr_ref].expr_type();
+            let func_signature: SigRef = match func_ptr_type.as_pointee() {
+                Some(CType::FunctionTypeRef { symtab_idx }) => todo!("function signature table?"),
+                _ => unreachable!("resolver enforces pointer to function")
+            };
+            
+            let arg_range: Range<usize> = (*expr_range_ref).into();
+            let mut arg_values: ValueVec = SmallVec::with_capacity(arg_range.len());
+            for arg_expr in &ast.expr_indices[arg_range] {
+                let arg_value = lower_expr(ast, expr, func_builder, stack_frame, lower_fn_ctx);
+                arg_values.push(arg_value);
+            }
+
+            let call_inst = func_builder.insert().call_indirect(func_signature, func_ptr_value, &arg_values);
+            if result_type.is_void() {
+                func_builder.insert().const_u64(0)
+            } else {
+                Value::TupleElement(call_inst, 0)
+            } 
         },
-        TypedExpressionNode::DotAccess(ctype, expr_ref, member_ref) => {
+        TypedExpressionNode::DotAccess(ctype, _, _)
+        | TypedExpressionNode::ArrowAccess(ctype, _, _) => {
             let location = lower_lvalue(ast, expr, func_builder, stack_frame, lower_fn_ctx);
             let cir_type = match ctype {
                 CType::BasicType { basic_type, .. } => (*basic_type).into(),
@@ -572,8 +734,10 @@ fn lower_expr(
 
             func_builder.insert().load(location, cir_type)
         },
-        TypedExpressionNode::ArrowAccess(ctype, expr_ref, member_ref) => todo!(),
-        TypedExpressionNode::ArrayDecay(ctype, expr_ref) => todo!(),
+        TypedExpressionNode::ArrayDecay(ctype, expr_ref) => {
+            // arrays are not lvalues, but they also decay to a pointer
+            lower_lvalue(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx)
+        },
         TypedExpressionNode::ObjectIdentifier(object_type, object_idx) => {
             let location = lower_lvalue(ast, expr, func_builder, stack_frame, lower_fn_ctx);
 

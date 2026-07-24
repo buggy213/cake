@@ -620,6 +620,7 @@ fn resolve_ast_inner(
 
             let label_node = ResolvedASTNode::Label {
                 parent,
+                ident: ident.clone(),
                 labelee: labelee_node,
             };
             intermediate_ast.nodes[node_idx].write(label_node);

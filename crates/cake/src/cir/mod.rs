@@ -359,6 +359,9 @@ impl<'block> BlockBuilder<'block> {
     pub(crate) fn icast(&mut self, val: Value, to: Type) -> Value {
         self.type_conversion(val, to, |v| Inst::IntegerCast { v })
     }
+    pub(crate) fn fcast(&mut self, val: Value, to: Type) -> Value {
+        self.type_conversion(val, to, |v| Inst::FpCast { v })
+    }
 
     // helper to copy the type of one of the operands.
     // legalization to make sure operand types are actually compatible is deferred
@@ -456,6 +459,15 @@ impl<'block> BlockBuilder<'block> {
         Value::Inst(iref)
     }
 
+    pub(crate) fn i2fp(&mut self, v: Value, to: Type) -> Value {
+        assert!(to.is_fp(), "i2fp target type must be fp");
+        self.type_conversion(v, to, |v| Inst::IntToFp { v })
+    }
+    pub(crate) fn fp2i(&mut self, v: Value, to: Type) -> Value {
+        assert!(to.is_integral(), "fp2i target type must be int");
+        self.type_conversion(v, to, |v| Inst::FpToInt { v })
+    }
+
     pub(crate) fn load(&mut self, addr: Value, ty: Type) -> Value {
         let load = Inst::Load { addr };
         let iref = InstRef::from_push(self.insts, load);
@@ -516,6 +528,18 @@ impl<'block> BlockBuilder<'block> {
         let v = InstRef::from_push(self.insts, call);
 
         let callee_sig = &self.module_sigs[func_ref.get_inner()];
+        self.block.inst_refs.borrow_mut().push(v);
+        self.inst_types.push(SmallVec::from_slice(&callee_sig.return_types));
+
+        v
+    }
+
+    pub(crate) fn call_indirect(&mut self, callee_sig: SigRef, func_ptr: Value, arg_values: &[Value]) -> InstRef {
+        let arg_values = ValueVecRef::from_push(self.value_vecs, arg_values.to_smallvec());
+        let call_indirect = Inst::CallIndirect { callee_sig, func_ptr, arguments: arg_values };
+        let v = InstRef::from_push(self.insts, call_indirect);
+        
+        let callee_sig = &self.sigs[callee_sig];
         self.block.inst_refs.borrow_mut().push(v);
         self.inst_types.push(SmallVec::from_slice(&callee_sig.return_types));
 
@@ -652,6 +676,13 @@ pub(crate) enum Inst {
         b: Value
     },
 
+    IntToFp {
+        v: Value
+    },
+    FpToInt {
+        v: Value
+    },
+
     Load {
         addr: Value,
     },
@@ -665,6 +696,9 @@ pub(crate) enum Inst {
 
     IntegerCast {
         v: Value,
+    },
+    FpCast {
+        v: Value
     },
 
     CompareInt {
@@ -740,10 +774,13 @@ impl Inst {
             Inst::Fmul { .. } => "fmul",
             Inst::Fdiv { .. } => "fdiv",
             Inst::Fcmp { .. } => "fcmp",
+            Inst::IntToFp { .. } => "i2fp",
+            Inst::FpToInt { .. } => "fp2i",
             Inst::Load { .. } => "load",
             Inst::Store { .. } => "store",
             Inst::StackAddr { .. } => "stack_addr",
             Inst::IntegerCast { .. } => "icast",
+            Inst::FpCast { .. } => "fcast",
             Inst::CompareInt { .. } => "icmp",
             Inst::CompareFloat { .. } => "fcmp",
             Inst::Select { .. } => "select",
@@ -838,10 +875,13 @@ impl std::fmt::Display for DisplayInst<'_> {
             Inst::Fsub { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Fmul { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Fdiv { a, b } => write!(f, "{m} {a} {b}"),
-            Inst::Fcmp { mode, a, b } => write!(f, "{m} {mode} {a} {b}"), 
+            Inst::Fcmp { mode, a, b } => write!(f, "{m} {mode} {a} {b}"),
+            Inst::IntToFp { v } => write!(f, "{m} {v}"),
+            Inst::FpToInt { v } => write!(f, "{m} {v}"), 
             Inst::Load { addr } => write!(f, "{m} [{}]", addr),
             Inst::Store { addr, val } => write!(f, "{m} {val} [{addr}]"),
             Inst::IntegerCast { v } => write!(f, "{m} {v}"),
+            Inst::FpCast { v } => write!(f, "{m} {v}"),
             Inst::StackAddr { slot } => write!(f, "{m} ss{}", slot.0),
             Inst::CompareInt { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
             Inst::CompareFloat { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),

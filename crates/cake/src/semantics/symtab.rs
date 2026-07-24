@@ -25,8 +25,8 @@ pub(crate) enum ScopeType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Scope {
     pub(crate) scope_type: ScopeType,
-    pub(crate) parent_scope: Option<usize>,
-    pub(crate) index: usize,
+    pub(crate) parent_scope: Option<u32>,
+    pub(crate) index: u32,
 }
 
 impl Scope {
@@ -41,8 +41,8 @@ impl Scope {
     pub(crate) fn new(scope_type: ScopeType, parent_scope: usize, index: usize) -> Self {
         Self {
             scope_type,
-            parent_scope: Some(parent_scope),
-            index,
+            parent_scope: Some(parent_scope as u32),
+            index: index as u32,
         }
     }
 }
@@ -374,7 +374,7 @@ impl ScopedSymtab {
         scope: Scope,
         tag: &str,
     ) -> Option<TaggedTypeIdx> {
-        let direct_lookup = self.tags[scope.index].get(tag);
+        let direct_lookup = self.tags[scope.index as usize].get(tag);
         direct_lookup.copied()
     }
 
@@ -385,7 +385,7 @@ impl ScopedSymtab {
             match self.direct_lookup_tag_type_idx(current_scope, tag) {
                 Some(tag_type) => return Some(tag_type),
                 None => match current_scope.parent_scope {
-                    Some(parent) => current_scope = self.scopes[parent],
+                    Some(parent) => current_scope = self.scopes[parent as usize],
                     None => return None,
                 },
             }
@@ -393,7 +393,7 @@ impl ScopedSymtab {
     }
 
     pub(crate) fn direct_lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
-        self.symbols[scope.index].get(name)
+        self.symbols[scope.index as usize].get(name)
     }
 
     pub(crate) fn lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
@@ -402,7 +402,7 @@ impl ScopedSymtab {
             match self.direct_lookup_symbol(current_scope, name) {
                 Some(sym) => return Some(sym),
                 None => match current_scope.parent_scope {
-                    Some(parent) => current_scope = self.scopes[parent],
+                    Some(parent) => current_scope = self.scopes[parent as usize],
                     None => return None,
                 },
             }
@@ -415,7 +415,7 @@ impl ScopedSymtab {
             if scope.scope_type == ScopeType::FunctionScope {
                 break;
             } else if let Some(parent) = scope.parent_scope {
-                scope = self.scopes[parent];
+                scope = self.scopes[parent as usize];
             } else {
                 // maybe not unrecoverable, but grammar should 100% prevent this from happening
                 unreachable!(
@@ -424,7 +424,7 @@ impl ScopedSymtab {
             }
         }
 
-        let fn_scope = &self.labels[scope.index];
+        let fn_scope = &self.labels[scope.index as usize];
         fn_scope.get(name).copied()
     }
 
@@ -432,7 +432,7 @@ impl ScopedSymtab {
         &self,
         scope: Scope,
     ) -> impl Iterator<Item = (&String, &Symbol)> {
-        self.symbols[scope.index].iter()
+        self.symbols[scope.index as usize].iter()
     }
 
     pub(crate) fn add_enum_type(&mut self, enum_type: EnumType) -> EnumTypeIdx {
@@ -457,11 +457,11 @@ impl ScopedSymtab {
         name: String,
         tag: TaggedTypeIdx,
     ) -> Result<(), SymtabError> {
-        if self.tags[scope.index].contains_key(&name) {
+        if self.tags[scope.index as usize].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
         }
 
-        self.tags[scope.index].insert(name, tag);
+        self.tags[scope.index as usize].insert(name, tag);
 
         Ok(())
     }
@@ -472,13 +472,13 @@ impl ScopedSymtab {
         name: String,
         object: Object,
     ) -> Result<ObjectIdx, SymtabError> {
-        if self.symbols[scope.index].contains_key(&name) {
+        if self.symbols[scope.index as usize].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
         }
 
         let object_ref = ObjectIdx::from_push(&mut self.objects, object);
         let object_symbol = Symbol::Object(object_ref);
-        self.symbols[scope.index].insert(name, object_symbol);
+        self.symbols[scope.index as usize].insert(name, object_symbol);
 
         Ok(object_ref)
     }
@@ -525,13 +525,13 @@ impl ScopedSymtab {
         name: String,
         function: Function,
     ) -> Result<FunctionIdx, SymtabError> {
-        if self.symbols[scope.index].contains_key(&name) {
+        if self.symbols[scope.index as usize].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
         }
 
         let function_idx = FunctionIdx::from_push(&mut self.functions, function);
         let function_symbol = Symbol::Function(function_idx);
-        self.symbols[scope.index].insert(name, function_symbol);
+        self.symbols[scope.index as usize].insert(name, function_symbol);
         Ok(function_idx)
     }
 
@@ -541,12 +541,12 @@ impl ScopedSymtab {
         name: String,
         constant: Constant,
     ) -> Result<(), SymtabError> {
-        if self.symbols[scope.index].contains_key(&name) {
+        if self.symbols[scope.index as usize].contains_key(&name) {
             return Err(SymtabError::AlreadyDeclared(name));
         }
 
         let constant = Symbol::Constant(constant);
-        self.symbols[scope.index].insert(name, constant);
+        self.symbols[scope.index as usize].insert(name, constant);
         Ok(())
     }
 
@@ -563,7 +563,7 @@ impl ScopedSymtab {
             if scope.scope_type == ScopeType::FunctionScope {
                 break;
             } else if let Some(parent) = scope.parent_scope {
-                scope = self.scopes[parent];
+                scope = self.scopes[parent as usize];
             } else {
                 // maybe not unrecoverable, but grammar should 100% prevent this from happening
                 panic!(
@@ -572,7 +572,7 @@ impl ScopedSymtab {
             }
         }
 
-        let fn_scope = &mut self.labels[scope.index];
+        let fn_scope = &mut self.labels[scope.index as usize];
         if fn_scope.contains_key(&name) {
             return Err(SymtabError::LabelAlreadyDeclared(name));
         }

@@ -43,6 +43,7 @@ pub(crate) enum ResolvedASTNode {
 
     Label {
         parent: NodeRef,
+        ident: Identifier,
         labelee: NodeRef,
     },
     CaseLabel {
