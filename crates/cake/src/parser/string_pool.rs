@@ -13,7 +13,7 @@ pub(crate) struct StringPool {
     ends: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) struct StringPoolRef(u32);
 
 impl StringPool {
@@ -74,5 +74,29 @@ impl StringPool {
 
     pub(crate) fn get_string(&self, r: StringPoolRef) -> &str {
         StringPool::get_string_impl(&self.backing_mem, &self.ends, r)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_string_pool_deduplicates_while_preserving_identity() {
+        let mut string_pool = StringPool::new();
+        let foo = string_pool.intern_string("foo");
+        let bar = string_pool.intern_string("bar");
+        let foo_copy = string_pool.intern_string("foo");
+        let foobar = string_pool.intern_string("foobar");
+
+        assert_ne!(foo, bar);
+        assert_eq!(foo, foo_copy);
+        assert_ne!(foo, foobar);
+        assert_ne!(bar, foobar);
+
+        assert_eq!(string_pool.get_string(foo), "foo");
+        assert_eq!(string_pool.get_string(bar), "bar");
+        assert_eq!(string_pool.get_string(foo_copy), "foo");
+        assert_eq!(string_pool.get_string(foobar), "foobar")
     }
 }
