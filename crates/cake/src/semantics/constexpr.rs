@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use thiserror::Error;
 
-use crate::{parser::ast::{Constant, ExpressionNode, Identifier}, semantics::symtab::ScopedSymtab, types::CType};
+use crate::{parser::{ast::{Constant, ExpressionNode, Identifier}, string_pool::StringPool}, semantics::symtab::ScopedSymtab, types::CType};
 
 use super::symtab::Symbol;
 
@@ -659,22 +659,25 @@ fn integer_constant_eval(
 
 
 // not fully compliant, since not everything is evaluated as being intmax_t / uintmax_t but should be close enough
-struct PreprocessorConstexprBehavior<F> where F: Fn(&str) -> bool {
+struct PreprocessorConstexprBehavior<'pool, F> where F: Fn(&str) -> bool {
+    string_pool: &'pool StringPool,
     macro_defined: F
 }
 
-impl<F: Fn(&str) -> bool> ConstexprBehavior for PreprocessorConstexprBehavior<F> {
+impl<F: Fn(&str) -> bool> ConstexprBehavior for PreprocessorConstexprBehavior<'_, F> {
     fn handle_identifier(&self, _ident: &Identifier) -> Result<Constant, ConstantExprError> {
         Err(ConstantExprError::PreprocessorConstantExprError)
     }
 
     // a bit of a hack, since `defined` is not included in CLexemes.
-    // this means that `#if defined MACRO_NAME` *without* parentheses will not compile though
+    // this means that `#if defined MACRO_NAME` *without* parentheses will not compile though 
+    // (slightly non-spec compliant, but I'm sure it's fine)
     fn handle_function(&self, func: &ExpressionNode, args: &[ExpressionNode]) -> Result<Constant, ConstantExprError> {
         let ExpressionNode::Identifier(Identifier { name, .. }) = func else {
             return Err(ConstantExprError::PreprocessorConstantExprError);
         };
 
+        let name = self.string_pool.get_string(*name);
         if name != "defined" {
             return Err(ConstantExprError::PreprocessorConstantExprError);
         }
@@ -687,7 +690,8 @@ impl<F: Fn(&str) -> bool> ConstexprBehavior for PreprocessorConstexprBehavior<F>
             return Err(ConstantExprError::PreprocessorConstantExprError);
         };
 
-        let defined = (self.macro_defined)(&name);
+        let name = self.string_pool.get_string(*name);
+        let defined = (self.macro_defined)(name);
         return Ok(if defined { Constant::ULongInt(1) } else { Constant::ULongInt(0) });
     }
 
@@ -714,8 +718,11 @@ impl<F: Fn(&str) -> bool> ConstexprBehavior for PreprocessorConstexprBehavior<F>
     }
 }
 
-pub(crate) fn preprocessor_constant_eval(root: &ExpressionNode, macro_defined: impl Fn(&str) -> bool) -> Result<Constant, ConstantExprError> {
-    let constexpr_behavior = PreprocessorConstexprBehavior { macro_defined };
+pub(crate) fn preprocessor_constant_eval(root: &ExpressionNode, string_pool: &StringPool, macro_defined: impl Fn(&str) -> bool) -> Result<Constant, ConstantExprError> {
+    let constexpr_behavior = PreprocessorConstexprBehavior {
+        string_pool,
+        macro_defined 
+    };
     integer_constant_eval(root, &constexpr_behavior)
 }
 
@@ -725,7 +732,7 @@ struct ExpressionConstexprBehavior<'symtab> {
 
 impl<'symtab> ConstexprBehavior for ExpressionConstexprBehavior<'symtab> {
     fn handle_identifier(&self, ident: &Identifier) -> Result<Constant, ConstantExprError> {
-        let symbol = self.symtab.lookup_symbol(ident.scope, &ident.name);
+        let symbol = self.symtab.lookup_symbol(ident.scope, ident.name);
         match symbol {
             Some(Symbol::Constant(constant)) => {
                 match constant {

@@ -198,7 +198,9 @@ impl CraneliftBackend {
         let symtab = &resolved_ast.symtab;
         for global_object in symtab.global_objects() {
             let obj = symtab.get_object(global_object.object_ref);
-            let name = symtab.object_name(global_object.object_ref);
+            let name = resolved_ast
+                .string_pool
+                .get_string(symtab.object_name(global_object.object_ref));
 
             let linkage = match obj.linkage {
                 semantics::symtab::Linkage::External => cranelift::module::Linkage::Export,
@@ -234,7 +236,8 @@ impl CraneliftBackend {
             self.function_signatures.push(signature);
         }
 
-        for (function, function_name) in std::iter::zip(functions, function_names) {
+        for (function, &function_name) in std::iter::zip(functions, function_names) {
+            let function_name = resolved_ast.string_pool.get_string(function_name);
             let linkage = if function.internal_linkage {
                 cranelift::module::Linkage::Local
             } else {
@@ -249,7 +252,7 @@ impl CraneliftBackend {
 
             let fn_id = self
                 .object
-                .declare_function(&function_name, linkage, &signature)
+                .declare_function(function_name, linkage, &signature)
                 .expect("failed to declare function");
 
             self.functions.push(fn_id);

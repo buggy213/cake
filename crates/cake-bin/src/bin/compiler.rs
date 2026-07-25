@@ -39,10 +39,10 @@ fn main() {
     let resolve_output = resolver.resolve_ast().expect("failed to resolve ast");
 
     let backend = CraneliftBackend::from_resolve_output(
-        output_file.to_str().expect("weird filename"), 
+        output_file.to_str().expect("weird filename"),
         &resolve_output
     );
-    
+
     backend.finish_and_write(&object_file);
     
     let mut compile_command = Command::new("clang");

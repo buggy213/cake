@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    cir::{BlockRef, CompareMode, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::ast::{self, Identifier}, semantics::{
+    cir::{BlockRef, CompareMode, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::{ast, string_pool::StringPoolRef}, semantics::{
         resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
         resolver::ResolvedAST,
         symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
@@ -83,8 +83,7 @@ fn create_frame(
 struct LowerFunctionContext {
     expr_ref_to_value: FxHashMap<ExprRef, Value>,
 
-    // TODO: string interning. in AST / resolved AST / lexer too...
-    label_to_block: FxHashMap<String, BlockRef>,
+    label_to_block: FxHashMap<StringPoolRef, BlockRef>,
 
     break_target: SmallVec<[BlockRef; 8]>,
     continue_target: SmallVec<[BlockRef; 8]>,
@@ -119,7 +118,10 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
         };
 
         let ast_func = ast.symtab.get_function(*symbol_idx);
-        let func_name = ast.symtab.get_function_name(*symbol_idx);
+        let func_name = ast
+            .string_pool
+            .get_string(ast.symtab.get_function_name(*symbol_idx))
+            .to_string();
         let ast_func_type = ast.symtab.get_function_type(ast_func.function_type);
         let ast_func_args = &ast_func_type.parameter_types;
         let ast_func_args: Vec<CType> = ast_func_args.iter().map(|arg| arg.1.clone()).collect();
@@ -193,7 +195,7 @@ fn lower_stmt(
         } => todo!("call lower_function_body"),
         ResolvedASTNode::Label { parent, ident, labelee } => {
             let labeled_block = func_builder.add_block();
-            lower_fn_ctx.label_to_block.insert(ident.name.clone(), labeled_block);
+            lower_fn_ctx.label_to_block.insert(ident.name, labeled_block);
 
             func_builder.insert().jmp(labeled_block, &[]);
             func_builder.set_block(labeled_block);

@@ -1,5 +1,6 @@
 use std::mem::MaybeUninit;
 
+use crate::parser::string_pool::StringPoolRef;
 use crate::semantics::resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode};
 use crate::semantics::resolver::resolve_exprs::ResolveExprContext;
 use crate::semantics::resolver::{IntermediateAST, resolve_expr};
@@ -115,7 +116,7 @@ pub(super) fn resolve_declaration(
     };
 
     // then, place identifier into symbol table
-    match symtab.direct_lookup_symbol(scope, &declaration.name.name) {
+    match symtab.direct_lookup_symbol(scope, declaration.name.name) {
         Some(_) => {
             // Technically, this is allowed by standard
             // most code should not need this (barring forward declaration of function prototypes
@@ -329,7 +330,7 @@ fn resolve_declaration_type(
                 let tag = tag.expect("empty tag for incomplete type disallowed by grammar");
                 return resolve_incomplete_enum(symtab, ast_idx, parser_types, tag, scope);
             } else {
-                let incomplete_standin = EnumType::new_incomplete_enum_type(String::new());
+                let incomplete_standin = EnumType::new_incomplete_enum_type(None);
                 let ast_enum_type_idx = if let Some(tag) = tag {
                     // named enum type, check symbol table
                     if let Some(type_idx) = symtab.direct_lookup_tag_type_idx(scope, tag) {
@@ -341,7 +342,7 @@ fn resolve_declaration_type(
                         let new_enum_type_idx = symtab.add_enum_type(incomplete_standin);
                         symtab.add_tag(
                             scope,
-                            tag.to_string(),
+                            tag,
                             TaggedTypeIdx::EnumTypeIdx(new_enum_type_idx),
                         )?;
                         new_enum_type_idx
@@ -354,7 +355,7 @@ fn resolve_declaration_type(
 
                 for enum_variant in enum_type.members() {
                     let variant_value = Constant::Int(enum_variant.1);
-                    symtab.add_constant(scope, enum_variant.0.clone(), variant_value)?;
+                    symtab.add_constant(scope, enum_variant.0, variant_value)?;
                 }
 
                 complete_enum(symtab, ast_enum_type_idx, enum_type.clone())?;
@@ -377,7 +378,7 @@ fn resolve_declaration_type(
                 return resolve_incomplete_struct(symtab, ast_idx, parser_types, tag, scope);
             } else {
                 let incomplete_standin =
-                    StructureType::new_incomplete_structure_type(String::new());
+                    StructureType::new_incomplete_structure_type(None);
                 let ast_struct_type_idx = if let Some(tag) = tag {
                     // named enum type, check symbol table
                     if let Some(type_idx) = symtab.direct_lookup_tag_type_idx(scope, tag) {
@@ -389,7 +390,7 @@ fn resolve_declaration_type(
                         let new_struct_type_idx = symtab.add_structure_type(incomplete_standin);
                         symtab.add_tag(
                             scope,
-                            tag.to_string(),
+                            tag,
                             TaggedTypeIdx::StructureTypeIdx(new_struct_type_idx),
                         )?;
                         new_struct_type_idx
@@ -404,7 +405,7 @@ fn resolve_declaration_type(
                 resolve_member_types(symtab, &mut new_struct_members, scope, parser_types, layouts)?;
 
                 let completed_struct = StructureType::new_complete_structure_type(
-                    tag.map(String::from),
+                    tag,
                     new_struct_members,
                 );
                 layouts.compute_struct_layout(ast_struct_type_idx, &completed_struct);
@@ -427,7 +428,7 @@ fn resolve_declaration_type(
                 let tag = tag.expect("empty tag for incomplete type disallowed by grammar");
                 return resolve_incomplete_union(symtab, ast_idx, parser_types, tag, scope);
             } else {
-                let incomplete_standin = UnionType::new_incomplete_union_type(String::new());
+                let incomplete_standin = UnionType::new_incomplete_union_type(None);
                 let ast_union_type_idx = if let Some(tag) = tag {
                     // named enum type, check symbol table
                     if let Some(type_idx) = symtab.direct_lookup_tag_type_idx(scope, tag) {
@@ -439,7 +440,7 @@ fn resolve_declaration_type(
                         let new_union_type_idx = symtab.add_union_type(incomplete_standin);
                         symtab.add_tag(
                             scope,
-                            tag.to_string(),
+                            tag,
                             TaggedTypeIdx::UnionTypeIdx(new_union_type_idx),
                         )?;
                         new_union_type_idx
@@ -454,7 +455,7 @@ fn resolve_declaration_type(
                 resolve_member_types(symtab, &mut new_union_members, scope, parser_types, layouts)?;
 
                 let completed_union =
-                    UnionType::new_complete_union_type(tag.map(String::from), new_union_members);
+                    UnionType::new_complete_union_type(tag, new_union_members);
                 layouts.compute_union_layout(ast_union_type_idx, &completed_union);
                 complete_union(symtab, ast_union_type_idx, completed_union)?;
 
@@ -475,7 +476,7 @@ fn resolve_incomplete_type(
     ast_idx: &mut TaggedTypeIdx,
     parser_types: ParserTypes,
 
-    tag: &str,
+    tag: StringPoolRef,
     scope: Scope,
 ) -> Result<TypeCategory, ASTResolveError> {
     // lexical lookup; input must be compatible with looked up type in order to resolve
@@ -505,7 +506,7 @@ fn resolve_incomplete_type(
         ),
     };
 
-    symtab.add_tag(scope, tag.to_string(), new_type_idx)?;
+    symtab.add_tag(scope, tag, new_type_idx)?;
     *ast_idx = new_type_idx;
     Ok(TypeCategory::Incomplete)
 }
@@ -514,7 +515,7 @@ fn resolve_incomplete_enum(
     symtab: &mut ScopedSymtab,
     ast_idx: &mut EnumTypeIdx,
     parser_types: ParserTypes,
-    tag: &str,
+    tag: StringPoolRef,
     scope: Scope,
 ) -> Result<TypeCategory, ASTResolveError> {
     let mut dummy = TaggedTypeIdx::EnumTypeIdx(*ast_idx);
@@ -531,7 +532,7 @@ fn resolve_incomplete_struct(
     symtab: &mut ScopedSymtab,
     ast_idx: &mut StructureTypeIdx,
     parser_types: ParserTypes,
-    tag: &str,
+    tag: StringPoolRef,
     scope: Scope,
 ) -> Result<TypeCategory, ASTResolveError> {
     let mut dummy = TaggedTypeIdx::StructureTypeIdx(*ast_idx);
@@ -548,7 +549,7 @@ fn resolve_incomplete_union(
     symtab: &mut ScopedSymtab,
     ast_idx: &mut UnionTypeIdx,
     parser_types: ParserTypes,
-    tag: &str,
+    tag: StringPoolRef,
     scope: Scope,
 ) -> Result<TypeCategory, ASTResolveError> {
     let mut dummy = TaggedTypeIdx::UnionTypeIdx(*ast_idx);
@@ -756,7 +757,7 @@ pub(crate) fn resolve_function_definition(
         }
     };
 
-    match symtab.direct_lookup_symbol(scope, &fn_declaration.name.name) {
+    match symtab.direct_lookup_symbol(scope, fn_declaration.name.name) {
         Some(sym) => {
             if let Symbol::Function(function_idx) = sym {
                 let function_idx = *function_idx;

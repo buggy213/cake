@@ -5,6 +5,7 @@ use thiserror::Error;
 
 use super::symtab::{Scope, SymbolTable, SymtabError};
 use crate::parser::hand_parser::ParserState;
+use crate::parser::string_pool::StringPool;
 use crate::semantics::resolved_ast::{
     ContextRef, ExprRangeRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
@@ -84,6 +85,10 @@ pub(crate) struct ResolvedAST {
     pub(crate) symtab: SymbolTable,
     pub(crate) resolve_contexts: Vec<ResolverContext>,
     pub(crate) layouts: Layouts,
+
+    // identifiers are interned during parsing; need to be kept around
+    // for codegen
+    pub(crate) string_pool: StringPool,
 }
 
 // during postorder walk, need to have uninitialized values
@@ -102,6 +107,7 @@ impl ResolvedAST {
     unsafe fn from_intermediate_ast(
         intermediate: IntermediateAST,
         resolve_state: ResolverState,
+        string_pool: StringPool,
     ) -> ResolvedAST {
         let IntermediateAST {
             nodes,
@@ -131,6 +137,7 @@ impl ResolvedAST {
             resolve_contexts: context_stack,
             symtab: SymbolTable::from_scoped_symtab(scoped_symtab),
             layouts,
+            string_pool,
         }
     }
 }
@@ -397,6 +404,7 @@ pub(crate) fn resolve_ast(
         structure_types,
         union_types,
         function_types,
+        string_pool,
         ..
     } = parser_state;
 
@@ -425,7 +433,7 @@ pub(crate) fn resolve_ast(
 
     // SAFETY: we initialize all entries of resolved AST
     let mut resolved_ast =
-        unsafe { ResolvedAST::from_intermediate_ast(intermediate_ast, resolver_state) };
+        unsafe { ResolvedAST::from_intermediate_ast(intermediate_ast, resolver_state, string_pool) };
 
     Ok(resolved_ast)
 }
@@ -573,7 +581,7 @@ fn resolve_ast_inner(
 
                 resolve_state
                     .scoped_symtab
-                    .lookup_label(goto_target.scope, &goto_target.name)
+                    .lookup_label(goto_target.scope, goto_target.name)
                     .ok_or(ASTResolveError::BadGotoTarget)?;
             }
             resolve_state.deferred_goto_resolve.clear();
@@ -607,7 +615,7 @@ fn resolve_ast_inner(
             // Prevent duplicate labels in same function
             match resolve_state.scoped_symtab.add_label(
                 ident.scope,
-                ident.name.clone(),
+                ident.name,
                 labelee_node,
             ) {
                 Err(e @ SymtabError::LabelAlreadyDeclared(_)) => {

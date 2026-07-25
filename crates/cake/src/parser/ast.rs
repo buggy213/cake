@@ -1,5 +1,4 @@
-use std::rc::Rc;
-
+use crate::parser::string_pool::StringPoolRef;
 use crate::semantics::symtab::{Scope, StorageClass};
 
 use crate::types::{BasicType, CType, FunctionSpecifier};
@@ -73,15 +72,18 @@ impl Declaration {
 }
 
 // Essentially just an index into symbol table. Borrow checker makes reference difficult (though maybe this is something to look into)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Identifier {
     pub(crate) scope: Scope,
-    pub(crate) name: String,
+    pub(crate) name: StringPoolRef,
 }
 
 impl Identifier {
-    pub fn new(scope: Scope, name: String) -> Self {
-        Identifier { scope, name }
+    pub fn new(scope: Scope, name: StringPoolRef) -> Self {
+        Identifier { 
+            scope, 
+            name 
+        }
     }
 }
 

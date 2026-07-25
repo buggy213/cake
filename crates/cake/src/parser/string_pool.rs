@@ -2,12 +2,12 @@
 //! 
 //! Uses `hashbrown::HashTable` and `rustc_hash::FxHasher` for fast lookup of strings
 
-use std::hash::{Hash, Hasher};
+use std::{cell::RefCell, hash::{Hash, Hasher}, rc::Rc};
 
 use hashbrown::HashTable;
 use rustc_hash::FxHasher;
 
-pub(crate) struct StringPool {
+pub(crate) struct StringPoolImpl {
     backing_mem: Vec<u8>,
     hash_table: HashTable<StringPoolRef>,
     ends: Vec<u32>,
@@ -15,10 +15,15 @@ pub(crate) struct StringPool {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) struct StringPoolRef(u32);
+impl StringPoolRef {
+    pub(crate) fn invalid() -> StringPoolRef {
+        StringPoolRef(u32::MAX)
+    }
+}
 
-impl StringPool {
-    pub(crate) fn new() -> StringPool {
-        StringPool { 
+impl StringPoolImpl {
+    pub(crate) fn new() -> StringPoolImpl {
+        StringPoolImpl { 
             backing_mem: Vec::with_capacity(2 << 16), 
             hash_table: HashTable::new(),
             ends: Vec::new()
@@ -30,12 +35,12 @@ impl StringPool {
         s.hash(&mut fx_hasher);
 
         let eq = |&r: &StringPoolRef| -> bool {
-            StringPool::get_string_impl(&self.backing_mem, &self.ends, r) == s
+            StringPoolImpl::get_string_impl(&self.backing_mem, &self.ends, r) == s
         };
 
         let hasher = |&r: &StringPoolRef| -> u64 {
             let mut fx_hasher = FxHasher::default();
-            let s = StringPool::get_string_impl(&self.backing_mem, &self.ends, r);
+            let s = StringPoolImpl::get_string_impl(&self.backing_mem, &self.ends, r);
             s.hash(&mut fx_hasher);
             fx_hasher.finish()
         };
@@ -59,6 +64,20 @@ impl StringPool {
         }
     }
 
+    pub(crate) fn lookup(&self, s: &str) -> Option<StringPoolRef> {
+        let mut fx_hasher = FxHasher::default();
+        s.hash(&mut fx_hasher);
+
+        let eq = |&r: &StringPoolRef| -> bool {
+            StringPoolImpl::get_string_impl(&self.backing_mem, &self.ends, r) == s
+        };
+
+        self.hash_table.find(
+            fx_hasher.finish(), 
+            eq
+        ).copied()
+    }
+
     fn get_string_impl<'pool>(backing_mem: &'pool [u8], ends: &'pool [u32], r: StringPoolRef) -> &'pool str {
         let start = if r.0 == 0 { 0usize } else {
             ends[(r.0 - 1) as usize] as usize
@@ -73,9 +92,52 @@ impl StringPool {
     }
 
     pub(crate) fn get_string(&self, r: StringPoolRef) -> &str {
-        StringPool::get_string_impl(&self.backing_mem, &self.ends, r)
+        StringPoolImpl::get_string_impl(&self.backing_mem, &self.ends, r)
+    }
+
+    fn iter_strings(&self) -> impl Iterator<Item = (StringPoolRef, &str)> {
+        (0..self.ends.len() as u32)
+            .map(StringPoolRef)
+            .map(|r| (r, self.get_string(r)))
     }
 }
+
+impl std::fmt::Debug for StringPoolImpl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.iter_strings()).finish()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct StringPoolProxy {
+    pub(crate) inner: Rc<RefCell<StringPoolImpl>>
+}
+
+impl StringPoolProxy {
+    pub(crate) fn new() -> StringPoolProxy {
+        StringPoolProxy { inner: Rc::new(RefCell::new(StringPoolImpl::new())) }
+    }
+    pub(crate) fn intern_string(&mut self, s: &str) -> StringPoolRef {
+        self.inner.borrow_mut().intern_string(s)
+    }
+    pub(crate) fn lookup(&self, s: &str) -> Option<StringPoolRef> {
+        self.inner.borrow().lookup(s)
+    }
+    pub(crate) fn get_string(&self, r: StringPoolRef) -> &str {
+        let inner_string_pool = self.inner.borrow();
+        let s = inner_string_pool.get_string(r);
+
+        // SAFETY: the only thing which can invalidate s is reallocation due to additional calls to
+        // `intern_string`. However, test code does not call get_string, and the parser code is already
+        // borrow checked in the non-test configuration
+        unsafe { std::mem::transmute::<&str, &'static str>(s) }
+    }
+}
+
+#[cfg(not(test))]
+pub(crate) type StringPool = StringPoolImpl;
+#[cfg(test)]
+pub(crate) type StringPool = StringPoolProxy;
 
 #[cfg(test)]
 mod tests {

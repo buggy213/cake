@@ -1,12 +1,39 @@
-use super::*;
-use crate::scanner::table_scanner::DFAScanner;
+use std::{cell::RefCell, rc::Rc};
 
-fn text_test_harness<'text>(text: &'text str) -> (CTokenStream<'text>, ParserState) {
+use super::*;
+use crate::{parser::string_pool::{StringPoolImpl, StringPoolProxy}, scanner::table_scanner::DFAScanner};
+
+impl ParserState {
+    fn new_with_shared_string_pool(shared_string_pool: Rc<RefCell<StringPoolImpl>>) -> Self {
+        let file_scope = Scope::new_file_scope();
+        Self {
+            scopes: vec![file_scope],
+            current_scope: file_scope,
+
+            enum_types: Vec::new(),
+            structure_types: Vec::new(),
+            union_types: Vec::new(),
+            function_types: Vec::new(),
+
+            string_pool: StringPoolProxy { inner: shared_string_pool },
+
+            typedefs: vec![Default::default()],
+        }
+    }
+}
+
+struct ParserTestHarness<'text> {
+    toks: CTokenStream<'text>,
+    state: ParserState,
+    dummy_state: ParserState,
+}
+fn text_test_harness<'text>(text: &'text str) -> ParserTestHarness<'text> {
+    let shared_string_pool = Rc::new(RefCell::new(StringPoolImpl::new()));
     let scanner = DFAScanner::load_lexeme_set_scanner::<CLexemes>();
     let toks = CTokenStream::new(scanner, text.as_bytes());
-    let state = ParserState::new();
-
-    (toks, state)
+    let state = ParserState::new_with_shared_string_pool(Rc::clone(&shared_string_pool));
+    let dummy_state = ParserState::new_with_shared_string_pool(shared_string_pool);
+    ParserTestHarness { toks, state, dummy_state }
 }
 
 fn assert_types_eq(actual: &ParserState, expected: &ParserState) {
@@ -16,8 +43,13 @@ fn assert_types_eq(actual: &ParserState, expected: &ParserState) {
     assert_eq!(actual.function_types, expected.function_types);
 }
 
-fn make_identifier(state: &ParserState, name: &str) -> ExpressionNode {
-    let ident = Identifier::new(state.current_scope, name.to_string());
+fn make_identifier(state: &mut ParserState, name: &str) -> Identifier {
+    let name_str = state.string_pool.intern_string(name);
+    Identifier::new(state.current_scope, name_str)
+}
+
+fn make_identifier_expr(state: &mut ParserState, name: &str) -> ExpressionNode {
+    let ident = make_identifier(state, name);
     ExpressionNode::Identifier(ident)
 }
 
@@ -41,9 +73,13 @@ fn test_parse_expr_basic() {
     let basic_expr = r#"
     a = a + 1
     "#;
-    let (mut toks, mut state) = text_test_harness(basic_expr);
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        ..
+    } = text_test_harness(basic_expr);
 
-    let lhs = Box::new(make_identifier(&mut state, "a"));
+    let lhs = Box::new(make_identifier_expr(&mut state, "a"));
 
     let rhs = {
         let lhs = lhs.clone();
@@ -60,14 +96,18 @@ fn test_parse_expr_precedence() {
     let basic_expr = r#"
     a || b && c + d / e
     "#;
-    let (mut toks, mut state) = text_test_harness(basic_expr);
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        ..
+    } = text_test_harness(basic_expr);
 
     // (a || (b && (c + (d / e))))
-    let a = make_identifier(&mut state, "a");
-    let b = make_identifier(&mut state, "b");
-    let c = make_identifier(&mut state, "c");
-    let d = make_identifier(&mut state, "d");
-    let e = make_identifier(&mut state, "e");
+    let a = make_identifier_expr(&mut state, "a");
+    let b = make_identifier_expr(&mut state, "b");
+    let c = make_identifier_expr(&mut state, "c");
+    let d = make_identifier_expr(&mut state, "d");
+    let e = make_identifier_expr(&mut state, "e");
 
     let expr = {
         let rhs = {
@@ -89,12 +129,16 @@ fn test_parse_expr_parenthesized() {
     let basic_expr = r#"
     a * (b + c)
     "#;
-    let (mut toks, mut state) = text_test_harness(basic_expr);
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        ..
+    } = text_test_harness(basic_expr);
 
     // (a || (b && (c + (d / e))))
-    let a = make_identifier(&mut state, "a");
-    let b = make_identifier(&mut state, "b");
-    let c = make_identifier(&mut state, "c");
+    let a = make_identifier_expr(&mut state, "a");
+    let b = make_identifier_expr(&mut state, "b");
+    let c = make_identifier_expr(&mut state, "c");
 
     let expr = {
         let rhs = { make_expr!(ExpressionNode::Add, b, c) };
@@ -110,7 +154,11 @@ fn test_parse_expr_cast() {
     let basic_expr = r#"
     (const void *) (1 - 1)
     "#;
-    let (mut toks, mut state) = text_test_harness(basic_expr);
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        ..
+    } = text_test_harness(basic_expr);
 
     let expr = {
         let cast_target_type = {
@@ -141,10 +189,14 @@ fn test_parse_expr_member_access() {
     let basic_expr = r#"
     a.b
     "#;
-    let (mut toks, mut state) = text_test_harness(basic_expr);
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        ..
+    } = text_test_harness(basic_expr);
 
-    let a = make_identifier(&mut state, "a");
-    let b_ident = Identifier::new(state.current_scope, "b".to_string());
+    let a = make_identifier_expr(&mut state, "a");
+    let b_ident = make_identifier(&mut state, "b");
     let expr = ExpressionNode::DotAccess(Box::new(a), b_ident);
 
     let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
@@ -156,10 +208,14 @@ fn test_parse_expr_arrow_access() {
     let basic_expr = r#"
     a->b
     "#;
-    let (mut toks, mut state) = text_test_harness(basic_expr);
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        ..
+    } = text_test_harness(basic_expr);
 
-    let a = make_identifier(&mut state, "a");
-    let b_ident = Identifier::new(state.current_scope, "b".to_string());
+    let a = make_identifier_expr(&mut state, "a");
+    let b_ident = make_identifier(&mut state, "b");
     let expr = ExpressionNode::ArrowAccess(Box::new(a), b_ident);
 
     let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
@@ -171,12 +227,16 @@ fn test_parse_expr_member_access_left_associativity() {
     let basic_expr = r#"
     a.b.c
     "#;
-    let (mut toks, mut state) = text_test_harness(basic_expr);
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        ..
+    } = text_test_harness(basic_expr);
 
     // Should parse as (a.b).c, not a.(b.c)
-    let a = make_identifier(&mut state, "a");
-    let b_ident = Identifier::new(state.current_scope, "b".to_string());
-    let c_ident = Identifier::new(state.current_scope, "c".to_string());
+    let a = make_identifier_expr(&mut state, "a");
+    let b_ident = make_identifier(&mut state, "b");
+    let c_ident = make_identifier(&mut state, "c");
 
     let inner_dot = ExpressionNode::DotAccess(Box::new(a), b_ident);
     let expr = ExpressionNode::DotAccess(Box::new(inner_dot), c_ident);
@@ -190,13 +250,17 @@ fn test_parse_expr_member_access_with_arithmetic() {
     let basic_expr = r#"
     a.b + c.d
     "#;
-    let (mut toks, mut state) = text_test_harness(basic_expr);
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        ..
+    } = text_test_harness(basic_expr);
 
     // Should parse as (a.b) + (c.d)
-    let a = make_identifier(&mut state, "a");
-    let b_ident = Identifier::new(state.current_scope, "b".to_string());
-    let c = make_identifier(&mut state, "c");
-    let d_ident = Identifier::new(state.current_scope, "d".to_string());
+    let a = make_identifier_expr(&mut state, "a");
+    let b_ident = make_identifier(&mut state, "b");
+    let c = make_identifier_expr(&mut state, "c");
+    let d_ident = make_identifier(&mut state, "d");
 
     let a_dot_b = ExpressionNode::DotAccess(Box::new(a), b_ident);
     let c_dot_d = ExpressionNode::DotAccess(Box::new(c), d_ident);
@@ -209,11 +273,15 @@ fn test_parse_expr_member_access_with_arithmetic() {
 #[test]
 fn test_parse_subscript_expr() {
     let basic_expr = r#"buf[0] = 'a'"#;
-    let (mut toks, mut state) = text_test_harness(basic_expr);
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        ..
+    } = text_test_harness(basic_expr);
 
     let expr = {
         let lhs = {
-            let buf = make_identifier(&mut state, "buf");
+            let buf = make_identifier_expr(&mut state, "buf");
             let index = make_constant!(Constant::Int, 0);
             make_expr!(ExpressionNode::ArraySubscript, buf, index)
         };
@@ -238,8 +306,12 @@ fn test_parse_hello_world() {
         return 0;
     }
     "#;
-
-    let mut dummy_state = ParserState::new();
+    
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state,
+    } = text_test_harness(hello_world);    
     let translation_unit = {
         let main = {
             dummy_state.open_scope(ScopeType::FunctionScope);
@@ -269,11 +341,11 @@ fn test_parse_hello_world() {
                     pointee_type: Box::new(pointer_to_char_type),
                 }
             };
-
+            
             let fn_type = FunctionType {
                 parameter_types: vec![
-                    (Some(String::from("argc")), argc_type),
-                    (Some(String::from("argv")), argv_type),
+                    (Some(dummy_state.string_pool.intern_string("argc")), argc_type),
+                    (Some(dummy_state.string_pool.intern_string("argv")), argv_type),
                 ],
                 return_type: return_type,
                 function_specifier: FunctionSpecifier::None,
@@ -286,7 +358,7 @@ fn test_parse_hello_world() {
             let body = {
                 dummy_state.open_scope(ScopeType::BlockScope);
                 let printf = {
-                    let printf_ident = make_identifier(&mut dummy_state, "printf");
+                    let printf_ident = make_identifier_expr(&mut dummy_state, "printf");
                     let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
                     let printf_expr =
                         ExpressionNode::FunctionCall(Box::new(printf_ident), vec![printf_arg]);
@@ -307,7 +379,7 @@ fn test_parse_hello_world() {
             };
 
             let fn_declaration = Declaration::new(
-                Identifier::new(dummy_state.current_scope, String::from("main")),
+                make_identifier(&mut dummy_state, "main"),
                 fn_type,
                 StorageClass::None,
                 false,
@@ -321,7 +393,6 @@ fn test_parse_hello_world() {
         ASTNode::TranslationUnit(vec![main], dummy_state.current_scope)
     };
 
-    let (mut toks, mut state) = text_test_harness(hello_world);
     let translation_unit_parsed =
         parse_translation_unit(&mut toks, &mut state).expect("parse failed");
 
@@ -338,7 +409,11 @@ fn test_parse_hello_world_unnamed_args() {
     }
     "#;
 
-    let mut dummy_state = ParserState::new();
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state
+    } = text_test_harness(hello_world);    
     let translation_unit = {
         let main = {
             dummy_state.open_scope(ScopeType::FunctionScope);
@@ -382,7 +457,7 @@ fn test_parse_hello_world_unnamed_args() {
             let body = {
                 dummy_state.open_scope(ScopeType::BlockScope);
                 let printf = {
-                    let printf_ident = make_identifier(&mut dummy_state, "printf");
+                    let printf_ident = make_identifier_expr(&mut dummy_state, "printf");
                     let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
                     let printf_expr =
                         ExpressionNode::FunctionCall(Box::new(printf_ident), vec![printf_arg]);
@@ -403,7 +478,7 @@ fn test_parse_hello_world_unnamed_args() {
             };
 
             let fn_declaration = Declaration::new(
-                Identifier::new(dummy_state.current_scope, String::from("main")),
+                make_identifier(&mut dummy_state, "main"),
                 fn_type,
                 StorageClass::None,
                 false,
@@ -417,7 +492,6 @@ fn test_parse_hello_world_unnamed_args() {
         ASTNode::TranslationUnit(vec![main], dummy_state.current_scope)
     };
 
-    let (mut toks, mut state) = text_test_harness(hello_world);
     let translation_unit_parsed =
         parse_translation_unit(&mut toks, &mut state).expect("parse failed");
 
@@ -435,7 +509,7 @@ fn parse_function_definition_bad_1() {
     }
     "#;
 
-    let (mut toks, mut state) = text_test_harness(&function_bad_1);
+    let ParserTestHarness { mut toks, mut state, .. } = text_test_harness(&function_bad_1);
     assert!(parse_external_declaration(&mut toks, &mut state).is_err());
 }
 
@@ -449,7 +523,7 @@ fn parse_function_definition_bad_2() {
     }
     "#;
 
-    let (mut toks, mut state) = text_test_harness(&function_bad_2);
+    let ParserTestHarness { mut toks, mut state, .. } = text_test_harness(&function_bad_2);
     assert!(parse_external_declaration(&mut toks, &mut state).is_err());
 }
 
@@ -464,7 +538,7 @@ fn parse_abstract_type_test_basic() {
         basic_type: BasicType::Int,
     };
 
-    let (mut toks, mut state) = text_test_harness(&abstract_type_str);
+    let ParserTestHarness { mut toks, mut state, .. } = text_test_harness(&abstract_type_str);
     let base_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
     assert_eq!(abstract_type, base_type_parsed);
 }
@@ -486,7 +560,7 @@ fn parse_abstract_type_test_1() {
         pointee_type: Box::new(base_type),
     };
 
-    let (mut toks, mut state) = text_test_harness(&ptr_abstract_type_str);
+    let ParserTestHarness { mut toks, mut state, .. } = text_test_harness(&ptr_abstract_type_str);
     let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
     assert_eq!(abstract_type, abstract_type_parsed);
 }
@@ -503,7 +577,11 @@ fn parse_abstract_type_test_2() {
         basic_type: BasicType::Int,
     };
 
-    let mut dummy_state = ParserState::new();
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state
+    } = text_test_harness(fn_abstract_type_str);
     let abstract_type = {
         let fn_type_idx = {
             dummy_state.open_scope(ScopeType::FunctionScope);
@@ -523,7 +601,6 @@ fn parse_abstract_type_test_2() {
         }
     };
 
-    let (mut toks, mut state) = text_test_harness(&fn_abstract_type_str);
     let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
 
     assert_eq!(abstract_type, abstract_type_parsed);
@@ -536,12 +613,16 @@ fn parse_abstract_type_test_3() {
     let abstract_type_str = r#"
     int (*const [])(unsigned int, ...)
     "#;
-
+    
     let base_type = CType::BasicType {
         qualifier: TypeQualifier::empty(),
         basic_type: BasicType::Int,
     };
-    let mut dummy_state = ParserState::new();
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state 
+    } = text_test_harness(&abstract_type_str);
     let abstract_type = {
         let const_ptr = {
             let fn_type = {
@@ -580,7 +661,6 @@ fn parse_abstract_type_test_3() {
         }
     };
 
-    let (mut toks, mut state) = text_test_harness(&abstract_type_str);
     let abstract_type_parsed = parse_type_name(&mut toks, &mut state).expect("parse failed");
 
     assert_eq!(abstract_type, abstract_type_parsed);
@@ -590,18 +670,21 @@ fn parse_abstract_type_test_3() {
 #[test]
 fn parse_struct_declaration_incomplete() {
     let incomplete_struct_str = r#"struct test s;"#;
-    let mut dummy_state = ParserState::new();
-    let struct_type = StructureType::new_incomplete_structure_type(String::from("test"));
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state
+    } = text_test_harness(&incomplete_struct_str);
+    let struct_type = StructureType::new_incomplete_structure_type(Some(dummy_state.string_pool.intern_string("test")));
     let struct_type_idx = dummy_state.add_structure_type(struct_type);
     let struct_type = CType::StructureTypeRef {
         qualifier: TypeQualifier::empty(),
         symtab_idx: struct_type_idx,
     };
 
-    let (mut toks, mut state) = text_test_harness(&incomplete_struct_str);
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed_expected = ASTNode::Declaration(vec![Declaration::new(
-        Identifier::new(dummy_state.current_scope, String::from("s")),
+        make_identifier(&mut dummy_state, "s"),
         struct_type,
         StorageClass::None,
         false,
@@ -621,10 +704,14 @@ fn parse_struct_declaration_anonymous() {
     } s;
     "#;
 
-    let mut dummy_state = ParserState::new();
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state 
+    } = text_test_harness(&anonymous_struct);
     let tag = None;
     let members = vec![(
-        String::from("k"),
+        dummy_state.string_pool.intern_string("k"),
         CType::BasicType {
             qualifier: TypeQualifier::empty(),
             basic_type: BasicType::Int,
@@ -638,10 +725,9 @@ fn parse_struct_declaration_anonymous() {
         symtab_idx: struct_type_idx,
     };
 
-    let (mut toks, mut state) = text_test_harness(&anonymous_struct);
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed_expected = ASTNode::Declaration(vec![Declaration::new(
-        Identifier::new(dummy_state.current_scope, String::from("s")),
+        make_identifier(&mut dummy_state, "s"),
         struct_type,
         StorageClass::None,
         false,
@@ -660,11 +746,15 @@ fn parse_struct_declaration() {
         int k;
     } t;
     "#;
-
-    let mut dummy_state = ParserState::new();
-    let tag = Some(String::from("complete"));
+    
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state 
+    } = text_test_harness(&complete_struct);
+    let tag = Some(dummy_state.string_pool.intern_string("complete"));
     let members = vec![(
-        String::from("k"),
+        dummy_state.string_pool.intern_string("k"),
         CType::BasicType {
             qualifier: TypeQualifier::empty(),
             basic_type: BasicType::Int,
@@ -678,10 +768,9 @@ fn parse_struct_declaration() {
         symtab_idx: struct_type_idx,
     };
 
-    let (mut toks, mut state) = text_test_harness(&complete_struct);
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed_expected = ASTNode::Declaration(vec![Declaration::new(
-        Identifier::new(dummy_state.current_scope, String::from("t")),
+        make_identifier(&mut dummy_state, "t"),
         struct_type,
         StorageClass::None,
         false,
@@ -705,17 +794,21 @@ fn parse_struct_declaration_recursive() {
     } recursive_struct;
     "#;
 
-    let mut dummy_state = ParserState::new();
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state 
+    } = text_test_harness(&recursive_struct);
     let outer_struct_type = {
         let k = (
-            String::from("k"),
+            dummy_state.string_pool.intern_string("k"),
             CType::BasicType {
                 qualifier: TypeQualifier::empty(),
                 basic_type: BasicType::Int,
             },
         );
 
-        let tag = Some(String::from("inner"));
+        let tag = Some(dummy_state.string_pool.intern_string("inner"));
         let members = vec![k];
         let inner_struct_type = StructureType::new_complete_structure_type(tag, members);
         let inner_struct_type_idx = dummy_state.add_structure_type(inner_struct_type);
@@ -725,7 +818,7 @@ fn parse_struct_declaration_recursive() {
         };
         let next = {
             let recursive_struct_type =
-                StructureType::new_incomplete_structure_type(String::from("recursive"));
+                StructureType::new_incomplete_structure_type(Some(dummy_state.string_pool.intern_string("recursive")));
             let recursive_struct_type_idx = dummy_state.add_structure_type(recursive_struct_type);
             let ptr = CType::StructureTypeRef {
                 qualifier: TypeQualifier::empty(),
@@ -737,8 +830,8 @@ fn parse_struct_declaration_recursive() {
             }
         };
 
-        let tag = Some(String::from("recursive"));
-        let members = vec![(String::from("inner"), inner), (String::from("next"), next)];
+        let tag = Some(dummy_state.string_pool.intern_string("recursive"));
+        let members = vec![(dummy_state.string_pool.intern_string("inner"), inner), (dummy_state.string_pool.intern_string("next"), next)];
         StructureType::new_complete_structure_type(tag, members)
     };
 
@@ -748,10 +841,9 @@ fn parse_struct_declaration_recursive() {
         symtab_idx: outer_struct_type_idx,
     };
 
-    let (mut toks, mut state) = text_test_harness(&recursive_struct);
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed_expected = ASTNode::Declaration(vec![Declaration::new(
-        Identifier::new(dummy_state.current_scope, String::from("recursive_struct")),
+        make_identifier(&mut dummy_state, "recursive_struct"),
         outer_struct_type,
         StorageClass::None,
         false,
@@ -770,11 +862,15 @@ fn parse_declaration_without_declarators() {
         int s;
     };
     "#;
-
-    let mut dummy_state = ParserState::new();
-    let tag = Some(String::from("s"));
+        
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state 
+    } = text_test_harness(&complete_struct);
+    let tag = Some(dummy_state.string_pool.intern_string("s"));
     let members = vec![(
-        String::from("s"),
+        dummy_state.string_pool.intern_string("s"),
         CType::BasicType {
             qualifier: TypeQualifier::empty(),
             basic_type: BasicType::Int,
@@ -788,7 +884,6 @@ fn parse_declaration_without_declarators() {
         symtab_idx: struct_type_idx,
     };
 
-    let (mut toks, mut state) = text_test_harness(&complete_struct);
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed_expected =
         ASTNode::EmptyDeclaration(struct_type, dummy_state.current_scope);
@@ -803,8 +898,12 @@ fn parse_typedef_basic() {
     typedef int *int_ptr;
     int_ptr iptr;
     "#;
-
-    let dummy_state = ParserState::new();
+    
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state 
+    } = text_test_harness(&typedef_basic);
     let int_ptr_type = {
         let int = CType::BasicType {
             qualifier: TypeQualifier::empty(),
@@ -819,7 +918,7 @@ fn parse_typedef_basic() {
 
     let int_ptr = {
         Declaration::new(
-            Identifier::new(dummy_state.current_scope, String::from("int_ptr")),
+            Identifier::new(dummy_state.current_scope, dummy_state.string_pool.intern_string("int_ptr")),
             int_ptr_type.clone(),
             StorageClass::None,
             true,
@@ -830,7 +929,7 @@ fn parse_typedef_basic() {
 
     let iptr = {
         Declaration::new(
-            Identifier::new(dummy_state.current_scope, String::from("iptr")),
+            Identifier::new(dummy_state.current_scope, dummy_state.string_pool.intern_string("iptr")),
             int_ptr_type,
             StorageClass::None,
             false,
@@ -839,7 +938,6 @@ fn parse_typedef_basic() {
         )
     };
 
-    let (mut toks, mut state) = text_test_harness(&typedef_basic);
     let typedef_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
 
@@ -857,8 +955,11 @@ fn parse_bad_switch() {
     }
     "#;
 
-    let _dummy_state = ParserState::new();
-    let (mut toks, mut state) = text_test_harness(&bad_switch);
+    let ParserTestHarness { 
+        mut toks,
+        mut state, 
+        dummy_state: _ 
+    } = text_test_harness(&bad_switch);
     let res = parse_statement(&mut toks, &mut state);
 
     assert!(res.is_err(), "Bad switch statement");
@@ -889,17 +990,20 @@ fn parse_for_stmt() {
     for (int i = 0; i < 15; i += 1) {
     }
     "#;
+    
+    let ParserTestHarness { 
+        mut toks, 
+        mut state, 
+        mut dummy_state 
+    } = text_test_harness(&for_stmt);
 
-    let mut dummy_state = ParserState::new();
-
-    let (mut toks, mut state) = text_test_harness(&for_stmt);
     let res = parse_statement(&mut toks, &mut state);
 
     dummy_state.open_scope(ScopeType::BlockScope);
     let i_init = make_constant!(Constant::Int, 0);
     let i = ASTNode::Declaration(vec![
         Declaration {
-            name: Identifier { name: String::from("i"), scope: dummy_state.current_scope }, 
+            name: Identifier { name: dummy_state.string_pool.intern_string("i"), scope: dummy_state.current_scope }, 
             qualified_type: CType::BasicType { basic_type: BasicType::Int, qualifier: TypeQualifier::empty() }, 
             storage_class: StorageClass::None, 
             is_typedef: false, 
@@ -909,13 +1013,13 @@ fn parse_for_stmt() {
     ]);
 
     let cond = {
-        let i_ident = make_identifier(&dummy_state, "i");
+        let i_ident = make_identifier_expr(&mut dummy_state, "i");
         let fifteen = make_constant!(Constant::Int, 15);
         make_expr!(ExpressionNode::LessThan, i_ident, fifteen)
     };
 
     let post = {
-        let i_ident = make_identifier(&dummy_state, "i");
+        let i_ident = make_identifier_expr(&mut dummy_state, "i");
         let one = make_constant!(Constant::Int, 1);
         make_expr!(ExpressionNode::AddAssign, i_ident, one)
     };

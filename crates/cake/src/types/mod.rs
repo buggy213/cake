@@ -7,8 +7,7 @@ pub(crate) mod layout;
 use layout::{StructLayout, UnionLayout};
 
 use crate::{
-    semantics::symtab::{Scope, SymbolTable},
-    types::layout::Layouts,
+    parser::string_pool::StringPoolRef, semantics::symtab::{Scope, SymbolTable}, types::layout::Layouts,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -100,11 +99,11 @@ impl BasicType {
 }
 
 // for now, all enums will be 4 bytes
-pub(crate) type EnumVariant = (String, i32);
+pub(crate) type EnumVariant = (StringPoolRef, i32);
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EnumType {
     complete: bool,
-    tag: Option<String>,
+    tag: Option<StringPoolRef>,
     members: Vec<EnumVariant>,
 }
 
@@ -112,7 +111,7 @@ make_type_idx!(EnumTypeIdx, EnumType);
 
 impl EnumType {
     pub(crate) fn new_complete_enum_type(
-        tag: Option<String>,
+        tag: Option<StringPoolRef>,
         members: Vec<EnumVariant>,
     ) -> EnumType {
         EnumType {
@@ -122,10 +121,10 @@ impl EnumType {
         }
     }
 
-    pub(crate) fn new_incomplete_enum_type(tag: String) -> EnumType {
+    pub(crate) fn new_incomplete_enum_type(tag: Option<StringPoolRef>) -> EnumType {
         EnumType {
             complete: false,
-            tag: Some(tag),
+            tag,
             members: Vec::new(),
         }
     }
@@ -134,8 +133,8 @@ impl EnumType {
         self.complete
     }
 
-    pub(crate) fn tag(&self) -> Option<&str> {
-        (&self.tag).as_deref()
+    pub(crate) fn tag(&self) -> Option<StringPoolRef> {
+        self.tag
     }
 
     pub(crate) fn members(&self) -> &[EnumVariant] {
@@ -143,12 +142,12 @@ impl EnumType {
     }
 }
 
-pub(crate) type AggregateMember = (String, CType);
+pub(crate) type AggregateMember = (StringPoolRef, CType);
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StructureType {
     complete: bool,
-    tag: Option<String>,
+    tag: Option<StringPoolRef>,
     members: Vec<AggregateMember>,
 }
 
@@ -157,7 +156,7 @@ add_additional_index!(StructureTypeIdx, StructLayout);
 
 impl StructureType {
     pub(crate) fn new_complete_structure_type(
-        tag: Option<String>,
+        tag: Option<StringPoolRef>,
         members: Vec<AggregateMember>,
     ) -> StructureType {
         StructureType {
@@ -167,10 +166,10 @@ impl StructureType {
         }
     }
 
-    pub(crate) fn new_incomplete_structure_type(tag: String) -> StructureType {
+    pub(crate) fn new_incomplete_structure_type(tag: Option<StringPoolRef>) -> StructureType {
         StructureType {
             complete: false,
-            tag: Some(tag),
+            tag,
             members: Vec::new(),
         }
     }
@@ -179,8 +178,8 @@ impl StructureType {
         self.complete
     }
 
-    pub(crate) fn tag(&self) -> Option<&str> {
-        (&self.tag).as_deref()
+    pub(crate) fn tag(&self) -> Option<StringPoolRef> {
+        self.tag
     }
 
     pub(crate) fn members(&self) -> &[AggregateMember] {
@@ -191,7 +190,7 @@ impl StructureType {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UnionType {
     complete: bool,
-    tag: Option<String>,
+    tag: Option<StringPoolRef>,
     members: Vec<AggregateMember>,
 }
 
@@ -200,7 +199,7 @@ add_additional_index!(UnionTypeIdx, UnionLayout);
 
 impl UnionType {
     pub(crate) fn new_complete_union_type(
-        tag: Option<String>,
+        tag: Option<StringPoolRef>,
         members: Vec<AggregateMember>,
     ) -> UnionType {
         UnionType {
@@ -210,10 +209,10 @@ impl UnionType {
         }
     }
 
-    pub(crate) fn new_incomplete_union_type(tag: String) -> UnionType {
+    pub(crate) fn new_incomplete_union_type(tag: Option<StringPoolRef>) -> UnionType {
         UnionType {
             complete: false,
-            tag: Some(tag),
+            tag,
             members: Vec::new(),
         }
     }
@@ -222,8 +221,8 @@ impl UnionType {
         self.complete
     }
 
-    pub(crate) fn tag(&self) -> Option<&str> {
-        (&self.tag).as_deref()
+    pub(crate) fn tag(&self) -> Option<StringPoolRef> {
+        self.tag
     }
 
     pub(crate) fn members(&self) -> &[AggregateMember] {
@@ -231,7 +230,7 @@ impl UnionType {
     }
 }
 
-pub(crate) type FunctionArgument = (Option<String>, CType);
+pub(crate) type FunctionArgument = (Option<StringPoolRef>, CType);
 
 // For now, not actually used to inform codegen (this is perfectly compliant with standard)
 #[derive(Debug, Clone, Copy, PartialEq)]

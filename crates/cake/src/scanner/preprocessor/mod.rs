@@ -601,11 +601,12 @@ impl Preprocessor {
                 }
 
                 let mut fixed = FixedTokens::new_from_deque(substituted, self);
-                let controlling_expr = parse_expr(&mut fixed, &mut ParserState::new());
+                let mut parser_state = ParserState::new();
+                let controlling_expr = parse_expr(&mut fixed, &mut parser_state);
                 let value = match controlling_expr {
                     Ok(expr_node) => {
                         let macro_defined = |name: &str| self.macros.contains_key(name);
-                        let res = preprocessor_constant_eval(&expr_node, macro_defined);
+                        let res = preprocessor_constant_eval(&expr_node, &parser_state.string_pool, macro_defined);
                         match res {
                             Ok(v) => v,
                             Err(eval_err) => {

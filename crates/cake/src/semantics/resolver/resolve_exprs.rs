@@ -951,7 +951,7 @@ pub(super) fn resolve_expr(
             Ok(array_decay(resolved_expr_vec, arrow_access_ref))
         }
         ExpressionNode::Identifier(identifier) => {
-            let symbol = ctx.symtab.lookup_symbol(identifier.scope, &identifier.name);
+            let symbol = ctx.symtab.lookup_symbol(identifier.scope, identifier.name);
             match symbol {
                 None => return Err(ResolveExprError::IdentifierNotFound),
 

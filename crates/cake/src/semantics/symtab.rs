@@ -1,13 +1,10 @@
-use std::{collections::HashMap, mem::MaybeUninit};
+use std::collections::HashMap;
 
 use cake_util::{add_additional_index, make_type_idx};
-use cranelift::{codegen::ir::FuncRef, module::FuncId};
 use thiserror::Error;
 
 use crate::{
-    parser::ast::Constant,
-    semantics::resolved_ast::{ExprRef, NodeRef},
-    types::{
+    parser::{ast::Constant, string_pool::StringPoolRef}, semantics::resolved_ast::{ExprRef, NodeRef}, types::{
         CType, EnumType, EnumTypeIdx, FunctionType, FunctionTypeIdx, StructureType,
         StructureTypeIdx, UnionType, UnionTypeIdx,
     },
@@ -163,9 +160,9 @@ pub(crate) struct ScopedSymtab {
 
     // the rest are built during resolve phase, by extracting information from
     // parsed AST
-    symbols: Vec<HashMap<String, Symbol>>,
-    labels: Vec<HashMap<String, NodeRef>>,
-    tags: Vec<HashMap<String, TaggedTypeIdx>>,
+    symbols: Vec<HashMap<StringPoolRef, Symbol>>,
+    labels: Vec<HashMap<StringPoolRef, NodeRef>>,
+    tags: Vec<HashMap<StringPoolRef, TaggedTypeIdx>>,
 
     objects: Vec<Object>,
     functions: Vec<Function>,
@@ -197,8 +194,8 @@ pub(crate) struct SymbolTable {
     objects: Vec<Object>,
     functions: Vec<Function>,
 
-    object_names: Vec<String>,
-    function_names: Vec<String>,
+    object_names: Vec<StringPoolRef>,
+    function_names: Vec<StringPoolRef>,
 
     enum_types: Vec<EnumType>,
     structure_types: Vec<StructureType>,
@@ -228,32 +225,22 @@ impl SymbolTable {
             ..
         } = scoped_symtab;
 
-        let mut object_names: Vec<MaybeUninit<String>> = Vec::with_capacity(objects.len());
-        // SAFETY: used with_capacity above, and MaybeUninit<T> does not require initialization
-        unsafe { object_names.set_len(objects.len()) }
-
-        let mut function_names: Vec<MaybeUninit<String>> = Vec::with_capacity(functions.len());
-        // SAFETY: see above
-        unsafe { function_names.set_len(functions.len()) }
+        let mut object_names: Vec<StringPoolRef> = vec![StringPoolRef::invalid(); objects.len()];
+        let mut function_names: Vec<StringPoolRef> = vec![StringPoolRef::invalid(); functions.len()];
 
         for symbols_at_scope in symbols {
             for (symbol_name, symbol) in symbols_at_scope {
                 match symbol {
                     Symbol::Constant(_) => (), // no-op, inlined into expressions
                     Symbol::Object(object_idx) => {
-                        object_names[object_idx.0 as usize].write(symbol_name);
+                        object_names[object_idx.0 as usize] = symbol_name;
                     }
                     Symbol::Function(function_idx) => {
-                        function_names[function_idx.0 as usize].write(symbol_name);
+                        function_names[function_idx.0 as usize] = symbol_name;
                     }
                 }
             }
         }
-
-        // SAFETY: Vec<MaybeUninit<String>> should be the same as Vec<String>
-        // in terms of layout, and the above code should initialize all entries
-        let object_names: Vec<String> = unsafe { std::mem::transmute(object_names) };
-        let function_names: Vec<String> = unsafe { std::mem::transmute(function_names) };
 
         SymbolTable {
             objects,
@@ -280,15 +267,15 @@ impl SymbolTable {
         &self.objects[object_ref]
     }
 
-    pub(crate) fn object_name(&self, object_ref: ObjectIdx) -> &str {
-        &self.object_names[object_ref.0 as usize]
+    pub(crate) fn object_name(&self, object_ref: ObjectIdx) -> StringPoolRef {
+        self.object_names[object_ref.0 as usize]
     }
 
     pub(crate) fn functions(&self) -> &[Function] {
         &self.functions
     }
 
-    pub(crate) fn function_names(&self) -> &[String] {
+    pub(crate) fn function_names(&self) -> &[StringPoolRef] {
         &self.function_names
     }
 
@@ -300,9 +287,10 @@ impl SymbolTable {
         self.function_parameter_ranges[fn_idx.0 as usize]
     }
 
-    pub(crate) fn function_parameter_names(&self, fn_idx: FunctionIdx) -> &[String] {
+    // note: parameters are objects, so their names live in `object_names`
+    pub(crate) fn function_parameter_names(&self, fn_idx: FunctionIdx) -> &[StringPoolRef] {
         let fn_params = self.function_parameter_range(fn_idx);
-        &self.function_names[fn_params.0 as usize..fn_params.1 as usize]
+        &self.object_names[fn_params.0 as usize..fn_params.1 as usize]
     }
 
     pub(crate) fn object_range(&self, object_range: ObjectRangeRef) -> &[Object] {
@@ -313,8 +301,8 @@ impl SymbolTable {
         &self.functions[function]
     }
 
-    pub(crate) fn get_function_name(&self, function: FunctionIdx) -> &str {
-        &self.function_names[function.0 as usize]
+    pub(crate) fn get_function_name(&self, function: FunctionIdx) -> StringPoolRef {
+        self.function_names[function.0 as usize]
     }
 
     pub(crate) fn get_function_type(&self, function_type: FunctionTypeIdx) -> &FunctionType {
@@ -336,12 +324,12 @@ impl SymbolTable {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum SymtabError {
-    #[error("Symbol `{0}` already declared")]
-    AlreadyDeclared(String),
+    #[error("symbol already declared")]
+    AlreadyDeclared(StringPoolRef),
     #[error("type provided is not a tag")]
-    NotATag(String),
-    #[error("label `{0}` already declared within function")]
-    LabelAlreadyDeclared(String),
+    NotATag(StringPoolRef),
+    #[error("label already declared within function")]
+    LabelAlreadyDeclared(StringPoolRef),
 }
 
 impl ScopedSymtab {
@@ -372,14 +360,14 @@ impl ScopedSymtab {
     pub(crate) fn direct_lookup_tag_type_idx(
         &self,
         scope: Scope,
-        tag: &str,
+        tag: StringPoolRef,
     ) -> Option<TaggedTypeIdx> {
-        let direct_lookup = self.tags[scope.index as usize].get(tag);
+        let direct_lookup = self.tags[scope.index as usize].get(&tag);
         direct_lookup.copied()
     }
 
     // look in current scope and all parent scopes
-    pub(crate) fn lookup_tag_type_idx(&self, scope: Scope, tag: &str) -> Option<TaggedTypeIdx> {
+    pub(crate) fn lookup_tag_type_idx(&self, scope: Scope, tag: StringPoolRef) -> Option<TaggedTypeIdx> {
         let mut current_scope = scope;
         loop {
             match self.direct_lookup_tag_type_idx(current_scope, tag) {
@@ -392,11 +380,11 @@ impl ScopedSymtab {
         }
     }
 
-    pub(crate) fn direct_lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
-        self.symbols[scope.index as usize].get(name)
+    pub(crate) fn direct_lookup_symbol(&self, scope: Scope, name: StringPoolRef) -> Option<&Symbol> {
+        self.symbols[scope.index as usize].get(&name)
     }
 
-    pub(crate) fn lookup_symbol(&self, scope: Scope, name: &str) -> Option<&Symbol> {
+    pub(crate) fn lookup_symbol(&self, scope: Scope, name: StringPoolRef) -> Option<&Symbol> {
         let mut current_scope = scope;
         loop {
             match self.direct_lookup_symbol(current_scope, name) {
@@ -409,7 +397,7 @@ impl ScopedSymtab {
         }
     }
 
-    pub(crate) fn lookup_label(&self, scope: Scope, name: &str) -> Option<NodeRef> {
+    pub(crate) fn lookup_label(&self, scope: Scope, name: StringPoolRef) -> Option<NodeRef> {
         let mut scope = scope;
         loop {
             if scope.scope_type == ScopeType::FunctionScope {
@@ -425,13 +413,13 @@ impl ScopedSymtab {
         }
 
         let fn_scope = &self.labels[scope.index as usize];
-        fn_scope.get(name).copied()
+        fn_scope.get(&name).copied()
     }
 
     pub(crate) fn all_symbols_at_scope(
         &self,
         scope: Scope,
-    ) -> impl Iterator<Item = (&String, &Symbol)> {
+    ) -> impl Iterator<Item = (&StringPoolRef, &Symbol)> {
         self.symbols[scope.index as usize].iter()
     }
 
@@ -454,7 +442,7 @@ impl ScopedSymtab {
     pub(crate) fn add_tag(
         &mut self,
         scope: Scope,
-        name: String,
+        name: StringPoolRef,
         tag: TaggedTypeIdx,
     ) -> Result<(), SymtabError> {
         if self.tags[scope.index as usize].contains_key(&name) {
@@ -469,7 +457,7 @@ impl ScopedSymtab {
     pub(crate) fn add_object(
         &mut self,
         scope: Scope,
-        name: String,
+        name: StringPoolRef,
         object: Object,
     ) -> Result<ObjectIdx, SymtabError> {
         if self.symbols[scope.index as usize].contains_key(&name) {
@@ -522,7 +510,7 @@ impl ScopedSymtab {
     pub(crate) fn add_function(
         &mut self,
         scope: Scope,
-        name: String,
+        name: StringPoolRef,
         function: Function,
     ) -> Result<FunctionIdx, SymtabError> {
         if self.symbols[scope.index as usize].contains_key(&name) {
@@ -538,7 +526,7 @@ impl ScopedSymtab {
     pub(crate) fn add_constant(
         &mut self,
         scope: Scope,
-        name: String,
+        name: StringPoolRef,
         constant: Constant,
     ) -> Result<(), SymtabError> {
         if self.symbols[scope.index as usize].contains_key(&name) {
@@ -553,7 +541,7 @@ impl ScopedSymtab {
     pub(crate) fn add_label(
         &mut self,
         scope: Scope,
-        name: String,
+        name: StringPoolRef,
         labeled_statement: NodeRef,
     ) -> Result<(), SymtabError> {
         // label names must be unique within a function

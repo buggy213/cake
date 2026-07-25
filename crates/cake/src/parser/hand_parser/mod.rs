@@ -10,9 +10,12 @@ use std::{error::Error, fmt::Display};
 use thiserror::Error;
 
 use crate::{
-    parser::ast::Constant,
-    scanner::{TokenStream, lexeme_sets::c_lexemes::CLexemes},
-    semantics::symtab::{Scope, ScopeType, StorageClass, SymtabError},
+    parser::{
+        ast::Constant, 
+        string_pool::{StringPool, StringPoolRef}
+    }, 
+    scanner::{TokenStream, lexeme_sets::c_lexemes::CLexemes}, 
+    semantics::symtab::{Scope, ScopeType, StorageClass, SymtabError}, 
     types::{
         EnumType, EnumTypeIdx, FunctionTypeIdx, StructureType, StructureTypeIdx, UnionType,
         UnionTypeIdx,
@@ -175,7 +178,11 @@ pub(crate) struct ParserState {
     pub(crate) union_types: Vec<UnionType>,
     pub(crate) function_types: Vec<FunctionType>,
 
-    typedefs: Vec<HashMap<String, CType>>,
+    // string interning occurs at parsing stage
+    // identifiers are interned, but string literals are not
+    pub(crate) string_pool: StringPool,
+
+    typedefs: Vec<HashMap<StringPoolRef, CType>>,
 }
 
 impl ParserState {
@@ -189,6 +196,8 @@ impl ParserState {
             structure_types: Vec::new(),
             union_types: Vec::new(),
             function_types: Vec::new(),
+
+            string_pool: StringPool::new(),
 
             typedefs: vec![Default::default()],
         }
@@ -227,8 +236,8 @@ impl ParserState {
         FunctionTypeIdx::from_push(&mut self.function_types, function_type)
     }
 
-    fn add_typedef(&mut self, name: String, typedef: CType) -> Result<()> {
-        if self.is_typedef(&name).is_some() {
+    fn add_typedef(&mut self, name: StringPoolRef, typedef: CType) -> Result<()> {
+        if self.get_typedef(name).is_some() {
             return Err(ParseError::RedeclaredTypedef.into());
         }
 
@@ -238,10 +247,10 @@ impl ParserState {
 
     /// Looks up typedefs with a given name, starting from the current scope
     /// and working up to top lexical scope (i.e. file scope)
-    fn is_typedef(&mut self, name: &str) -> Option<&CType> {
+    fn get_typedef(&self, name: StringPoolRef) -> Option<&CType> {
         let mut scope = self.current_scope;
         loop {
-            if let Some(typedef) = self.typedefs[scope.index as usize].get(name) {
+            if let Some(typedef) = self.typedefs[scope.index as usize].get(&name) {
                 return Some(typedef);
             }
 
@@ -610,7 +619,8 @@ fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Result
         CLexemes::Colon => ExprPart::Operator(Operator::Colon),
 
         CLexemes::Identifier => {
-            let identifier = Identifier::new(state.current_scope, text.to_string());
+            let ident_str = state.string_pool.intern_string(text);
+            let identifier = Identifier::new(state.current_scope, ident_str);
             ExprPart::Atom(Atom::Identifier(identifier))
         }
 
@@ -929,9 +939,10 @@ fn parse_expr_rec(
                                     let member_token =
                                         toks.peek().ok_or(ParseError::UnexpectedEOF)?;
                                     if let CLexemes::Identifier = member_token.0 {
+                                        let member_str = state.string_pool.intern_string(member_token.1);
                                         let member = Identifier::new(
                                             state.current_scope,
-                                            member_token.1.to_string(),
+                                            member_str,
                                         );
                                         toks.eat(CLexemes::Identifier);
                                         lhs = ExpressionNode::DotAccess(Box::new(lhs), member);
@@ -944,9 +955,10 @@ fn parse_expr_rec(
                                     let member_token =
                                         toks.peek().ok_or(ParseError::UnexpectedEOF)?;
                                     if let CLexemes::Identifier = member_token.0 {
+                                        let member_str = state.string_pool.intern_string(member_token.1);
                                         let member = Identifier::new(
                                             state.current_scope,
-                                            member_token.1.to_string(),
+                                            member_str
                                         );
                                         toks.eat(CLexemes::Identifier);
                                         lhs = ExpressionNode::ArrowAccess(Box::new(lhs), member);
@@ -1254,7 +1266,7 @@ fn parse_type_name(
     Ok(derived_type)
 }
 
-fn is_lookahead_type_name(toks: &mut impl TokenStream<CLexemes>, state: &mut ParserState) -> bool {
+fn is_lookahead_type_name(toks: &mut impl TokenStream<CLexemes>, state: &ParserState) -> bool {
     match toks.peek() {
         Some((lexeme, text, _)) => match lexeme {
             CLexemes::Const
@@ -1272,7 +1284,13 @@ fn is_lookahead_type_name(toks: &mut impl TokenStream<CLexemes>, state: &mut Par
             | CLexemes::Struct
             | CLexemes::Union
             | CLexemes::Enum => true,
-            CLexemes::Identifier => state.is_typedef(text).is_some(),
+            CLexemes::Identifier => {
+                let Some(text_str) = state.string_pool.lookup(text) else {
+                    // if it hasn't been interned yet, it cannot be a valid typedef
+                    return false;
+                };
+                state.get_typedef(text_str).is_some()
+            }
             _ => false,
         },
         None => false,
@@ -1283,7 +1301,7 @@ fn is_lookahead_type_name(toks: &mut impl TokenStream<CLexemes>, state: &mut Par
 // will need to be careful with typedefs here
 fn is_lookahead_declaration(
     toks: &mut impl TokenStream<CLexemes>,
-    state: &mut ParserState,
+    state: &ParserState,
 ) -> bool {
     match toks.peek() {
         Some((lexeme, text, _)) => match lexeme {
@@ -1307,7 +1325,13 @@ fn is_lookahead_declaration(
             | CLexemes::Struct
             | CLexemes::Union
             | CLexemes::Enum => true,
-            CLexemes::Identifier => state.is_typedef(text).is_some(),
+            CLexemes::Identifier => {
+                let Some(text_str) = state.string_pool.lookup(text) else {
+                    // if it hasn't been interned yet, it cannot be a valid typedef
+                    return false;
+                };
+                state.get_typedef(text_str).is_some()
+            }
             _ => false,
         },
         None => false,
@@ -1631,7 +1655,8 @@ fn parse_declaration_specifiers_base(
 
                 // typedef
                 CLexemes::Identifier => {
-                    if let Some(ty) = state.is_typedef(text) {
+                    let text_str = state.string_pool.intern_string(text);
+                    if let Some(ty) = state.get_typedef(text_str) {
                         if struct_or_union_or_enum.is_some()
                             || !primitive_type_specifiers.is_empty()
                             || typedef.is_some()
@@ -1766,13 +1791,13 @@ fn parse_struct_specifier(
     let struct_tag = match toks.peek() {
         Some((CLexemes::LBrace, _, _)) => None,
         Some((CLexemes::Identifier, tag, _)) => {
-            let tag = String::from(tag);
+            let tag_str = state.string_pool.intern_string(tag);
             toks.eat(CLexemes::Identifier);
 
             match toks.peek() {
-                Some((CLexemes::LBrace, _, _)) => Some(tag),
+                Some((CLexemes::LBrace, _, _)) => Some(tag_str),
                 Some((_, _, _)) => {
-                    let incomplete_struct = StructureType::new_incomplete_structure_type(tag);
+                    let incomplete_struct = StructureType::new_incomplete_structure_type(Some(tag_str));
                     let incomplete_type_idx = state.add_structure_type(incomplete_struct);
                     return Ok(incomplete_type_idx);
                 }
@@ -1820,13 +1845,13 @@ fn parse_union_specifier(
     let union_tag = match toks.peek() {
         Some((CLexemes::LBrace, _, _)) => None,
         Some((CLexemes::Identifier, tag, _)) => {
-            let tag = String::from(tag);
+            let tag_str = state.string_pool.intern_string(tag);
             toks.eat(CLexemes::Identifier);
 
             match toks.peek() {
-                Some((CLexemes::LBrace, _, _)) => Some(tag),
+                Some((CLexemes::LBrace, _, _)) => Some(tag_str),
                 Some((_, _, _)) => {
-                    let incomplete_union = UnionType::new_incomplete_union_type(tag);
+                    let incomplete_union = UnionType::new_incomplete_union_type(Some(tag_str));
                     let incomplete_type_idx = state.add_union_type(incomplete_union);
                     return Ok(incomplete_type_idx);
                 }
@@ -1878,14 +1903,14 @@ fn parse_enum_specifier(
             None
         }
         Some((CLexemes::Identifier, ident, _)) => {
-            let tag = String::from(ident);
+            let ident_str = state.string_pool.intern_string(ident);
             toks.eat(CLexemes::Identifier);
 
             let next_tok = toks.peek();
             match next_tok {
-                Some((CLexemes::LBrace, _, _)) => Some(tag),
+                Some((CLexemes::LBrace, _, _)) => Some(ident_str),
                 Some(_) => {
-                    let incomplete_type = EnumType::new_incomplete_enum_type(tag);
+                    let incomplete_type = EnumType::new_incomplete_enum_type(Some(ident_str));
                     let incomplete_type_idx = state.add_enum_type(incomplete_type);
                     return Ok(incomplete_type_idx);
                 }
@@ -1899,13 +1924,13 @@ fn parse_enum_specifier(
     toks.eat(CLexemes::LBrace);
 
     let mut counter: i32 = 0;
-    let mut enum_members: Vec<(String, i32)> = Vec::new();
+    let mut enum_members: Vec<(StringPoolRef, i32)> = Vec::new();
     loop {
         // 1. match identifier
-        let enum_constant_name: String;
+        let enum_constant_name: StringPoolRef;
         match toks.peek() {
             Some((CLexemes::Identifier, name, _)) => {
-                enum_constant_name = name.to_string();
+                enum_constant_name = state.string_pool.intern_string(name);
                 toks.eat(CLexemes::Identifier);
             }
             Some((CLexemes::RBrace, _, _)) => {
@@ -1922,7 +1947,7 @@ fn parse_enum_specifier(
         // 2. comma -> go next, brace -> break, other -> bad token, equal -> expect int
         match toks.peek() {
             Some((CLexemes::Comma, _, _)) => {
-                enum_members.push((enum_constant_name.clone(), counter));
+                enum_members.push((enum_constant_name, counter));
 
                 toks.eat(CLexemes::Comma);
                 counter += 1;
@@ -2091,7 +2116,7 @@ fn parse_initializer(
 
 // The concept of a declarator basically only exists during parsing and isn't semantically meaningful elsewhere
 // "abstract" declarator has no identifier
-struct Declarator(CType, Option<String>);
+struct Declarator(CType, Option<StringPoolRef>);
 fn parse_declarator_base(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
@@ -2104,7 +2129,7 @@ fn parse_declarator_base(
         FunctionDeclarator(FunctionDeclarator),
     }
     let mut array_or_function_declarators: Vec<(ArrayOrFunctionDeclarator, usize)> = Vec::new();
-    let mut identifier: Option<String> = None;
+    let mut identifier: Option<StringPoolRef> = None;
     let mut level: usize = 0;
     let mut max_level: usize = 0;
     loop {
@@ -2140,7 +2165,8 @@ fn parse_declarator_base(
                 }
             }
             Some((CLexemes::Identifier, ident, _)) => {
-                identifier = Some(ident.to_string());
+                let ident_str = state.string_pool.intern_string(ident);
+                identifier = Some(ident_str);
                 toks.eat(CLexemes::Identifier);
                 break;
             }
@@ -2252,7 +2278,7 @@ fn parse_declarator(
     toks: &mut impl TokenStream<CLexemes>,
     state: &mut ParserState,
     base_type: CType,
-) -> Result<(CType, String)> {
+) -> Result<(CType, StringPoolRef)> {
     let decl = parse_declarator_base(toks, state, base_type)?;
     if let Some(ident) = decl.1 {
         Ok((decl.0, ident))
@@ -2489,7 +2515,7 @@ fn parse_labeled_statement(
 ) -> Result<ASTNode> {
     match toks.peek() {
         Some((CLexemes::Identifier, label, _)) => {
-            let label = label.to_string();
+            let label_str = state.string_pool.intern_string(label);
             toks.eat(CLexemes::Identifier);
             eat_or_error!(toks, CLexemes::Colon)?;
 
@@ -2499,7 +2525,7 @@ fn parse_labeled_statement(
             let labelee = parse_statement(toks, state)?;
             let labelee = Box::new(labelee);
 
-            let label_ident = Identifier::new(state.current_scope, label);
+            let label_ident = Identifier::new(state.current_scope, label_str);
             let label_node = ASTNode::Label(labelee, label_ident);
 
             Ok(label_node)
@@ -2743,7 +2769,8 @@ fn parse_jump_statement(
             toks.eat(CLexemes::Goto);
             match toks.peek() {
                 Some((CLexemes::Identifier, ident, _)) => {
-                    let ident = Identifier::new(state.current_scope, ident.to_string());
+                    let ident_str = state.string_pool.intern_string(ident);
+                    let ident = Identifier::new(state.current_scope, ident_str);
                     eat_or_error!(toks, CLexemes::Semicolon)?;
                     Ok(ASTNode::GotoStatement(ident))
                 }
