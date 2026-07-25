@@ -3,6 +3,7 @@ pub mod earley;
 pub mod grammar;
 pub mod hand_parser;
 pub mod lr;
+pub(crate) mod string_pool;
 
 use std::error::Error;
 
