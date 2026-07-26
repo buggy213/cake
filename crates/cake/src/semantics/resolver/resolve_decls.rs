@@ -1,6 +1,6 @@
 use std::mem::MaybeUninit;
 
-use crate::parser::string_pool::StringPoolRef;
+use crate::scanner::string_pool::StringPoolRef;
 use crate::semantics::resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode};
 use crate::semantics::resolver::resolve_exprs::ResolveExprContext;
 use crate::semantics::resolver::{IntermediateAST, resolve_expr};

@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use super::symtab::{Scope, SymbolTable, SymtabError};
 use crate::parser::hand_parser::ParserState;
-use crate::parser::string_pool::StringPool;
+use crate::scanner::string_pool::StringPool;
 use crate::semantics::resolved_ast::{
     ContextRef, ExprRangeRef, ExprRef, NodeRangeRef, NodeRef, ResolvedASTNode, TypedExpressionNode,
 };
@@ -85,10 +85,7 @@ pub(crate) struct ResolvedAST {
     pub(crate) symtab: SymbolTable,
     pub(crate) resolve_contexts: Vec<ResolverContext>,
     pub(crate) layouts: Layouts,
-
-    // identifiers are interned during parsing; need to be kept around
-    // for codegen
-    pub(crate) string_pool: StringPool,
+    pub(crate) string_pool: StringPool
 }
 
 // during postorder walk, need to have uninitialized values
@@ -397,6 +394,7 @@ struct ParserTypes<'p> {
 pub(crate) fn resolve_ast(
     ast_root: ASTNode,
     parser_state: ParserState,
+    string_pool: StringPool,
 ) -> Result<ResolvedAST, ASTResolveError> {
     let ParserState {
         scopes,
@@ -404,7 +402,6 @@ pub(crate) fn resolve_ast(
         structure_types,
         union_types,
         function_types,
-        string_pool,
         ..
     } = parser_state;
 
@@ -1240,8 +1237,8 @@ impl Resolver {
     }
 
     pub fn resolve_ast(self) -> Result<ResolveOutput, Box<dyn std::error::Error>> {
-        let ParseOutput { root_node, final_parse_state } = self.parse_output;
-        let resolved_ast = resolve_ast(root_node, final_parse_state)?;
+        let ParseOutput { root_node, final_parse_state, string_pool } = self.parse_output;
+        let resolved_ast = resolve_ast(root_node, final_parse_state, string_pool)?;
         Ok(ResolveOutput { resolved_ast })
     }
 }
@@ -1249,8 +1246,7 @@ impl Resolver {
 #[cfg(test)]
 pub(crate) mod resolve_ast_tests {
     use crate::{
-        parser::hand_parser::{CTokenStream, ParserState, parse_translation_unit},
-        scanner::{lexeme_sets::c_lexemes::CLexemes, table_scanner::DFAScanner},
+        parser::hand_parser::{ParserState, parse_translation_unit}, scanner::{RawCTokenStream, RawTokenStream, lexeme_sets::c_lexemes::CLexemes, table_scanner::DFAScanner},
     };
 
     use super::{ResolvedAST, resolve_ast};
@@ -1262,13 +1258,15 @@ pub(crate) mod resolve_ast_tests {
     pub(crate) fn resolve_harness(input: ResolveHarnessInput) -> ResolvedAST {
         // parse code
         let scanner = DFAScanner::load_lexeme_set_scanner::<CLexemes>();
-        let mut toks = CTokenStream::new(scanner, input.code.as_bytes());
+        let mut toks = RawCTokenStream::new(
+            RawTokenStream::new(input.code.as_bytes())
+        );
         let mut state = ParserState::new();
 
         // resolve parsed input
         let parse_result =
             parse_translation_unit(&mut toks, &mut state).expect("unsuccessful parse");
-        let resolve_result = resolve_ast(parse_result, state).expect("resolve unsuccessful");
+        let resolve_result = resolve_ast(parse_result, state, toks.string_pool).expect("resolve unsuccessful");
 
         // compare
         dbg!(&resolve_result);

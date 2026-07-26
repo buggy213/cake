@@ -1,10 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use super::*;
-use crate::{parser::string_pool::{StringPoolImpl, StringPoolProxy}, scanner::table_scanner::DFAScanner};
+use crate::scanner::{RawCTokenStream, RawTokenStream, string_pool::StringPool};
 
 impl ParserState {
-    fn new_with_shared_string_pool(shared_string_pool: Rc<RefCell<StringPoolImpl>>) -> Self {
+    fn new_with_shared_string_pool(shared_string_pool: Rc<RefCell<StringPool>>) -> Self {
         let file_scope = Scope::new_file_scope();
         Self {
             scopes: vec![file_scope],
@@ -15,22 +15,21 @@ impl ParserState {
             union_types: Vec::new(),
             function_types: Vec::new(),
 
-            string_pool: StringPoolProxy { inner: shared_string_pool },
-
             typedefs: vec![Default::default()],
         }
     }
 }
 
 struct ParserTestHarness<'text> {
-    toks: CTokenStream<'text>,
+    toks: RawCTokenStream<'text>,
     state: ParserState,
     dummy_state: ParserState,
 }
 fn text_test_harness<'text>(text: &'text str) -> ParserTestHarness<'text> {
-    let shared_string_pool = Rc::new(RefCell::new(StringPoolImpl::new()));
-    let scanner = DFAScanner::load_lexeme_set_scanner::<CLexemes>();
-    let toks = CTokenStream::new(scanner, text.as_bytes());
+    let shared_string_pool = Rc::new(RefCell::new(StringPool::new()));
+    let toks = RawCTokenStream::new(
+        RawTokenStream::new(text.as_bytes())
+    );
     let state = ParserState::new_with_shared_string_pool(Rc::clone(&shared_string_pool));
     let dummy_state = ParserState::new_with_shared_string_pool(shared_string_pool);
     ParserTestHarness { toks, state, dummy_state }
@@ -43,13 +42,13 @@ fn assert_types_eq(actual: &ParserState, expected: &ParserState) {
     assert_eq!(actual.function_types, expected.function_types);
 }
 
-fn make_identifier(state: &mut ParserState, name: &str) -> Identifier {
-    let name_str = state.string_pool.intern_string(name);
+fn make_identifier(state: &mut ParserState, string_pool: &mut StringPool, name: &str) -> Identifier {
+    let name_str = string_pool.intern_string(name);
     Identifier::new(state.current_scope, name_str)
 }
 
-fn make_identifier_expr(state: &mut ParserState, name: &str) -> ExpressionNode {
-    let ident = make_identifier(state, name);
+fn make_identifier_expr(state: &mut ParserState, string_pool: &mut StringPool, name: &str) -> ExpressionNode {
+    let ident = make_identifier(state, string_pool, name);
     ExpressionNode::Identifier(ident)
 }
 
@@ -79,7 +78,7 @@ fn test_parse_expr_basic() {
         ..
     } = text_test_harness(basic_expr);
 
-    let lhs = Box::new(make_identifier_expr(&mut state, "a"));
+    let lhs = Box::new(make_identifier_expr(&mut state, &mut toks.string_pool, "a"));
 
     let rhs = {
         let lhs = lhs.clone();
@@ -103,11 +102,11 @@ fn test_parse_expr_precedence() {
     } = text_test_harness(basic_expr);
 
     // (a || (b && (c + (d / e))))
-    let a = make_identifier_expr(&mut state, "a");
-    let b = make_identifier_expr(&mut state, "b");
-    let c = make_identifier_expr(&mut state, "c");
-    let d = make_identifier_expr(&mut state, "d");
-    let e = make_identifier_expr(&mut state, "e");
+    let b = make_identifier_expr(&mut state, &mut toks.string_pool, "b");
+    let a = make_identifier_expr(&mut state, &mut toks.string_pool, "a");
+    let c = make_identifier_expr(&mut state, &mut toks.string_pool, "c");
+    let d = make_identifier_expr(&mut state, &mut toks.string_pool, "d");
+    let e = make_identifier_expr(&mut state, &mut toks.string_pool, "e");
 
     let expr = {
         let rhs = {
@@ -136,9 +135,9 @@ fn test_parse_expr_parenthesized() {
     } = text_test_harness(basic_expr);
 
     // (a || (b && (c + (d / e))))
-    let a = make_identifier_expr(&mut state, "a");
-    let b = make_identifier_expr(&mut state, "b");
-    let c = make_identifier_expr(&mut state, "c");
+    let a = make_identifier_expr(&mut state, &mut toks.string_pool, "a");
+    let b = make_identifier_expr(&mut state, &mut toks.string_pool, "b");
+    let c = make_identifier_expr(&mut state, &mut toks.string_pool, "c");
 
     let expr = {
         let rhs = { make_expr!(ExpressionNode::Add, b, c) };
@@ -195,8 +194,8 @@ fn test_parse_expr_member_access() {
         ..
     } = text_test_harness(basic_expr);
 
-    let a = make_identifier_expr(&mut state, "a");
-    let b_ident = make_identifier(&mut state, "b");
+    let a = make_identifier_expr(&mut state, &mut toks.string_pool, "a");
+    let b_ident = make_identifier(&mut state, &mut toks.string_pool, "b");
     let expr = ExpressionNode::DotAccess(Box::new(a), b_ident);
 
     let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
@@ -214,8 +213,8 @@ fn test_parse_expr_arrow_access() {
         ..
     } = text_test_harness(basic_expr);
 
-    let a = make_identifier_expr(&mut state, "a");
-    let b_ident = make_identifier(&mut state, "b");
+    let a = make_identifier_expr(&mut state, &mut toks.string_pool, "a");
+    let b_ident = make_identifier(&mut state, &mut toks.string_pool, "b");
     let expr = ExpressionNode::ArrowAccess(Box::new(a), b_ident);
 
     let parsed = parse_expr(&mut toks, &mut state).expect("failed to parse");
@@ -234,9 +233,9 @@ fn test_parse_expr_member_access_left_associativity() {
     } = text_test_harness(basic_expr);
 
     // Should parse as (a.b).c, not a.(b.c)
-    let a = make_identifier_expr(&mut state, "a");
-    let b_ident = make_identifier(&mut state, "b");
-    let c_ident = make_identifier(&mut state, "c");
+    let a = make_identifier_expr(&mut state, &mut toks.string_pool, "a");
+    let b_ident = make_identifier(&mut state, &mut toks.string_pool, "b");
+    let c_ident = make_identifier(&mut state, &mut toks.string_pool, "c");
 
     let inner_dot = ExpressionNode::DotAccess(Box::new(a), b_ident);
     let expr = ExpressionNode::DotAccess(Box::new(inner_dot), c_ident);
@@ -257,10 +256,10 @@ fn test_parse_expr_member_access_with_arithmetic() {
     } = text_test_harness(basic_expr);
 
     // Should parse as (a.b) + (c.d)
-    let a = make_identifier_expr(&mut state, "a");
-    let b_ident = make_identifier(&mut state, "b");
-    let c = make_identifier_expr(&mut state, "c");
-    let d_ident = make_identifier(&mut state, "d");
+    let a = make_identifier_expr(&mut state, &mut toks.string_pool, "a");
+    let b_ident = make_identifier(&mut state, &mut toks.string_pool, "b");
+    let c = make_identifier_expr(&mut state, &mut toks.string_pool, "c");
+    let d_ident = make_identifier(&mut state, &mut toks.string_pool, "d");
 
     let a_dot_b = ExpressionNode::DotAccess(Box::new(a), b_ident);
     let c_dot_d = ExpressionNode::DotAccess(Box::new(c), d_ident);
@@ -281,7 +280,7 @@ fn test_parse_subscript_expr() {
 
     let expr = {
         let lhs = {
-            let buf = make_identifier_expr(&mut state, "buf");
+            let buf = make_identifier_expr(&mut state, &mut toks.string_pool, "buf");
             let index = make_constant!(Constant::Int, 0);
             make_expr!(ExpressionNode::ArraySubscript, buf, index)
         };
@@ -344,8 +343,8 @@ fn test_parse_hello_world() {
             
             let fn_type = FunctionType {
                 parameter_types: vec![
-                    (Some(dummy_state.string_pool.intern_string("argc")), argc_type),
-                    (Some(dummy_state.string_pool.intern_string("argv")), argv_type),
+                    (Some(toks.string_pool.intern_string("argc")), argc_type),
+                    (Some(toks.string_pool.intern_string("argv")), argv_type),
                 ],
                 return_type: return_type,
                 function_specifier: FunctionSpecifier::None,
@@ -358,7 +357,7 @@ fn test_parse_hello_world() {
             let body = {
                 dummy_state.open_scope(ScopeType::BlockScope);
                 let printf = {
-                    let printf_ident = make_identifier_expr(&mut dummy_state, "printf");
+                    let printf_ident = make_identifier_expr(&mut dummy_state, &mut toks.string_pool, "printf");
                     let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
                     let printf_expr =
                         ExpressionNode::FunctionCall(Box::new(printf_ident), vec![printf_arg]);
@@ -379,7 +378,7 @@ fn test_parse_hello_world() {
             };
 
             let fn_declaration = Declaration::new(
-                make_identifier(&mut dummy_state, "main"),
+                make_identifier(&mut dummy_state, &mut toks.string_pool, "main"),
                 fn_type,
                 StorageClass::None,
                 false,
@@ -457,7 +456,7 @@ fn test_parse_hello_world_unnamed_args() {
             let body = {
                 dummy_state.open_scope(ScopeType::BlockScope);
                 let printf = {
-                    let printf_ident = make_identifier_expr(&mut dummy_state, "printf");
+                    let printf_ident = make_identifier_expr(&mut dummy_state, &mut toks.string_pool, "printf");
                     let printf_arg = ExpressionNode::StringLiteral("Hello world!".to_string());
                     let printf_expr =
                         ExpressionNode::FunctionCall(Box::new(printf_ident), vec![printf_arg]);
@@ -478,7 +477,7 @@ fn test_parse_hello_world_unnamed_args() {
             };
 
             let fn_declaration = Declaration::new(
-                make_identifier(&mut dummy_state, "main"),
+                make_identifier(&mut dummy_state, &mut toks.string_pool, "main"),
                 fn_type,
                 StorageClass::None,
                 false,
@@ -675,7 +674,7 @@ fn parse_struct_declaration_incomplete() {
         mut state, 
         mut dummy_state
     } = text_test_harness(&incomplete_struct_str);
-    let struct_type = StructureType::new_incomplete_structure_type(Some(dummy_state.string_pool.intern_string("test")));
+    let struct_type = StructureType::new_incomplete_structure_type(Some(toks.string_pool.intern_string("test")));
     let struct_type_idx = dummy_state.add_structure_type(struct_type);
     let struct_type = CType::StructureTypeRef {
         qualifier: TypeQualifier::empty(),
@@ -684,7 +683,7 @@ fn parse_struct_declaration_incomplete() {
 
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed_expected = ASTNode::Declaration(vec![Declaration::new(
-        make_identifier(&mut dummy_state, "s"),
+        make_identifier(&mut dummy_state, &mut toks.string_pool, "s"),
         struct_type,
         StorageClass::None,
         false,
@@ -711,7 +710,7 @@ fn parse_struct_declaration_anonymous() {
     } = text_test_harness(&anonymous_struct);
     let tag = None;
     let members = vec![(
-        dummy_state.string_pool.intern_string("k"),
+        toks.string_pool.intern_string("k"),
         CType::BasicType {
             qualifier: TypeQualifier::empty(),
             basic_type: BasicType::Int,
@@ -727,7 +726,7 @@ fn parse_struct_declaration_anonymous() {
 
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed_expected = ASTNode::Declaration(vec![Declaration::new(
-        make_identifier(&mut dummy_state, "s"),
+        make_identifier(&mut dummy_state, &mut toks.string_pool, "s"),
         struct_type,
         StorageClass::None,
         false,
@@ -752,9 +751,9 @@ fn parse_struct_declaration() {
         mut state, 
         mut dummy_state 
     } = text_test_harness(&complete_struct);
-    let tag = Some(dummy_state.string_pool.intern_string("complete"));
+    let tag = Some(toks.string_pool.intern_string("complete"));
     let members = vec![(
-        dummy_state.string_pool.intern_string("k"),
+        toks.string_pool.intern_string("k"),
         CType::BasicType {
             qualifier: TypeQualifier::empty(),
             basic_type: BasicType::Int,
@@ -770,7 +769,7 @@ fn parse_struct_declaration() {
 
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed_expected = ASTNode::Declaration(vec![Declaration::new(
-        make_identifier(&mut dummy_state, "t"),
+        make_identifier(&mut dummy_state, &mut toks.string_pool, "t"),
         struct_type,
         StorageClass::None,
         false,
@@ -801,14 +800,14 @@ fn parse_struct_declaration_recursive() {
     } = text_test_harness(&recursive_struct);
     let outer_struct_type = {
         let k = (
-            dummy_state.string_pool.intern_string("k"),
+            toks.string_pool.intern_string("k"),
             CType::BasicType {
                 qualifier: TypeQualifier::empty(),
                 basic_type: BasicType::Int,
             },
         );
 
-        let tag = Some(dummy_state.string_pool.intern_string("inner"));
+        let tag = Some(toks.string_pool.intern_string("inner"));
         let members = vec![k];
         let inner_struct_type = StructureType::new_complete_structure_type(tag, members);
         let inner_struct_type_idx = dummy_state.add_structure_type(inner_struct_type);
@@ -818,7 +817,7 @@ fn parse_struct_declaration_recursive() {
         };
         let next = {
             let recursive_struct_type =
-                StructureType::new_incomplete_structure_type(Some(dummy_state.string_pool.intern_string("recursive")));
+                StructureType::new_incomplete_structure_type(Some(toks.string_pool.intern_string("recursive")));
             let recursive_struct_type_idx = dummy_state.add_structure_type(recursive_struct_type);
             let ptr = CType::StructureTypeRef {
                 qualifier: TypeQualifier::empty(),
@@ -830,8 +829,8 @@ fn parse_struct_declaration_recursive() {
             }
         };
 
-        let tag = Some(dummy_state.string_pool.intern_string("recursive"));
-        let members = vec![(dummy_state.string_pool.intern_string("inner"), inner), (dummy_state.string_pool.intern_string("next"), next)];
+        let tag = Some(toks.string_pool.intern_string("recursive"));
+        let members = vec![(toks.string_pool.intern_string("inner"), inner), (toks.string_pool.intern_string("next"), next)];
         StructureType::new_complete_structure_type(tag, members)
     };
 
@@ -843,7 +842,7 @@ fn parse_struct_declaration_recursive() {
 
     let declaration_parsed = parse_declaration(&mut toks, &mut state).expect("parse failed");
     let declaration_parsed_expected = ASTNode::Declaration(vec![Declaration::new(
-        make_identifier(&mut dummy_state, "recursive_struct"),
+        make_identifier(&mut dummy_state, &mut toks.string_pool, "recursive_struct"),
         outer_struct_type,
         StorageClass::None,
         false,
@@ -868,9 +867,9 @@ fn parse_declaration_without_declarators() {
         mut state, 
         mut dummy_state 
     } = text_test_harness(&complete_struct);
-    let tag = Some(dummy_state.string_pool.intern_string("s"));
+    let tag = Some(toks.string_pool.intern_string("s"));
     let members = vec![(
-        dummy_state.string_pool.intern_string("s"),
+        toks.string_pool.intern_string("s"),
         CType::BasicType {
             qualifier: TypeQualifier::empty(),
             basic_type: BasicType::Int,
@@ -918,7 +917,7 @@ fn parse_typedef_basic() {
 
     let int_ptr = {
         Declaration::new(
-            Identifier::new(dummy_state.current_scope, dummy_state.string_pool.intern_string("int_ptr")),
+            Identifier::new(dummy_state.current_scope, toks.string_pool.intern_string("int_ptr")),
             int_ptr_type.clone(),
             StorageClass::None,
             true,
@@ -929,7 +928,7 @@ fn parse_typedef_basic() {
 
     let iptr = {
         Declaration::new(
-            Identifier::new(dummy_state.current_scope, dummy_state.string_pool.intern_string("iptr")),
+            Identifier::new(dummy_state.current_scope, toks.string_pool.intern_string("iptr")),
             int_ptr_type,
             StorageClass::None,
             false,
@@ -1003,7 +1002,7 @@ fn parse_for_stmt() {
     let i_init = make_constant!(Constant::Int, 0);
     let i = ASTNode::Declaration(vec![
         Declaration {
-            name: Identifier { name: dummy_state.string_pool.intern_string("i"), scope: dummy_state.current_scope }, 
+            name: Identifier { name: toks.string_pool.intern_string("i"), scope: dummy_state.current_scope }, 
             qualified_type: CType::BasicType { basic_type: BasicType::Int, qualifier: TypeQualifier::empty() }, 
             storage_class: StorageClass::None, 
             is_typedef: false, 
@@ -1013,13 +1012,13 @@ fn parse_for_stmt() {
     ]);
 
     let cond = {
-        let i_ident = make_identifier_expr(&mut dummy_state, "i");
+        let i_ident = make_identifier_expr(&mut dummy_state, &mut toks.string_pool, "i");
         let fifteen = make_constant!(Constant::Int, 15);
         make_expr!(ExpressionNode::LessThan, i_ident, fifteen)
     };
 
     let post = {
-        let i_ident = make_identifier_expr(&mut dummy_state, "i");
+        let i_ident = make_identifier_expr(&mut dummy_state, &mut toks.string_pool, "i");
         let one = make_constant!(Constant::Int, 1);
         make_expr!(ExpressionNode::AddAssign, i_ident, one)
     };

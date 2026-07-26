@@ -1,4 +1,4 @@
-use crate::parser::string_pool::StringPoolRef;
+use crate::scanner::string_pool::StringPoolRef;
 use crate::semantics::symtab::{Scope, StorageClass};
 
 use crate::types::{BasicType, CType, FunctionSpecifier};

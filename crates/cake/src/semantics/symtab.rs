@@ -4,7 +4,10 @@ use cake_util::{add_additional_index, make_type_idx};
 use thiserror::Error;
 
 use crate::{
-    parser::{ast::Constant, string_pool::StringPoolRef}, semantics::resolved_ast::{ExprRef, NodeRef}, types::{
+    parser::ast::Constant, 
+    scanner::string_pool::StringPoolRef, 
+    semantics::resolved_ast::{ExprRef, NodeRef}, 
+    types::{
         CType, EnumType, EnumTypeIdx, FunctionType, FunctionTypeIdx, StructureType,
         StructureTypeIdx, UnionType, UnionTypeIdx,
     },

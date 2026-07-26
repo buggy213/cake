@@ -10,13 +10,9 @@ use std::{error::Error, fmt::Display};
 use thiserror::Error;
 
 use crate::{
-    parser::{
-        ast::Constant, 
-        string_pool::{StringPool, StringPoolRef}
-    }, 
-    scanner::{TokenStream, lexeme_sets::c_lexemes::CLexemes}, 
-    semantics::symtab::{Scope, ScopeType, StorageClass, SymtabError}, 
-    types::{
+    parser::ast::Constant, scanner::{
+        InterningTokenStream, TokenStream, lexeme_sets::c_lexemes::CLexemes, string_pool::StringPoolRef
+    }, semantics::symtab::{Scope, ScopeType, StorageClass, SymtabError}, types::{
         EnumType, EnumTypeIdx, FunctionTypeIdx, StructureType, StructureTypeIdx, UnionType,
         UnionTypeIdx,
     },
@@ -28,8 +24,6 @@ use crate::types::{
 };
 
 use super::ast::{ASTNode, Declaration, ExpressionNode, Identifier};
-
-pub(crate) type CTokenStream<'a> = crate::scanner::RawTokenStream<'a, CLexemes>;
 
 macro_rules! eat_or_error {
     ($toks:expr, $tok:path) => {
@@ -178,10 +172,6 @@ pub(crate) struct ParserState {
     pub(crate) union_types: Vec<UnionType>,
     pub(crate) function_types: Vec<FunctionType>,
 
-    // string interning occurs at parsing stage
-    // identifiers are interned, but string literals are not
-    pub(crate) string_pool: StringPool,
-
     typedefs: Vec<HashMap<StringPoolRef, CType>>,
 }
 
@@ -196,8 +186,6 @@ impl ParserState {
             structure_types: Vec::new(),
             union_types: Vec::new(),
             function_types: Vec::new(),
-
-            string_pool: StringPool::new(),
 
             typedefs: vec![Default::default()],
         }
@@ -572,7 +560,7 @@ enum ExprPartResult {
     ParseError(ParseError),
 }
 
-fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Result<Option<ExprPart>> {
+fn to_expr_part(lexeme: CLexemes, text: &str, ident: StringPoolRef, current_scope: Scope) -> Result<Option<ExprPart>> {
     let expr_part = match lexeme {
         CLexemes::Increment => ExprPart::Operator(Operator::Increment),
         CLexemes::Decrement => ExprPart::Operator(Operator::Decrement),
@@ -619,8 +607,8 @@ fn to_expr_part(lexeme: CLexemes, text: &str, state: &mut ParserState) -> Result
         CLexemes::Colon => ExprPart::Operator(Operator::Colon),
 
         CLexemes::Identifier => {
-            let ident_str = state.string_pool.intern_string(text);
-            let identifier = Identifier::new(state.current_scope, ident_str);
+            assert!(ident.is_valid());
+            let identifier = Identifier::new(current_scope, ident);
             ExprPart::Atom(Atom::Identifier(identifier))
         }
 
@@ -752,8 +740,8 @@ fn infix_binding_power(op: Operator) -> Option<(u32, u32)> {
 
 // precedence climbing ("Pratt parsing") algorithm with some special case handling
 // for C specific syntax. in the first pass, no type checking is done
-pub(crate) fn parse_expr(
-    toks: &mut impl TokenStream<CLexemes>,
+pub(crate) fn parse_expr<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ExpressionNode> {
     let first = parse_assignment_expr(toks, state)?;
@@ -786,22 +774,22 @@ pub(crate) fn parse_expr(
     }
 }
 
-fn parse_assignment_expr(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_assignment_expr<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ExpressionNode> {
     parse_expr_rec(toks, state, 0)
 }
 
-fn parse_expr_rec(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_expr_rec<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
     min_bp: u32,
 ) -> Result<ExpressionNode> {
     let mut lhs: ExpressionNode;
     match toks.advance() {
-        Some((lexeme, text, _)) => {
-            let expr_part = match to_expr_part(lexeme, text, state)? {
+        Some((lexeme, text, ident_ref)) => {
+            let expr_part = match to_expr_part(lexeme, toks.text(text), ident_ref, state.current_scope)? {
                 Some(expr_part) => expr_part,
                 // we expected a token here, i think?
                 None => return Err(ParseError::UnexpectedToken(lexeme).into()),
@@ -883,8 +871,8 @@ fn parse_expr_rec(
 
     loop {
         match toks.peek() {
-            Some((lexeme, text, _)) => {
-                let expr_part = match to_expr_part(lexeme, text, state) {
+            Some((lexeme, text, ident_ref)) => {
+                let expr_part = match to_expr_part(lexeme, toks.text(text), ident_ref, state.current_scope) {
                     Ok(Some(expr_part)) => expr_part,
                     // next token might not be part of expression at all
                     Ok(None) => break,
@@ -939,10 +927,9 @@ fn parse_expr_rec(
                                     let member_token =
                                         toks.peek().ok_or(ParseError::UnexpectedEOF)?;
                                     if let CLexemes::Identifier = member_token.0 {
-                                        let member_str = state.string_pool.intern_string(member_token.1);
                                         let member = Identifier::new(
                                             state.current_scope,
-                                            member_str,
+                                            member_token.2,
                                         );
                                         toks.eat(CLexemes::Identifier);
                                         lhs = ExpressionNode::DotAccess(Box::new(lhs), member);
@@ -955,10 +942,9 @@ fn parse_expr_rec(
                                     let member_token =
                                         toks.peek().ok_or(ParseError::UnexpectedEOF)?;
                                     if let CLexemes::Identifier = member_token.0 {
-                                        let member_str = state.string_pool.intern_string(member_token.1);
                                         let member = Identifier::new(
                                             state.current_scope,
-                                            member_str
+                                            member_token.2
                                         );
                                         toks.eat(CLexemes::Identifier);
                                         lhs = ExpressionNode::ArrowAccess(Box::new(lhs), member);
@@ -1101,8 +1087,8 @@ fn parse_expr_rec(
 
 // <translation-unit> ::= <external-declaration>
 // | <translation-unit> <external-declaration>
-pub(crate) fn parse_translation_unit(
-    toks: &mut impl TokenStream<CLexemes>,
+pub(crate) fn parse_translation_unit<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     let mut external_declarations = Vec::new();
@@ -1119,8 +1105,8 @@ pub(crate) fn parse_translation_unit(
 // | <declaration>
 // way to distinguish is that declarations end with a semicolon while function definitions
 // have a compound statement
-fn parse_external_declaration(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_external_declaration<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     // both will include declaration specifiers
@@ -1235,8 +1221,8 @@ fn parse_external_declaration(
     }
 }
 
-fn parse_declaration(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_declaration<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     let declaration_specifiers = parse_declaration_specifiers(toks, state)?;
@@ -1257,8 +1243,8 @@ fn parse_declaration(
 
 // may need to change this interface later
 // type names are used during cast expressions, as argument of sizeof, and in compound initializers
-fn parse_type_name(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_type_name<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<CType> {
     let base_type = parse_specifier_qualifier_list(toks, state)?;
@@ -1266,9 +1252,12 @@ fn parse_type_name(
     Ok(derived_type)
 }
 
-fn is_lookahead_type_name(toks: &mut impl TokenStream<CLexemes>, state: &ParserState) -> bool {
+fn is_lookahead_type_name<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>, 
+    state: &ParserState
+) -> bool {
     match toks.peek() {
-        Some((lexeme, text, _)) => match lexeme {
+        Some((lexeme, text, ident_ref)) => match lexeme {
             CLexemes::Const
             | CLexemes::Volatile
             | CLexemes::Restrict
@@ -1285,11 +1274,7 @@ fn is_lookahead_type_name(toks: &mut impl TokenStream<CLexemes>, state: &ParserS
             | CLexemes::Union
             | CLexemes::Enum => true,
             CLexemes::Identifier => {
-                let Some(text_str) = state.string_pool.lookup(text) else {
-                    // if it hasn't been interned yet, it cannot be a valid typedef
-                    return false;
-                };
-                state.get_typedef(text_str).is_some()
+                state.get_typedef(ident_ref).is_some()
             }
             _ => false,
         },
@@ -1299,12 +1284,12 @@ fn is_lookahead_type_name(toks: &mut impl TokenStream<CLexemes>, state: &ParserS
 
 // distinguish between a declaration vs. expression
 // will need to be careful with typedefs here
-fn is_lookahead_declaration(
-    toks: &mut impl TokenStream<CLexemes>,
+fn is_lookahead_declaration<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &ParserState,
 ) -> bool {
     match toks.peek() {
-        Some((lexeme, text, _)) => match lexeme {
+        Some((lexeme, text, ident_ref)) => match lexeme {
             CLexemes::Typedef
             | CLexemes::Extern
             | CLexemes::Static
@@ -1326,11 +1311,7 @@ fn is_lookahead_declaration(
             | CLexemes::Union
             | CLexemes::Enum => true,
             CLexemes::Identifier => {
-                let Some(text_str) = state.string_pool.lookup(text) else {
-                    // if it hasn't been interned yet, it cannot be a valid typedef
-                    return false;
-                };
-                state.get_typedef(text_str).is_some()
+                state.get_typedef(ident_ref).is_some()
             }
             _ => false,
         },
@@ -1490,8 +1471,8 @@ fn parse_basic_type(basic_type_specifiers: &mut [BasicTypeLexeme]) -> Result<CTy
     }
 }
 
-fn parse_declaration_specifiers_base(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_declaration_specifiers_base<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
     parse_function_specifiers: bool,
     parse_storage_class: bool,
@@ -1507,7 +1488,7 @@ fn parse_declaration_specifiers_base(
     let mut is_typedef = false;
     loop {
         match toks.peek() {
-            Some((lexeme, text, _)) => match lexeme {
+            Some((lexeme, text, ident_ref)) => match lexeme {
                 CLexemes::Extern
                 | CLexemes::Auto
                 | CLexemes::Register
@@ -1655,8 +1636,7 @@ fn parse_declaration_specifiers_base(
 
                 // typedef
                 CLexemes::Identifier => {
-                    let text_str = state.string_pool.intern_string(text);
-                    if let Some(ty) = state.get_typedef(text_str) {
+                    if let Some(ty) = state.get_typedef(ident_ref) {
                         if struct_or_union_or_enum.is_some()
                             || !primitive_type_specifiers.is_empty()
                             || typedef.is_some()
@@ -1708,15 +1688,15 @@ fn parse_declaration_specifiers_base(
     Ok(declaration_specifiers)
 }
 
-fn parse_declaration_specifiers(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_declaration_specifiers<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<DeclarationSpecifiers> {
     parse_declaration_specifiers_base(toks, state, true, true)
 }
 
-fn parse_specifier_qualifier_list(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_specifier_qualifier_list<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<CType> {
     let DeclarationSpecifiers { qualified_type, .. } =
@@ -1724,8 +1704,8 @@ fn parse_specifier_qualifier_list(
     Ok(qualified_type)
 }
 
-fn parse_struct_declaration_list(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_struct_declaration_list<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<Vec<AggregateMember>> {
     let mut members: Vec<AggregateMember> = Vec::new();
@@ -1747,8 +1727,8 @@ fn parse_struct_declaration_list(
     Ok(members)
 }
 
-fn parse_struct_declarator_list(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_struct_declarator_list<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
     base_type: CType,
     members: &mut Vec<AggregateMember>,
@@ -1772,8 +1752,8 @@ fn parse_struct_declarator_list(
     }
 }
 
-fn parse_struct_specifier(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_struct_specifier<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<StructureTypeIdx> {
     match toks.peek() {
@@ -1790,14 +1770,13 @@ fn parse_struct_specifier(
 
     let struct_tag = match toks.peek() {
         Some((CLexemes::LBrace, _, _)) => None,
-        Some((CLexemes::Identifier, tag, _)) => {
-            let tag_str = state.string_pool.intern_string(tag);
+        Some((CLexemes::Identifier, tag, ident_ref)) => {
             toks.eat(CLexemes::Identifier);
 
             match toks.peek() {
-                Some((CLexemes::LBrace, _, _)) => Some(tag_str),
+                Some((CLexemes::LBrace, _, _)) => Some(ident_ref),
                 Some((_, _, _)) => {
-                    let incomplete_struct = StructureType::new_incomplete_structure_type(Some(tag_str));
+                    let incomplete_struct = StructureType::new_incomplete_structure_type(Some(ident_ref));
                     let incomplete_type_idx = state.add_structure_type(incomplete_struct);
                     return Ok(incomplete_type_idx);
                 }
@@ -1826,8 +1805,8 @@ fn parse_struct_specifier(
     Ok(type_idx)
 }
 
-fn parse_union_specifier(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_union_specifier<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<UnionTypeIdx> {
     match toks.peek() {
@@ -1844,14 +1823,13 @@ fn parse_union_specifier(
 
     let union_tag = match toks.peek() {
         Some((CLexemes::LBrace, _, _)) => None,
-        Some((CLexemes::Identifier, tag, _)) => {
-            let tag_str = state.string_pool.intern_string(tag);
+        Some((CLexemes::Identifier, tag, ident_ref)) => {
             toks.eat(CLexemes::Identifier);
 
             match toks.peek() {
-                Some((CLexemes::LBrace, _, _)) => Some(tag_str),
+                Some((CLexemes::LBrace, _, _)) => Some(ident_ref),
                 Some((_, _, _)) => {
-                    let incomplete_union = UnionType::new_incomplete_union_type(Some(tag_str));
+                    let incomplete_union = UnionType::new_incomplete_union_type(Some(ident_ref));
                     let incomplete_type_idx = state.add_union_type(incomplete_union);
                     return Ok(incomplete_type_idx);
                 }
@@ -1880,8 +1858,8 @@ fn parse_union_specifier(
     Ok(type_idx)
 }
 
-fn parse_enum_specifier(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_enum_specifier<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<EnumTypeIdx> {
     match toks.peek() {
@@ -1902,15 +1880,14 @@ fn parse_enum_specifier(
             toks.eat(CLexemes::LBrace);
             None
         }
-        Some((CLexemes::Identifier, ident, _)) => {
-            let ident_str = state.string_pool.intern_string(ident);
+        Some((CLexemes::Identifier, ident, ident_ref)) => {
             toks.eat(CLexemes::Identifier);
 
             let next_tok = toks.peek();
             match next_tok {
-                Some((CLexemes::LBrace, _, _)) => Some(ident_str),
+                Some((CLexemes::LBrace, _, _)) => Some(ident_ref),
                 Some(_) => {
-                    let incomplete_type = EnumType::new_incomplete_enum_type(Some(ident_str));
+                    let incomplete_type = EnumType::new_incomplete_enum_type(Some(ident_ref));
                     let incomplete_type_idx = state.add_enum_type(incomplete_type);
                     return Ok(incomplete_type_idx);
                 }
@@ -1929,8 +1906,8 @@ fn parse_enum_specifier(
         // 1. match identifier
         let enum_constant_name: StringPoolRef;
         match toks.peek() {
-            Some((CLexemes::Identifier, name, _)) => {
-                enum_constant_name = state.string_pool.intern_string(name);
+            Some((CLexemes::Identifier, name, ident_ref)) => {
+                enum_constant_name = ident_ref;
                 toks.eat(CLexemes::Identifier);
             }
             Some((CLexemes::RBrace, _, _)) => {
@@ -1975,9 +1952,10 @@ fn parse_enum_specifier(
         }
 
         match toks.peek() {
-            Some((CLexemes::IntegerConst, int_str, _)) => {
+            Some((CLexemes::IntegerConst, int_span, _)) => {
                 // TODO: technically any integer constant expression is ok, but just ignore this for now
                 // until can parse constant expressions more generally.
+                let int_str = toks.text(int_span);
                 let enum_value = int_str
                     .parse::<i32>()
                     .map_err(|_| ParseError::InvalidEnumConstant(int_str.to_string()))?;
@@ -1988,7 +1966,7 @@ fn parse_enum_specifier(
                 toks.eat(CLexemes::IntegerConst);
             }
             Some((_, text, _)) => {
-                return Err(ParseError::InvalidEnumConstant(text.to_string()).into());
+                return Err(ParseError::InvalidEnumConstant(toks.text(text).to_string()).into());
             }
             None => {
                 return Err(ParseError::UnexpectedEOF.into());
@@ -2021,12 +1999,11 @@ fn parse_enum_specifier(
     let enum_type = EnumType::new_complete_enum_type(enum_tag, enum_members);
     let enum_type_idx = state.add_enum_type(enum_type);
 
-    let end = toks.get_location();
     Ok(enum_type_idx)
 }
 
-fn parse_init_declarators(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_init_declarators<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
     declaration_specifiers: DeclarationSpecifiers,
 ) -> Result<ASTNode> {
@@ -2062,8 +2039,8 @@ fn parse_init_declarators(
     }
 }
 
-fn parse_init_declarator(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_init_declarator<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
     declaration_specifiers: DeclarationSpecifiers,
 ) -> Result<Declaration> {
@@ -2101,8 +2078,8 @@ fn parse_init_declarator(
     Ok(declaration)
 }
 
-fn parse_initializer(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_initializer<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ExpressionNode> {
     match toks.peek() {
@@ -2117,8 +2094,8 @@ fn parse_initializer(
 // The concept of a declarator basically only exists during parsing and isn't semantically meaningful elsewhere
 // "abstract" declarator has no identifier
 struct Declarator(CType, Option<StringPoolRef>);
-fn parse_declarator_base(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_declarator_base<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
     base_type: CType,
 ) -> Result<Declarator> {
@@ -2164,9 +2141,8 @@ fn parse_declarator_base(
                     }
                 }
             }
-            Some((CLexemes::Identifier, ident, _)) => {
-                let ident_str = state.string_pool.intern_string(ident);
-                identifier = Some(ident_str);
+            Some((CLexemes::Identifier, ident, ident_ref)) => {
+                identifier = Some(ident_ref);
                 toks.eat(CLexemes::Identifier);
                 break;
             }
@@ -2274,8 +2250,8 @@ fn parse_declarator_base(
     Ok(Declarator(current_type, identifier))
 }
 
-fn parse_declarator(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_declarator<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
     base_type: CType,
 ) -> Result<(CType, StringPoolRef)> {
@@ -2287,8 +2263,8 @@ fn parse_declarator(
     }
 }
 
-fn parse_abstract_declarator(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_abstract_declarator<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
     base_type: CType,
 ) -> Result<CType> {
@@ -2302,8 +2278,8 @@ fn parse_abstract_declarator(
 
 #[derive(Debug)]
 struct PointerDeclarator(TypeQualifier);
-fn parse_pointer_declarator(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_pointer_declarator<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     _state: &mut ParserState,
 ) -> Result<PointerDeclarator> {
     let mut qualifier = TypeQualifier::empty();
@@ -2333,8 +2309,8 @@ fn parse_pointer_declarator(
 }
 #[derive(Debug, Clone, Copy)]
 struct ArrayDeclarator(TypeQualifier, Option<u32>);
-fn parse_array_declarator(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_array_declarator<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     _state: &mut ParserState,
 ) -> Result<ArrayDeclarator> {
     let mut qualifier = TypeQualifier::empty();
@@ -2354,8 +2330,8 @@ fn parse_array_declarator(
                 toks.eat(CLexemes::RBracket);
                 return Ok(ArrayDeclarator(qualifier, None));
             }
-            Some((CLexemes::IntegerConst, i, _)) => {
-                let size = i.parse::<u32>().map_err(|e| ParseError::BadArrayBound(e))?;
+            Some((CLexemes::IntegerConst, i_span, _)) => {
+                let size = toks.text(i_span).parse::<u32>().map_err(|e| ParseError::BadArrayBound(e))?;
                 eat_or_error!(toks, CLexemes::IntegerConst)?;
                 eat_or_error!(toks, CLexemes::RBracket)?;
                 return Ok(ArrayDeclarator(qualifier, Some(size)));
@@ -2383,8 +2359,8 @@ struct FunctionDeclarator {
 
 // will not support old-style function declarations because they are cringe
 // this code is used for both function prototypes and function definitions
-fn parse_function_declarator(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_function_declarator<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<FunctionDeclarator> {
     eat_or_error!(toks, CLexemes::LParen)?;
@@ -2462,8 +2438,8 @@ fn parse_function_declarator(
     }
 }
 
-fn parse_statement(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_statement<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     // only 1-2 token lookahead required to check for what type of statement it is
@@ -2488,7 +2464,10 @@ fn parse_statement(
     }
 }
 
-fn is_lookahead_label(toks: &mut impl TokenStream<CLexemes>, _state: &mut ParserState) -> bool {
+fn is_lookahead_label<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>, 
+    _state: &mut ParserState
+) -> bool {
     match toks.peek() {
         Some((lexeme, _, _)) => {
             match lexeme {
@@ -2509,13 +2488,12 @@ fn is_lookahead_label(toks: &mut impl TokenStream<CLexemes>, _state: &mut Parser
     }
 }
 
-fn parse_labeled_statement(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_labeled_statement<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     match toks.peek() {
-        Some((CLexemes::Identifier, label, _)) => {
-            let label_str = state.string_pool.intern_string(label);
+        Some((CLexemes::Identifier, label, ident_ref)) => {
             toks.eat(CLexemes::Identifier);
             eat_or_error!(toks, CLexemes::Colon)?;
 
@@ -2525,7 +2503,7 @@ fn parse_labeled_statement(
             let labelee = parse_statement(toks, state)?;
             let labelee = Box::new(labelee);
 
-            let label_ident = Identifier::new(state.current_scope, label_str);
+            let label_ident = Identifier::new(state.current_scope, ident_ref);
             let label_node = ASTNode::Label(labelee, label_ident);
 
             Ok(label_node)
@@ -2555,8 +2533,8 @@ fn parse_labeled_statement(
     }
 }
 
-fn parse_compound_statement(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_compound_statement<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     eat_or_error!(toks, CLexemes::LBrace)?;
@@ -2590,8 +2568,8 @@ fn parse_compound_statement(
     Ok(compound_node)
 }
 
-fn parse_expression_statement(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_expression_statement<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     match toks.peek() {
@@ -2611,8 +2589,8 @@ fn parse_expression_statement(
     }
 }
 
-fn parse_selection_statement(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_selection_statement<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     match toks.peek() {
@@ -2670,8 +2648,8 @@ fn parse_selection_statement(
     }
 }
 
-fn parse_iteration_statement(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_iteration_statement<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     match toks.peek() {
@@ -2760,17 +2738,16 @@ fn parse_iteration_statement(
     }
 }
 
-fn parse_jump_statement(
-    toks: &mut impl TokenStream<CLexemes>,
+fn parse_jump_statement<TokenSpan>(
+    toks: &mut impl InterningTokenStream<CLexemes, TokenSpan>,
     state: &mut ParserState,
 ) -> Result<ASTNode> {
     match toks.peek() {
         Some((CLexemes::Goto, _, _)) => {
             toks.eat(CLexemes::Goto);
             match toks.peek() {
-                Some((CLexemes::Identifier, ident, _)) => {
-                    let ident_str = state.string_pool.intern_string(ident);
-                    let ident = Identifier::new(state.current_scope, ident_str);
+                Some((CLexemes::Identifier, ident, ident_ref)) => {
+                    let ident = Identifier::new(state.current_scope, ident_ref);
                     eat_or_error!(toks, CLexemes::Semicolon)?;
                     Ok(ASTNode::GotoStatement(ident))
                 }

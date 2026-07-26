@@ -4,11 +4,15 @@ use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    cir::{BlockRef, CompareMode, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::{ast, string_pool::StringPoolRef}, semantics::{
+    cir::{BlockRef, CompareMode, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, 
+    scanner::string_pool::StringPoolRef,
+    parser::ast, 
+    semantics::{
         resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
         resolver::ResolvedAST,
         symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
-    }, types::{BasicType, CType, layout::Layouts},
+    }, 
+    types::{BasicType, CType, layout::Layouts},
 };
 
 impl From<BasicType> for Type {

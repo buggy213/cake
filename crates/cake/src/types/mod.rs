@@ -7,7 +7,7 @@ pub(crate) mod layout;
 use layout::{StructLayout, UnionLayout};
 
 use crate::{
-    parser::string_pool::StringPoolRef, semantics::symtab::{Scope, SymbolTable}, types::layout::Layouts,
+    scanner::string_pool::StringPoolRef, semantics::symtab::Scope, types::layout::Layouts,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

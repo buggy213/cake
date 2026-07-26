@@ -2,28 +2,32 @@
 //! 
 //! Uses `hashbrown::HashTable` and `rustc_hash::FxHasher` for fast lookup of strings
 
-use std::{cell::RefCell, hash::{Hash, Hasher}, rc::Rc};
+use std::{hash::{Hash, Hasher}, num::NonZero};
 
 use hashbrown::HashTable;
 use rustc_hash::FxHasher;
 
-pub(crate) struct StringPoolImpl {
+pub(crate) struct StringPool {
     backing_mem: Vec<u8>,
     hash_table: HashTable<StringPoolRef>,
     ends: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub(crate) struct StringPoolRef(u32);
+pub(crate) struct StringPoolRef(Option<NonZero<u32>>);
 impl StringPoolRef {
     pub(crate) fn invalid() -> StringPoolRef {
-        StringPoolRef(u32::MAX)
+        StringPoolRef(None)
+    }
+
+    pub(crate) fn is_valid(self) -> bool {
+        return self.0.is_some() 
     }
 }
 
-impl StringPoolImpl {
-    pub(crate) fn new() -> StringPoolImpl {
-        StringPoolImpl { 
+impl StringPool {
+    pub(crate) fn new() -> StringPool {
+        StringPool { 
             backing_mem: Vec::with_capacity(2 << 16), 
             hash_table: HashTable::new(),
             ends: Vec::new()
@@ -35,12 +39,12 @@ impl StringPoolImpl {
         s.hash(&mut fx_hasher);
 
         let eq = |&r: &StringPoolRef| -> bool {
-            StringPoolImpl::get_string_impl(&self.backing_mem, &self.ends, r) == s
+            StringPool::get_string_impl(&self.backing_mem, &self.ends, r) == s
         };
 
         let hasher = |&r: &StringPoolRef| -> u64 {
             let mut fx_hasher = FxHasher::default();
-            let s = StringPoolImpl::get_string_impl(&self.backing_mem, &self.ends, r);
+            let s = StringPool::get_string_impl(&self.backing_mem, &self.ends, r);
             s.hash(&mut fx_hasher);
             fx_hasher.finish()
         };
@@ -55,7 +59,9 @@ impl StringPoolImpl {
         match entry {
             Entry::Occupied(occupied_entry) => return *occupied_entry.get(),
             Entry::Vacant(vacant_entry) => {
-                let string_ref = StringPoolRef(self.ends.len() as u32);
+                let string_ref = StringPoolRef(
+                    NonZero::new(1 + self.ends.len() as u32)
+                );
                 self.backing_mem.extend_from_slice(s.as_bytes());      
                 self.ends.push(self.backing_mem.len() as u32);
                 vacant_entry.insert(string_ref);
@@ -69,7 +75,7 @@ impl StringPoolImpl {
         s.hash(&mut fx_hasher);
 
         let eq = |&r: &StringPoolRef| -> bool {
-            StringPoolImpl::get_string_impl(&self.backing_mem, &self.ends, r) == s
+            StringPool::get_string_impl(&self.backing_mem, &self.ends, r) == s
         };
 
         self.hash_table.find(
@@ -79,10 +85,16 @@ impl StringPoolImpl {
     }
 
     fn get_string_impl<'pool>(backing_mem: &'pool [u8], ends: &'pool [u32], r: StringPoolRef) -> &'pool str {
-        let start = if r.0 == 0 { 0usize } else {
-            ends[(r.0 - 1) as usize] as usize
+        let Some(r) = r.0 else {
+            panic!("invalid StringPoolRef used to index StringPool")
         };
-        let end = ends[r.0 as usize] as usize;
+
+        let r = r.get();
+        
+        let start = if r == 1 { 0usize } else {
+            ends[(r - 2) as usize] as usize
+        };
+        let end = ends[(r - 1) as usize] as usize;
 
         let slice = &backing_mem[start..end];
 
@@ -92,52 +104,22 @@ impl StringPoolImpl {
     }
 
     pub(crate) fn get_string(&self, r: StringPoolRef) -> &str {
-        StringPoolImpl::get_string_impl(&self.backing_mem, &self.ends, r)
+        StringPool::get_string_impl(&self.backing_mem, &self.ends, r)
     }
 
     fn iter_strings(&self) -> impl Iterator<Item = (StringPoolRef, &str)> {
-        (0..self.ends.len() as u32)
+        (1..=self.ends.len() as u32)
+            .map(NonZero::new)
             .map(StringPoolRef)
             .map(|r| (r, self.get_string(r)))
     }
 }
 
-impl std::fmt::Debug for StringPoolImpl {
+impl std::fmt::Debug for StringPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_map().entries(self.iter_strings()).finish()
     }
 }
-
-#[derive(Debug)]
-pub(crate) struct StringPoolProxy {
-    pub(crate) inner: Rc<RefCell<StringPoolImpl>>
-}
-
-impl StringPoolProxy {
-    pub(crate) fn new() -> StringPoolProxy {
-        StringPoolProxy { inner: Rc::new(RefCell::new(StringPoolImpl::new())) }
-    }
-    pub(crate) fn intern_string(&mut self, s: &str) -> StringPoolRef {
-        self.inner.borrow_mut().intern_string(s)
-    }
-    pub(crate) fn lookup(&self, s: &str) -> Option<StringPoolRef> {
-        self.inner.borrow().lookup(s)
-    }
-    pub(crate) fn get_string(&self, r: StringPoolRef) -> &str {
-        let inner_string_pool = self.inner.borrow();
-        let s = inner_string_pool.get_string(r);
-
-        // SAFETY: the only thing which can invalidate s is reallocation due to additional calls to
-        // `intern_string`. However, test code does not call get_string, and the parser code is already
-        // borrow checked in the non-test configuration
-        unsafe { std::mem::transmute::<&str, &'static str>(s) }
-    }
-}
-
-#[cfg(not(test))]
-pub(crate) type StringPool = StringPoolImpl;
-#[cfg(test)]
-pub(crate) type StringPool = StringPoolProxy;
 
 #[cfg(test)]
 mod tests {

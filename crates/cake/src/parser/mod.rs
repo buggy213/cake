@@ -1,28 +1,25 @@
 pub mod ast;
-pub mod earley;
-pub mod grammar;
 pub mod hand_parser;
-pub mod lr;
-pub(crate) mod string_pool;
 
 use std::error::Error;
 
-use crate::scanner::{TokenStream, lexeme_sets::c_lexemes::CLexemes};
+use crate::{Preprocessor, scanner::{PreprocessedCTokenStream, string_pool::StringPool}};
 
-pub struct HandParser<T> where T: TokenStream<CLexemes> {
-    tokens: T,
+pub struct HandParser {
+    tokens: PreprocessedCTokenStream,
     state: hand_parser::ParserState
 }
 
 pub struct ParseOutput {
     pub(crate) root_node: ast::ASTNode,
     pub(crate) final_parse_state: hand_parser::ParserState,
+    pub(crate) string_pool: StringPool,
 }
 
-impl<T: TokenStream<CLexemes>> HandParser<T> {
-    pub fn new(tokens: T) -> Self {
+impl HandParser {
+    pub fn new(tokens: Preprocessor) -> Self {
         Self { 
-            tokens,
+            tokens: PreprocessedCTokenStream::new(tokens),
             state: hand_parser::ParserState::new()
         }
     }
@@ -33,7 +30,8 @@ impl<T: TokenStream<CLexemes>> HandParser<T> {
             Ok(root_node) => Ok(
                 ParseOutput { 
                     root_node,
-                    final_parse_state: self.state
+                    final_parse_state: self.state,
+                    string_pool: self.tokens.string_pool,
                 }
             ),
             Err(e) => Err(e),
