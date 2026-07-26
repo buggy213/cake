@@ -277,7 +277,6 @@ impl SymbolTable {
     pub(crate) fn functions(&self) -> &[Function] {
         &self.functions
     }
-
     pub(crate) fn function_names(&self) -> &[StringPoolRef] {
         &self.function_names
     }

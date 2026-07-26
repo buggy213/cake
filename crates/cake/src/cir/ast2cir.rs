@@ -4,28 +4,22 @@ use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    cir::{BlockRef, CompareMode, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, 
-    scanner::string_pool::StringPoolRef,
-    parser::ast, 
-    semantics::{
-        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode},
-        resolver::ResolvedAST,
-        symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
-    }, 
-    types::{BasicType, CType, layout::Layouts},
+    cir::{BlockRef, CompareMode, DataRef, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::ast, scanner::string_pool::StringPoolRef, semantics::{
+        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode}, resolver::ResolvedAST, symtab::{FunctionIdx, ObjectIdx, ObjectRangeRef, SymbolTable},
+    }, types::{BasicType, CType, FunctionTypeIdx, TypeQualifier, layout::Layouts},
 };
 
 impl From<BasicType> for Type {
     fn from(value: BasicType) -> Self {
         match value {
             BasicType::Char => Self::i8,
-            BasicType::UChar => Self::u8,
+            BasicType::UChar => Self::i8,
             BasicType::Short => Self::i16,
-            BasicType::UShort => Self::u16,
+            BasicType::UShort => Self::i16,
             BasicType::Int => Self::i32,
-            BasicType::UInt => Self::u32,
+            BasicType::UInt => Self::i32,
             BasicType::Long => Self::i64,
-            BasicType::ULong => Self::u64,
+            BasicType::ULong => Self::i64,
             BasicType::Float => Self::f32,
             BasicType::Double => Self::f64,
         }
@@ -38,7 +32,7 @@ impl TryFrom<&CType> for Type {
     fn try_from(value: &CType) -> Result<Self, Self::Error> {
         match value {
             CType::BasicType { basic_type, .. } => Ok((*basic_type).into()),
-            CType::PointerType { .. } => Ok(Type::u64),
+            CType::PointerType { .. } => Ok(Type::ptr),
             _ => todo!("other types"),
         }
     }
@@ -84,26 +78,35 @@ fn create_frame(
     }
 }
 
-struct LowerFunctionContext {
+struct LowerFunctionContext<'module> {
     expr_ref_to_value: FxHashMap<ExprRef, Value>,
-
     label_to_block: FxHashMap<StringPoolRef, BlockRef>,
+    
+    function_to_func: &'module [FuncRef],
+    object_to_data: &'module FxHashMap<ObjectIdx, DataRef>,
 
     break_target: SmallVec<[BlockRef; 8]>,
     continue_target: SmallVec<[BlockRef; 8]>,
 }
 
-impl LowerFunctionContext {
-    fn new() -> Self {
+impl<'module> LowerFunctionContext<'module> {
+    fn new(module_ctx: &'module LowerModuleContext) -> LowerFunctionContext<'module> {
         LowerFunctionContext { 
             expr_ref_to_value: FxHashMap::default(),
-
             label_to_block: FxHashMap::default(),
+            
+            function_to_func: &module_ctx.function_to_func,
+            object_to_data: &module_ctx.object_to_data,
         
             break_target: smallvec![],
             continue_target: smallvec![] 
         }
     }
+}
+
+struct LowerModuleContext {
+    function_to_func: Vec<FuncRef>,
+    object_to_data: FxHashMap<ObjectIdx, DataRef>,
 }
 
 pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
@@ -112,6 +115,7 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
     };
 
     let mut module = Module::new();
+    let lower_module_ctx = process_global_symbols(&ast, &mut module);
 
     for func in &ast.ast_indices[children.0 as usize..children.1 as usize] {
         let ResolvedASTNode::FunctionDefinition {
@@ -121,32 +125,7 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
             panic!("corrupted ast")
         };
 
-        let ast_func = ast.symtab.get_function(*symbol_idx);
-        let func_name = ast
-            .string_pool
-            .get_string(ast.symtab.get_function_name(*symbol_idx))
-            .to_string();
-        let ast_func_type = ast.symtab.get_function_type(ast_func.function_type);
-        let ast_func_args = &ast_func_type.parameter_types;
-        let ast_func_args: Vec<CType> = ast_func_args.iter().map(|arg| arg.1.clone()).collect();
-
-        let func_args: Vec<Type> = ast_func_args
-            .iter()
-            .map(|arg| arg.try_into().unwrap())
-            .collect();
-        let func_ret = if let CType::Void { .. } = ast_func_type.return_type {
-            None
-        } else {
-            assert!(
-                ast_func_type.return_type.is_scalar_type(),
-                "only scalar types supported for now"
-            );
-            Some((&ast_func_type.return_type).try_into().unwrap())
-        };
-
-        let func_sig = Signature::new(func_args, func_ret.as_slice().to_vec());
-        let func_ref = module.add_function(func_name.to_string(), func_sig);
-
+        let func_ref = lower_module_ctx.function_to_func[symbol_idx.get_inner()];
         let mut func_builder = module.define_function(func_ref);
 
         let func_object_range = ast.symtab.function_object_range(*symbol_idx);
@@ -157,10 +136,76 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
             func_object_range,
         );
 
-        lower_function_body(&ast, *body, &mut func_builder, &stack_frame);
+        lower_function_body(&ast, *body, &mut func_builder, &stack_frame, &lower_module_ctx);
     }
 
     module
+}
+
+fn process_global_symbols(ast: &ResolvedAST, module: &mut Module) -> LowerModuleContext {
+    let mut lower_module_ctx = LowerModuleContext {
+        function_to_func: Vec::new(),
+        object_to_data: FxHashMap::default(),
+    };
+
+    let symtab = &ast.symtab;
+    for global_object in symtab.global_objects() {
+        let obj = symtab.get_object(global_object.object_ref);
+        let name = ast
+            .string_pool
+            .get_string(symtab.object_name(global_object.object_ref));
+
+        let writable = !obj
+            .object_type
+            .qualifier()
+            .contains(TypeQualifier::Const);
+
+        let data_ref = module.add_data(name.to_string(), !writable);
+        lower_module_ctx.object_to_data.insert(global_object.object_ref, data_ref);
+    }
+
+    let functions = symtab.functions();
+    let function_names = symtab.function_names();
+
+    for (function, &function_name) in std::iter::zip(functions, function_names) {
+        let func_name = ast
+            .string_pool
+            .get_string(function_name)
+            .to_string();
+
+        let func_sig = function_type_signature(&ast.symtab, function.function_type);
+        let func_ref = module.add_function(func_name.to_string(), func_sig);
+
+        lower_module_ctx.function_to_func.push(func_ref);
+    }
+
+    lower_module_ctx
+}
+
+fn function_type_signature(symtab: &SymbolTable, function_type: FunctionTypeIdx) -> Signature {
+    let ast_func_type = symtab.get_function_type(function_type);
+    let ast_func_args = &ast_func_type.parameter_types;
+    let ast_func_args: Vec<CType> = ast_func_args.iter().map(|arg| arg.1.clone()).collect();
+
+    let func_args: Vec<Type> = ast_func_args
+        .iter()
+        .map(|arg| arg.try_into().unwrap())
+        .collect();
+    let func_ret = if let CType::Void { .. } = ast_func_type.return_type {
+        None
+    } else {
+        assert!(
+            ast_func_type.return_type.is_scalar_type(),
+            "only scalar types supported for now"
+        );
+        Some((&ast_func_type.return_type).try_into().unwrap())
+    };
+
+    Signature::new(func_args, func_ret.as_slice().to_vec())
+}
+
+fn lower_global_initializer() -> ! {
+    panic!()
 }
 
 fn lower_function_body(
@@ -168,12 +213,13 @@ fn lower_function_body(
     fn_body: NodeRef,
     func_builder: &mut FunctionBuilder,
     stack_frame: &Frame,
+    lower_module_ctx: &LowerModuleContext,
 ) {
     let ResolvedASTNode::CompoundStatement { stmts, .. } = &ast.nodes[fn_body.0 as usize] else {
         panic!("corrupted ast")
     };
 
-    let mut lower_fn_ctx = LowerFunctionContext::new();
+    let mut lower_fn_ctx = LowerFunctionContext::new(lower_module_ctx);
     let (start, end) = (stmts.0 as usize, stmts.1 as usize);
     for &stmt_ref in &ast.ast_indices[start..end] {
         lower_stmt(ast, stmt_ref, func_builder, stack_frame, &mut lower_fn_ctx);
@@ -190,13 +236,13 @@ fn lower_stmt(
     let stmt_node = &ast.nodes[stmt.0 as usize];
     match stmt_node {
         ResolvedASTNode::TranslationUnit { children } => {
-            unreachable!("call lower_translation_unit - TODO maybe it shouldn't be a node")
+            unreachable!()
         },
         ResolvedASTNode::FunctionDefinition {
             parent,
             symbol_idx,
             body,
-        } => todo!("call lower_function_body"),
+        } => unreachable!(),
         ResolvedASTNode::Label { parent, ident, labelee } => {
             let labeled_block = func_builder.add_block();
             lower_fn_ctx.label_to_block.insert(ident.name, labeled_block);
@@ -386,11 +432,6 @@ fn lower_stmt(
     }
 }
 
-// TODO: this should be parameterized
-fn ptrtype() -> Type {
-    Type::u64
-}
-
 fn lower_expr(
     ast: &ResolvedAST,
     expr: ExprRef,
@@ -427,18 +468,25 @@ fn lower_expr(
                 }
             }
         };
+    }
 
+    macro_rules! compare_op {
         // compare op
         ($ast:expr, $lhs:expr, $rhs:expr, $func_builder:expr, $stack_frame:expr, $lower_fn_ctx:expr, $op_name_int:ident, $op_name_fp:ident, $compare_mode:ident) => {
             {
+                let c_ty = $ast.exprs[$lhs].expr_type();
                 let lhs = lower_expr($ast, $lhs, $func_builder, $stack_frame, $lower_fn_ctx);
                 let rhs = lower_expr($ast, $rhs, $func_builder, $stack_frame, $lower_fn_ctx);
 
                 let op_ty = $func_builder.insert().type_of(lhs);
+
                 if op_ty.is_integral() {
-                    $func_builder.insert().$op_name_int(CompareMode::$compare_mode, lhs, rhs)
-                } else {
+                    let signed = c_ty.as_basic().unwrap().is_signed();
+                    $func_builder.insert().$op_name_int(CompareMode::$compare_mode, lhs, rhs, signed)
+                } else if op_ty.is_fp() {
                     $func_builder.insert().$op_name_fp(CompareMode::$compare_mode, lhs, rhs)
+                } else {
+                    panic!("pointers should have been casted")
                 }
             }
         };
@@ -507,12 +555,12 @@ fn lower_expr(
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let zero = func_builder.insert().iconst_trunc(lhs, 0);
             let one = func_builder.insert().iconst_trunc(lhs, 1);
-            let lhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, lhs, zero);
+            let lhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, lhs, zero, false);
             func_builder.insert().brif(lhs_is_zero, footer, &[zero], eval_rhs, &[]);
 
             func_builder.set_block(eval_rhs);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
-            let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero);
+            let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero, false);
             let result = func_builder.insert().select(rhs_is_zero, zero, one);
             func_builder.insert().jmp(footer, &[result]);
 
@@ -529,12 +577,12 @@ fn lower_expr(
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let zero = func_builder.insert().iconst_trunc(lhs, 0);
             let one = func_builder.insert().iconst_trunc(lhs, 1);
-            let lhs_is_one = func_builder.insert().icmp(CompareMode::Equal, lhs, one);
+            let lhs_is_one = func_builder.insert().icmp(CompareMode::Equal, lhs, one, false);
             func_builder.insert().brif(lhs_is_one, footer, &[one], eval_rhs, &[]);
 
             func_builder.set_block(eval_rhs);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
-            let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero);
+            let rhs_is_zero = func_builder.insert().icmp(CompareMode::Equal, rhs, zero, false);
             let result = func_builder.insert().select(rhs_is_zero, zero, one);
             func_builder.insert().jmp(footer, &[result]);
 
@@ -550,17 +598,17 @@ fn lower_expr(
         TypedExpressionNode::BitwiseXor(ctype, expr_ref, expr_ref1) => 
             binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, xor),
         TypedExpressionNode::Equal(ctype, expr_ref, expr_ref1) => 
-            binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, Equal),
+            compare_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, Equal),
         TypedExpressionNode::NotEqual(ctype, expr_ref, expr_ref1) => 
-            binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, NotEqual),
+            compare_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, NotEqual),
         TypedExpressionNode::LessThan(ctype, expr_ref, expr_ref1) => 
-            binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, LessThan),
+            compare_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, LessThan),
         TypedExpressionNode::GreaterThan(ctype, expr_ref, expr_ref1) => 
-            binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, GreaterThan),
+            compare_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, GreaterThan),
         TypedExpressionNode::LessThanOrEqual(ctype, expr_ref, expr_ref1) => 
-            binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, LessThanOrEqual),
+            compare_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, LessThanOrEqual),
         TypedExpressionNode::GreaterThanOrEqual(ctype, expr_ref, expr_ref1) => 
-            binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, GreaterThanOrEqual),
+            compare_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, icmp, fcmp, GreaterThanOrEqual),
         TypedExpressionNode::LShift(ctype, expr_ref, expr_ref1) => 
             binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, shl),
         TypedExpressionNode::RShift(ctype, expr_ref, expr_ref1) => {
@@ -585,7 +633,8 @@ fn lower_expr(
             binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, add, fadd),
         TypedExpressionNode::Subtract(ctype, expr_ref, expr_ref1) => 
             binary_op!(ast, *expr_ref, *expr_ref1, func_builder, stack_frame, lower_fn_ctx, sub, fsub),
-        TypedExpressionNode::PointerAdd(ctype, expr_ref, expr_ref1) => {
+        TypedExpressionNode::PointerAdd(ctype, expr_ref, expr_ref1)
+        | TypedExpressionNode::PointerSub(ctype, expr_ref, expr_ref1) => {
             assert!(
                 ctype.is_object_pointer(),
                 "pointer arithmetic requires pointer type"
@@ -596,29 +645,26 @@ fn lower_expr(
             let sizeof_object = ctype.as_pointee().unwrap().size(&ast.layouts);
             let sizeof_object_val = func_builder.insert().const_u64(sizeof_object as u64);
             
-            let rhs_ptrtype = func_builder.insert().icast(rhs, ptrtype());
-            let byte_offset = func_builder.insert().mul(rhs_ptrtype, sizeof_object_val);
-
-            func_builder.insert().add(lhs, byte_offset)
-        }
-        TypedExpressionNode::PointerSub(ctype, expr_ref, expr_ref1) => {
-            let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
-            let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
-            let sizeof_object = ctype.as_pointee().unwrap().size(&ast.layouts);
-            let sizeof_object_val = func_builder.insert().const_u64(sizeof_object as u64);
-
-            let rhs_ptrtype = func_builder.insert().icast(rhs, ptrtype());
-            let byte_offset = func_builder.insert().mul(rhs_ptrtype, sizeof_object_val);
+            let rhs_cty = ast.exprs[*expr_ref1].expr_type();
+            let rhs_signed = rhs_cty.as_basic().unwrap().is_signed();
+            let rhs_ptrtype = if rhs_signed {
+                func_builder.insert().sext(rhs, Type::i64)
+            } else {
+                func_builder.insert().zext(rhs, Type::i64)
+            };
             
-            func_builder.insert().sub(lhs, byte_offset)
-        },
+            let byte_offset = func_builder.insert().mul(rhs_ptrtype, sizeof_object_val);
+            func_builder.insert().padd(lhs, byte_offset)
+        }
         TypedExpressionNode::PointerDiff(ctype, expr_ref, expr_ref1) => {
             let lhs = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let rhs = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
             let sizeof_object = ctype.as_pointee().unwrap().size(&ast.layouts);
             let sizeof_object_val = func_builder.insert().const_u64(sizeof_object as u64);
 
-            let byte_diff = func_builder.insert().sub(rhs, lhs);
+            let lhs_int = func_builder.insert().p2i(lhs);
+            let rhs_int = func_builder.insert().p2i(rhs);
+            let byte_diff = func_builder.insert().sub(rhs_int, lhs_int);
             func_builder.insert().div(byte_diff, sizeof_object_val)
         },
         TypedExpressionNode::Cast(ctype, expr_ref, ctype1) => {
@@ -627,7 +673,7 @@ fn lower_expr(
             let cir_type_from_scalar_ctype = |ty: &CType| -> Type {
                 match ty {
                     CType::BasicType { basic_type, .. } => (*basic_type).into(),
-                    CType::PointerType { .. } => ptrtype(),
+                    CType::PointerType { .. } => Type::ptr,
                     CType::EnumTypeRef { .. } => todo!("handle enum types"),
                     _ => panic!("type check should ensure only scalar types")
                 }
@@ -636,8 +682,23 @@ fn lower_expr(
             let src_ty = cir_type_from_scalar_ctype(ctype1);
             let dst_ty = cir_type_from_scalar_ctype(ctype);
 
+            match (src_ty.is_ptr(), dst_ty.is_ptr()) {
+                (true, true) => return val,
+                (true, false) if dst_ty.is_integral() => return func_builder.insert().p2i(val),
+                (false, true) if src_ty.is_integral() => return func_builder.insert().i2p(val),
+                _ => ()
+            }
+
             match (src_ty.is_integral(), dst_ty.is_integral()) {
-                (true, true) => func_builder.insert().icast(val, dst_ty),
+                (true, true) => {
+                    if src_ty.width() > dst_ty.width() {
+                        func_builder.insert().trunc(val, dst_ty)
+                    } else if ctype1.as_basic().unwrap().is_signed() {
+                        func_builder.insert().sext(val, dst_ty)
+                    } else {
+                        func_builder.insert().zext(val, dst_ty)
+                    }
+                },
                 (true, false) => func_builder.insert().i2fp(val, dst_ty),
                 (false, true) => func_builder.insert().fp2i(val, dst_ty),
                 (false, false) => func_builder.insert().fcast(val, dst_ty),
@@ -645,7 +706,7 @@ fn lower_expr(
         }
         TypedExpressionNode::AddressOf(ctype, expr_ref) => {
             if let TypedExpressionNode::FunctionIdentifier(_, function_idx) = ast.exprs[*expr_ref] {
-                func_builder.insert().func_addr(todo!("function_idx to FuncRef"))
+                func_builder.insert().func_addr(lower_fn_ctx.function_to_func[function_idx.get_inner()])
             }
             else {
                 lower_lvalue(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx)
@@ -655,7 +716,7 @@ fn lower_expr(
             let ptr = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let pointee_type: Type = match ctype {
                 CType::BasicType { basic_type, qualifier } => (*basic_type).into(),
-                CType::PointerType { pointee_type, qualifier } => ptrtype(),
+                CType::PointerType { pointee_type, qualifier } => Type::ptr,
                 // aggregates represented as pointers, since the ir deliberately doesn't have aggregate types
                 CType::StructureTypeRef { symtab_idx, qualifier } => {
                     break 'match_expr ptr;
@@ -687,7 +748,7 @@ fn lower_expr(
             let val = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
             let zero = func_builder.insert().iconst_trunc(val, 0);
             let one = func_builder.insert().iconst_trunc(val, 1);
-            let cmp = func_builder.insert().icmp(CompareMode::Equal, val, zero);
+            let cmp = func_builder.insert().icmp(CompareMode::Equal, val, zero, false);
 
             func_builder.insert().select(cmp, one, zero)
         },
@@ -721,7 +782,10 @@ fn lower_expr(
 
             let func_ptr_type = ast.exprs[*expr_ref].expr_type();
             let func_signature: SigRef = match func_ptr_type.as_pointee() {
-                Some(CType::FunctionTypeRef { symtab_idx }) => todo!("function signature table?"),
+                Some(CType::FunctionTypeRef { symtab_idx }) => {
+                    let callee_sig = function_type_signature(&ast.symtab, *symtab_idx);
+                    SigRef::from_push(func_builder.sigs, callee_sig)
+                },
                 _ => unreachable!("resolver enforces pointer to function")
             };
             
@@ -744,7 +808,7 @@ fn lower_expr(
             let location = lower_lvalue(ast, expr, func_builder, stack_frame, lower_fn_ctx);
             let cir_type = match ctype {
                 CType::BasicType { basic_type, .. } => (*basic_type).into(),
-                CType::PointerType { .. } => ptrtype(),
+                CType::PointerType { .. } => Type::ptr,
                 CType::StructureTypeRef { .. } | CType::UnionTypeRef { .. } => break 'match_expr location,
                 CType::EnumTypeRef { .. } => todo!("handle enums"),
                 _ => unreachable!("other types shouldn't be possible")
@@ -761,7 +825,7 @@ fn lower_expr(
 
             let cir_type = match object_type {
                 CType::BasicType { basic_type, .. } => (*basic_type).into(),
-                CType::PointerType { .. } => ptrtype(),
+                CType::PointerType { .. } => Type::ptr,
                 CType::StructureTypeRef { .. } | CType::UnionTypeRef { .. } => break 'match_expr location,
                 CType::EnumTypeRef { .. } => todo!("handle enums"),
                 _ => unreachable!("other types shouldn't be possible")
@@ -770,7 +834,7 @@ fn lower_expr(
             func_builder.insert().load(location, cir_type)
         },
         TypedExpressionNode::FunctionIdentifier(ctype, function_idx) => {
-            func_builder.insert().func_addr(todo!("function_idx to FuncRef"))  
+            func_builder.insert().func_addr(lower_fn_ctx.function_to_func[function_idx.get_inner()])  
         },
         TypedExpressionNode::Constant(ctype, constant) => match *constant {
             ast::Constant::Int(v) => func_builder.insert().const_i32(v),

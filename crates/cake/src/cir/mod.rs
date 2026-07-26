@@ -3,6 +3,8 @@ use std::cell::RefCell;
 use cake_util::{add_additional_index, make_type_idx};
 use smallvec::{SmallVec, ToSmallVec, smallvec};
 
+use crate::cir::intrinsics::Intrinsic;
+
 #[derive(Debug)]
 pub(crate) struct Module {
     functions: Vec<Function>,
@@ -65,6 +67,15 @@ impl Module {
         }
     }
 
+    pub(crate) fn add_data(&mut self, name: String, read_only: bool) -> DataRef {
+        let data = Data {
+            name: Some(name),
+            read_only,
+            contents: None,
+        };
+        DataRef::from_push(&mut self.data, data)
+    }
+
     pub(crate) fn functions(&self) -> &[Function] {
         &self.functions
     }
@@ -79,13 +90,10 @@ impl Module {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Type {
     i8,
-    u8,
     i16,
-    u16,
     i32,
-    u32,
     i64,
-    u64,
+    ptr,
 
     f32,
     f64,
@@ -95,13 +103,9 @@ pub(crate) enum Type {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Constant {
     i8(i8),
-    u8(u8),
     i16(i16),
-    u16(u16),
     i32(i32),
-    u32(u32),
     i64(i64),
-    u64(u64),
 
     f32(f32),
     f64(f64),
@@ -111,13 +115,10 @@ impl Type {
     pub(crate) fn width(self) -> usize {
         match self {
             Type::i8 => 8,
-            Type::u8 => 8,
             Type::i16 => 16,
-            Type::u16 => 16,
             Type::i32 => 32,
-            Type::u32 => 32,
             Type::i64 => 64,
-            Type::u64 => 64,
+            Type::ptr => 64,
 
             Type::f32 => 32,
             Type::f64 => 64,
@@ -125,11 +126,15 @@ impl Type {
     }
 
     pub(crate) fn is_integral(self) -> bool {
-        !self.is_fp()
+        matches!(self, Type::i8 | Type::i16 | Type::i32 | Type::i64)
     }
 
     pub(crate) fn is_fp(self) -> bool {
         matches!(self, Type::f32 | Type::f64)
+    }
+
+    pub(crate) fn is_ptr(self) -> bool {
+        matches!(self, Type::ptr)
     }
 }
 
@@ -137,13 +142,9 @@ impl Constant {
     pub(crate) fn ty(self) -> Type {
         match self {
             Constant::i8(_) => Type::i8,
-            Constant::u8(_) => Type::u8,
             Constant::i16(_) => Type::i16,
-            Constant::u16(_) => Type::u16,
             Constant::i32(_) => Type::i32,
-            Constant::u32(_) => Type::u32,
             Constant::i64(_) => Type::i64,
-            Constant::u64(_) => Type::u64,
             Constant::f32(_) => Type::f32,
             Constant::f64(_) => Type::f64,
         }
@@ -287,22 +288,26 @@ impl<'block> BlockBuilder<'block> {
         }
     }
 
-    fn constant(&mut self, ty: Type, val: Constant) -> Value {
-        assert!(val.ty() == ty, "type mismatch while inserting constant");
-
-        let constant = Inst::Constant { val };
+    fn add_inst(&mut self, inst: Inst, ty: Type) -> Value {
         self.inst_types.push(smallvec![ty]);
-        let iref = InstRef::from_push(self.insts, constant);
+        let iref = InstRef::from_push(self.insts, inst);
         self.block.inst_refs.borrow_mut().push(iref);
         Value::Inst(iref)
     }
 
+    fn constant(&mut self, ty: Type, val: Constant) -> Value {
+        assert!(val.ty() == ty, "type mismatch while inserting constant");
+
+        let constant = Inst::Constant { val };
+        self.add_inst(constant, ty)
+    }
+
     pub(crate) fn const_u32(&mut self, val: u32) -> Value {
-        self.constant(Type::u32, Constant::u32(val))
+        self.const_i32(val as i32)
     }
 
     pub(crate) fn const_u64(&mut self, val: u64) -> Value {
-        self.constant(Type::u64, Constant::u64(val))
+        self.const_i64(val as i64)
     }
 
     pub(crate) fn const_i32(&mut self, val: i32) -> Value {
@@ -327,42 +332,47 @@ impl<'block> BlockBuilder<'block> {
 
         let v = match ty {
             Type::i8 => Constant::i8(c as i8),
-            Type::u8 => Constant::u8(c as u8),
             Type::i16 => Constant::i16(c as i16),
-            Type::u16 => Constant::u16(c as u16),
             Type::i32 => Constant::i32(c as i32),
-            Type::u32 => Constant::u32(c as u32),
             Type::i64 => Constant::i64(c as i64),
-            Type::u64 => Constant::u64(c),
-            _ => unreachable!()
+            _ => panic!("iconst_trunc called with (val : {ty})")
         };
 
         self.constant(ty, v)
     }
 
     pub(crate) fn stack_addr(&mut self, slot: StackSlotRef) -> Value {
-        let op = Inst::StackAddr { slot };
-        self.inst_types.push(smallvec![Type::u64]);
-        let iref = InstRef::from_push(self.insts, op);
-        self.block.inst_refs.borrow_mut().push(iref);
-        Value::Inst(iref)
+        let stack_addr = Inst::StackAddr { slot };
+        self.add_inst(stack_addr, Type::ptr)
     }
 
     fn type_conversion(&mut self, val: Value, to: Type, op: fn(Value) -> Inst) -> Value {
         let op = op(val);
-        self.inst_types.push(smallvec![to]);
-        let iref = InstRef::from_push(self.insts, op);
-        self.block.inst_refs.borrow_mut().push(iref);
-        Value::Inst(iref)
+        self.add_inst(op, to)
     }
 
-    pub(crate) fn icast(&mut self, val: Value, to: Type) -> Value {
-        self.type_conversion(val, to, |v| Inst::IntegerCast { v })
+    pub(crate) fn sext(&mut self, val: Value, to: Type) -> Value {
+        self.type_conversion(val, to, |v| Inst::Sext { v })
+    }
+    pub(crate) fn zext(&mut self, val: Value, to: Type) -> Value {
+        self.type_conversion(val, to, |v| Inst::Zext { v })
+    }
+    pub(crate) fn trunc(&mut self, val: Value, to: Type) -> Value {
+        self.type_conversion(val, to, |v| Inst::Truncate { v })
     }
     pub(crate) fn fcast(&mut self, val: Value, to: Type) -> Value {
         self.type_conversion(val, to, |v| Inst::FpCast { v })
     }
 
+    pub(crate) fn padd(&mut self, ptr: Value, offset: Value) -> Value {
+        self.binary_op(ptr, offset, |ptr, offset| Inst::PtrAdd { ptr, offset })
+    }
+    pub(crate) fn p2i(&mut self, v: Value) -> Value {
+        self.type_conversion(v, Type::i64, |v| Inst::PtrToInt { v })
+    }
+    pub(crate) fn i2p(&mut self, v: Value) -> Value {
+        self.type_conversion(v, Type::i64, |v| Inst::IntToPtr { v })
+    }
     // helper to copy the type of one of the operands.
     // legalization to make sure operand types are actually compatible is deferred
     fn copy_type(&mut self, from: Value) {
@@ -427,12 +437,9 @@ impl<'block> BlockBuilder<'block> {
         self.binary_op(a, b, |a, b| Inst::Lshr { a, b })
     }
 
-    pub(crate) fn icmp(&mut self, mode: CompareMode, a: Value, b: Value) -> Value {
-        let icmp = Inst::Icmp { mode, a, b };
-        let iref = InstRef::from_push(self.insts, icmp);
-        self.inst_types.push(smallvec![Type::i8]);
-        self.block.inst_refs.borrow_mut().push(iref);
-        Value::Inst(iref)
+    pub(crate) fn icmp(&mut self, mode: CompareMode, a: Value, b: Value, signed: bool) -> Value {
+        let icmp = Inst::Icmp { mode, a, b, signed };
+        self.add_inst(icmp, Type::i8)
     }
 
     pub(crate) fn fadd(&mut self, a: Value, b: Value) -> Value {
@@ -453,10 +460,7 @@ impl<'block> BlockBuilder<'block> {
 
     pub(crate) fn fcmp(&mut self, mode: CompareMode, a: Value, b: Value) -> Value {
         let fcmp = Inst::Fcmp { mode, a, b };
-        let iref = InstRef::from_push(self.insts, fcmp);
-        self.inst_types.push(smallvec![Type::i8]);
-        self.block.inst_refs.borrow_mut().push(iref);
-        Value::Inst(iref)
+        self.add_inst(fcmp, Type::i8)
     }
 
     pub(crate) fn i2fp(&mut self, v: Value, to: Type) -> Value {
@@ -470,10 +474,7 @@ impl<'block> BlockBuilder<'block> {
 
     pub(crate) fn load(&mut self, addr: Value, ty: Type) -> Value {
         let load = Inst::Load { addr };
-        let iref = InstRef::from_push(self.insts, load);
-        self.block.inst_refs.borrow_mut().push(iref);
-        self.inst_types.push(smallvec![ty]);
-        Value::Inst(iref)
+        self.add_inst(load, ty)
     }
 
     pub(crate) fn store(&mut self, addr: Value, val: Value) {
@@ -556,18 +557,12 @@ impl<'block> BlockBuilder<'block> {
 
     pub(crate) fn data_addr(&mut self, data_ref: DataRef) -> Value {
         let data_addr = Inst::DataAddr { data: data_ref };
-        let iref = InstRef::from_push(self.insts, data_addr);
-        self.block.inst_refs.borrow_mut().push(iref);
-        self.inst_types.push(smallvec![Type::u64 /* TODO: ptrtype */]);
-        Value::Inst(iref)
+        self.add_inst(data_addr, Type::ptr)
     }
 
     pub(crate) fn func_addr(&mut self, func_ref: FuncRef) -> Value {
         let func_addr = Inst::FuncAddr { func: func_ref };
-        let iref = InstRef::from_push(self.insts, func_addr);
-        self.block.inst_refs.borrow_mut().push(iref);
-        self.inst_types.push(smallvec![Type::u64 /* TODO: ptrtype */]);
-        Value::Inst(iref)
+        self.add_inst(func_addr, Type::ptr)
     }
 }
 
@@ -651,7 +646,8 @@ pub(crate) enum Inst {
     Icmp {
         mode: CompareMode,
         a: Value,
-        b: Value
+        b: Value,
+        signed: bool
     },
     
     Fadd {
@@ -694,10 +690,27 @@ pub(crate) enum Inst {
         slot: StackSlotRef,
     },
 
-    IntegerCast {
+    Zext {
         v: Value,
     },
+    Sext {
+        v: Value
+    },
+    Truncate {
+        v: Value
+    },
     FpCast {
+        v: Value
+    },
+
+    PtrAdd {
+        ptr: Value,
+        offset: Value
+    },
+    PtrToInt {
+        v: Value
+    },
+    IntToPtr {
         v: Value
     },
 
@@ -751,6 +764,21 @@ pub(crate) enum Inst {
     DataAddr {
         data: DataRef,
     },
+
+    Intrinsic {
+        intrinsic: Intrinsic,
+        arguments: ValueVecRef,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CompareMode {
+    LessThan,
+    GreaterThan,
+    LessThanOrEqual,
+    GreaterThanOrEqual,
+    Equal,
+    NotEqual,
 }
 
 impl Inst {
@@ -779,8 +807,13 @@ impl Inst {
             Inst::Load { .. } => "load",
             Inst::Store { .. } => "store",
             Inst::StackAddr { .. } => "stack_addr",
-            Inst::IntegerCast { .. } => "icast",
+            Inst::Sext { .. } => "sext",
+            Inst::Zext { .. } => "zext",
+            Inst::Truncate { .. } => "truncate",
             Inst::FpCast { .. } => "fcast",
+            Inst::PtrAdd { .. } => "padd",
+            Inst::PtrToInt { .. } => "p2i",
+            Inst::IntToPtr { .. } => "i2p",
             Inst::CompareInt { .. } => "icmp",
             Inst::CompareFloat { .. } => "fcmp",
             Inst::Select { .. } => "select",
@@ -791,6 +824,7 @@ impl Inst {
             Inst::CallIndirect { .. } => "call_indirect",
             Inst::FuncAddr { .. } => "func_addr",
             Inst::DataAddr { .. } => "data_addr",
+            Inst::Intrinsic { .. } => "intrinsic",
         }
     }
 }
@@ -799,13 +833,9 @@ impl std::fmt::Display for Constant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Constant::i8(v) => write!(f, "{v}"),
-            Constant::u8(v) => write!(f, "{v}"),
             Constant::i16(v) => write!(f, "{v}"),
-            Constant::u16(v) => write!(f, "{v}"),
             Constant::i32(v) => write!(f, "{v}"),
-            Constant::u32(v) => write!(f, "{v}"),
             Constant::i64(v) => write!(f, "{v}"),
-            Constant::u64(v) => write!(f, "{v}"),
             Constant::f32(v) => write!(f, "{v}"),
             Constant::f64(v) => write!(f, "{v}"),
         }
@@ -870,7 +900,10 @@ impl std::fmt::Display for DisplayInst<'_> {
             Inst::Shl { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Ashr { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Lshr { a, b } => write!(f, "{m} {a} {b}"),
-            Inst::Icmp { mode, a, b } => write!(f, "{m} {mode} {a} {b}"),
+            Inst::Icmp { mode, a, b, signed } => {
+                let signed = if *signed { "s" } else { "u" };
+                write!(f, "{m} {signed}{mode} {a} {b}")
+            }
             Inst::Fadd { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Fsub { a, b } => write!(f, "{m} {a} {b}"),
             Inst::Fmul { a, b } => write!(f, "{m} {a} {b}"),
@@ -880,8 +913,13 @@ impl std::fmt::Display for DisplayInst<'_> {
             Inst::FpToInt { v } => write!(f, "{m} {v}"), 
             Inst::Load { addr } => write!(f, "{m} [{}]", addr),
             Inst::Store { addr, val } => write!(f, "{m} {val} [{addr}]"),
-            Inst::IntegerCast { v } => write!(f, "{m} {v}"),
+            Inst::Sext { v } => write!(f, "{m} {v}"),
+            Inst::Zext { v } => write!(f, "{m} {v}"),
+            Inst::Truncate { v } => write!(f, "{m} {v}"),
             Inst::FpCast { v } => write!(f, "{m} {v}"),
+            Inst::PtrAdd { ptr, offset } => write!(f, "{m} {ptr} {offset}"),
+            Inst::PtrToInt { v } => write!(f, "{m} {v}"),
+            Inst::IntToPtr { v } => write!(f, "{m} {v}"),
             Inst::StackAddr { slot } => write!(f, "{m} ss{}", slot.0),
             Inst::CompareInt { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
             Inst::CompareFloat { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
@@ -933,34 +971,28 @@ impl std::fmt::Display for DisplayInst<'_> {
             },
             Inst::DataAddr { data } => {
                 write!(f, "{m} d{}", data.0)
+            },
+
+            Inst::Intrinsic { intrinsic, arguments } => {
+                let arguments = &value_vecs[*arguments];
+                write!(f, "{m} {intrinsic}(")?;
+                write_values(f, arguments)?;
+                write!(f, ")")
             }
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum CompareMode {
-    LessThan,
-    GreaterThan,
-    LessThanOrEqual,
-    GreaterThanOrEqual,
-    Equal,
-    NotEqual,
 }
 
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let variant_name = match *self {
             Type::i8 => "i8",
-            Type::u8 => "u8",
             Type::i16 => "i16",
-            Type::u16 => "u16",
             Type::i32 => "i32",
-            Type::u32 => "u32",
             Type::i64 => "i64",
-            Type::u64 => "u64",
             Type::f32 => "f32",
             Type::f64 => "f64",
+            Type::ptr => "ptr",
         };
 
         f.write_str(variant_name)?;
@@ -1064,7 +1096,9 @@ impl std::fmt::Display for Module {
     }
 }
 
+pub(crate) mod intrinsics;
 pub(crate) mod ast2cir;
+pub(crate) mod verifier;
 
 #[cfg(test)]
 mod test {
