@@ -181,6 +181,17 @@ impl Elf {
             .add_symbol(name, binding, symbol_type, Some(section), value, size)
     }
 
+    pub(crate) fn update_symbol(
+        &mut self,
+        index: SymbolTableIndex,
+        value: usize,
+        size: usize
+    ) {
+        let symbol = self.symbol_table.update_symbol(index);
+        symbol.value = value;
+        symbol.size = size;
+    }
+
     pub(crate) fn undefined_symbol(
         &mut self,
         name: &str,
@@ -462,7 +473,7 @@ impl Elf {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Section {
+pub(crate) enum Section {
     Text,
     Data,
     Bss,
@@ -518,7 +529,7 @@ impl EmptySection {
 
 #[allow(nonstandard_style)]
 #[derive(Clone, Copy)]
-enum RelocationType {
+pub(crate) enum RelocationType {
     R_X86_64_NONE,
     R_X86_64_64,
     R_X86_64_PC32,
@@ -641,7 +652,7 @@ struct SymbolTableSection {
 }
 
 #[derive(Clone, Copy)]
-enum SymbolTableIndex {
+pub(crate) enum SymbolTableIndex {
     // # of previous local symbols
     LocalSymbol(u32),
     // # of previous nonlocal symbols
@@ -700,6 +711,13 @@ impl SymbolTableSection {
         };
 
         idx
+    }
+
+    fn update_symbol(&mut self, symbol: SymbolTableIndex) -> &mut Symbol {
+        match symbol {
+            SymbolTableIndex::LocalSymbol(s) => &mut self.local_symbols[s as usize],
+            SymbolTableIndex::NonlocalSymbol(s) => &mut self.nonlocal_symbols[s as usize],
+        }
     }
 
     fn size(&self) -> usize {

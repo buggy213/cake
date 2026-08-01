@@ -35,6 +35,10 @@ macro_rules! make_type_idx {
             pub(crate) fn get_inner(&self) -> usize {
                 self.0 as usize
             }
+
+            pub(crate) fn enumerate(slice: &[$type_name]) -> impl Iterator<Item = ($type_idx_name, &$type_name)> {
+                slice.iter().enumerate().map(|(i, x)| ($type_idx_name(i as u32), x))
+            }
         }
 
         impl std::ops::Index<$type_idx_name> for [$type_name] {

@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    cir::{BlockRef, CompareMode, DataRef, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::ast, scanner::string_pool::StringPoolRef, semantics::{
+    cir::{BlockRef, CompareMode, DataContents, DataRef, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::ast, scanner::string_pool::StringPoolRef, semantics::{
         resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode}, resolver::ResolvedAST, symtab::{FunctionIdx, ObjectIdx, ObjectRangeRef, SymbolTable},
     }, types::{BasicType, CType, FunctionTypeIdx, TypeQualifier, layout::Layouts},
 };
@@ -136,6 +136,17 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
             func_object_range,
         );
 
+        // move function parameters into stack slots
+        let function_parameter_objects = ast.symtab.function_parameter_range(*symbol_idx);
+        let enumerate = function_parameter_objects.into_iter().enumerate();
+        for (i, param_idx) in enumerate {
+            let stack_slot = stack_frame.get_object_stack_slot(param_idx);
+            
+            let addr = func_builder.insert().stack_addr(stack_slot);
+            let entry_block = func_builder.current_block;
+            func_builder.insert().store(addr, Value::BlockArgument(entry_block, i as u32));
+        }
+
         lower_function_body(&ast, *body, &mut func_builder, &stack_frame, &lower_module_ctx);
     }
 
@@ -161,6 +172,9 @@ fn process_global_symbols(ast: &ResolvedAST, module: &mut Module) -> LowerModule
             .contains(TypeQualifier::Const);
 
         let data_ref = module.add_data(name.to_string(), !writable);
+        let initial_contents = lower_global_initializer(ast, &obj.object_type, global_object.initializer);
+        module.define_data(data_ref, initial_contents);      
+
         lower_module_ctx.object_to_data.insert(global_object.object_ref, data_ref);
     }
 
@@ -204,8 +218,45 @@ fn function_type_signature(symtab: &SymbolTable, function_type: FunctionTypeIdx)
     Signature::new(func_args, func_ret.as_slice().to_vec())
 }
 
-fn lower_global_initializer() -> ! {
-    panic!()
+fn lower_global_initializer(ast: &ResolvedAST, ty: &CType, expr_ref: Option<ExprRef>) -> DataContents {
+    let size = ty.size(&ast.layouts);
+    let Some(expr_ref) = expr_ref else {
+        return DataContents::Zeros(size as usize);
+    };
+
+    let content_bytes = match &ast.exprs[expr_ref] {
+        TypedExpressionNode::Constant(_, val) => {
+            match val {
+                crate::parser::ast::Constant::Int(x) => { 
+                    let bytes =  x.to_le_bytes();
+                    Box::from(bytes.as_slice())
+                },
+                crate::parser::ast::Constant::LongInt(x) => {
+                    let bytes = x.to_le_bytes();
+                    Box::from(bytes.as_slice())
+                },
+                crate::parser::ast::Constant::UInt(x) => {
+                    let bytes = x.to_le_bytes();
+                    Box::from(bytes.as_slice())
+                },
+                crate::parser::ast::Constant::ULongInt(x) => {
+                    let bytes = x.to_le_bytes();
+                    Box::from(bytes.as_slice())
+                },
+                crate::parser::ast::Constant::Float(x) => {
+                    let bytes = x.to_le_bytes();
+                    Box::from(bytes.as_slice())
+                },
+                crate::parser::ast::Constant::Double(x) => {
+                    let bytes = x.to_le_bytes();
+                    Box::from(bytes.as_slice())
+                },
+            }
+        }
+        _ => todo!("support more complex constexpr initializers")
+    };
+
+    DataContents::Defined(content_bytes)
 }
 
 fn lower_function_body(
@@ -507,16 +558,28 @@ fn lower_expr(
             let location = lower_lvalue(ast, *lhs, func_builder, stack_frame, lower_fn_ctx);
             let rhs_value = lower_expr(ast, *rhs, func_builder, stack_frame, lower_fn_ctx);
 
-            assert!(
-                matches!(
-                    ctype,
-                    CType::BasicType { .. } | CType::PointerType { .. } | CType::EnumTypeRef { .. }
-                ),
-                "only scalars supported for now"
-            );
-            
-            func_builder.insert().store(location, rhs_value);
-            rhs_value
+            match ctype {
+                CType::BasicType { .. }
+                | CType::PointerType { .. }
+                | CType::EnumTypeRef { .. } => {
+                    func_builder.insert().store(location, rhs_value);
+                    rhs_value
+                },
+
+                CType::StructureTypeRef { symtab_idx, qualifier } => {
+                    let struct_layout = &ast.layouts.struct_layouts[*symtab_idx];
+                    let size = func_builder.insert().const_u64(struct_layout.size as u64);
+                    func_builder.insert().memcpy(location, rhs_value, size);
+                    rhs_value
+                }
+                CType::UnionTypeRef { symtab_idx, qualifier } => {
+                    let union_layout = &ast.layouts.union_layouts[*symtab_idx];
+                    let size = func_builder.insert().const_u64(union_layout.size as u64);
+                    func_builder.insert().memcpy(location, rhs_value, size);
+                    location
+                }
+                _ => unreachable!("other types should not be able to be lvalues") 
+            }
         }
         TypedExpressionNode::AugmentedAssign(ctype, expr_ref, expr_ref1) => {
             let result = lower_expr(ast, *expr_ref1, func_builder, stack_frame, lower_fn_ctx);
@@ -909,7 +972,7 @@ fn lower_lvalue(
             let offset_val = func_builder.insert().const_u64(offset as u64);
             func_builder.insert().add(location, offset_val)
         }
-        _ => todo!("other lvalues not supported yet"),
+        _ => unreachable!("bad lvalue type")
     }
 }
 
@@ -990,6 +1053,75 @@ mod test {
         let module = cir::ast2cir::lower_ast(resolved);
 
         dbg!(&module);
+        print!("{module}");
+    }
+
+    #[test]
+    fn test_continue_break() {
+        let code = r#"
+        int puts(const char *str);
+        void itoa(int value, char *buf) {
+            int value_copy;
+            value_copy = value;
+
+            int digits;
+            digits = 0;
+
+            do {
+                value_copy = value_copy / 10;
+                digits = digits + 1;
+            } while (value_copy);
+
+            buf[digits] = '\0';
+            do {
+                int lsd;
+                lsd = value % 10;
+                value = value / 10;
+                buf[digits - 1] = '0' + lsd;
+                digits = digits - 1;
+            } while (value);
+        }
+
+        int main(int argc, char *argv[]) {
+            int i;
+            char buf[32];
+            i = 0;
+            while (1) {
+                itoa(i, buf);
+                if (i > 10) {
+                    break;
+                }
+
+                if (i % 2 == 1) {
+                    i = i + 1;
+                    continue;
+                }
+
+                puts(buf);
+                i = i + 1;
+            }
+
+            for (i = 0;; i = i + 1) {
+                itoa(i, buf);
+                if (i > 10) {
+                    break;
+                }
+
+                if (i % 2 == 0) {
+                    continue;
+                }
+
+                puts(buf);
+            }
+
+            return 0;
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+        let module = cir::ast2cir::lower_ast(resolved);
+
         print!("{module}");
     }
 }

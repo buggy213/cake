@@ -20,6 +20,7 @@ paste = { workspace = true }
 smallvec = { workspace = true }
 rustc-hash = { workspace = true }
 hashbrown = { workspace = true }
+iced-x86 = { version = "1.21.0", features = ["code_asm"] }
 
 [build-dependencies]
 codegen = { workspace = true }

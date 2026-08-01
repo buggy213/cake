@@ -16,9 +16,19 @@ make_type_idx!(DataRef, Data);
 
 #[derive(Debug)]
 pub(crate) struct Data {
-    name: Option<String>,
-    read_only: bool,
-    contents: Option<Box<[u8]>>
+    pub(crate) name: Option<String>,
+    pub(crate) read_only: bool,
+    pub(crate) contents: DataContents
+}
+
+#[derive(Debug)]
+pub(crate) enum DataContents {
+    /// Data is defined as having some specific contents
+    Defined(Box<[u8]>),
+    /// Data contains zeroes, goes into .bss
+    Zeros(usize),
+    /// Data is undefined, must be linked against external symbol
+    Undefined   
 }
 
 impl Module {
@@ -48,12 +58,17 @@ impl Module {
             external_signatures, 
             definition 
         } = &mut self.functions[func];
+
+        // append function parameters as block params of entry block
+        let mut entry_block = Block::new();
+        let sig = &self.signatures[func.get_inner()];
+        entry_block.block_args.extend_from_slice(&sig.argument_types);
         
         *definition = Some(FunctionDefinition { 
             insts: vec![], 
             inst_types: vec![],
             value_vecs: vec![],
-            blocks: vec![Block::new()], 
+            blocks: vec![entry_block], 
             stack_slots: vec![]
         });
 
@@ -71,13 +86,21 @@ impl Module {
         let data = Data {
             name: Some(name),
             read_only,
-            contents: None,
+            contents: DataContents::Undefined,
         };
         DataRef::from_push(&mut self.data, data)
     }
 
+    pub(crate) fn define_data(&mut self, data: DataRef, contents: DataContents) {
+        self.data[data].contents = contents;
+    }
+
     pub(crate) fn functions(&self) -> &[Function] {
         &self.functions
+    }
+
+    pub(crate) fn signatures(&self) -> &[Signature] {
+        &self.signatures
     }
 
     pub(crate) fn data(&self) -> &[Data] {
@@ -109,6 +132,19 @@ pub(crate) enum Constant {
 
     f32(f32),
     f64(f64),
+}
+
+impl Constant {
+    pub(crate) fn is_zero(self) -> bool {
+        match self {
+            Constant::i8(v) => v == 0,
+            Constant::i16(v) => v == 0,
+            Constant::i32(v) => v == 0,
+            Constant::i64(v) => v == 0,
+            Constant::f32(v) => v == 0.0,
+            Constant::f64(v) => v == 0.0,
+        }
+    }
 }
 
 impl Type {
@@ -160,8 +196,8 @@ make_type_idx!(SigRef, Signature);
 
 #[derive(Debug, Clone)]
 pub(crate) struct Signature {
-    argument_types: Vec<Type>,
-    return_types: Vec<Type>,
+    pub(crate) argument_types: Vec<Type>,
+    pub(crate) return_types: Vec<Type>,
 }
 
 impl Signature {
@@ -195,10 +231,10 @@ pub(crate) struct FunctionDefinition {
 
 make_type_idx!(StackSlotRef, StackSlot);
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct StackSlot {
-    size: u32,
-    align: u32,
+    pub(crate) size: u32,
+    pub(crate) align: u32,
 }
 
 pub(crate) struct FunctionBuilder<'func> {
@@ -251,13 +287,13 @@ impl<'func> FunctionBuilder<'func> {
         let data = Data {
             name: None,
             read_only,
-            contents: None,
+            contents: DataContents::Undefined,
         };
         DataRef::from_push(self.module_data, data)
     }
 
     pub(crate) fn define_data(&mut self, data_ref: DataRef, contents: Box<[u8]>) {
-        self.module_data[data_ref].contents = Some(contents);
+        self.module_data[data_ref].contents = DataContents::Defined(contents);
     }
 }
 
@@ -827,6 +863,14 @@ impl Inst {
             Inst::Intrinsic { .. } => "intrinsic",
         }
     }
+    pub(crate) fn is_terminator(&self) -> bool {
+        matches!(self,
+            Inst::BranchIf { .. }
+            | Inst::Jump { .. }
+            | Inst::Return { .. }
+        )
+    }
+
 }
 
 impl std::fmt::Display for Constant {
