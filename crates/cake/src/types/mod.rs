@@ -350,6 +350,7 @@ impl CType {
         match self {
             CType::BasicType { .. } => true,
             CType::PointerType { .. } => true,
+            CType::EnumTypeRef { .. } => true,
             _ => false,
         }
     }
@@ -439,6 +440,10 @@ impl CType {
                 symtab_idx,
                 qualifier: _,
             } => layouts[*symtab_idx].size,
+            CType::EnumTypeRef { 
+                symtab_idx, 
+                qualifier: _ 
+            } => layouts[*symtab_idx].repr.size(),
             _ => todo!("more types"),
         }
     }
@@ -458,6 +463,10 @@ impl CType {
                 symtab_idx,
                 qualifier: _,
             } => layouts[*symtab_idx].align,
+            CType::EnumTypeRef { 
+                symtab_idx, 
+                qualifier: _ 
+            } => layouts[*symtab_idx].repr.align(),
             _ => todo!("more types"),
         }
     }

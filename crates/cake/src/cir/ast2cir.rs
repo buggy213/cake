@@ -733,17 +733,21 @@ fn lower_expr(
         TypedExpressionNode::Cast(ctype, expr_ref, ctype1) => {
             let val = lower_expr(ast, *expr_ref, func_builder, stack_frame, lower_fn_ctx);
 
-            let cir_type_from_scalar_ctype = |ty: &CType| -> Type {
+            // return CIR type + signedness information from resolved AST
+            let cir_type_from_scalar_ctype = |ty: &CType| -> (Type, bool) {
                 match ty {
-                    CType::BasicType { basic_type, .. } => (*basic_type).into(),
-                    CType::PointerType { .. } => Type::ptr,
-                    CType::EnumTypeRef { .. } => todo!("handle enum types"),
+                    CType::BasicType { basic_type, .. } => ((*basic_type).into(), basic_type.is_signed()),
+                    CType::PointerType { .. } => (Type::ptr, false),
+                    CType::EnumTypeRef { symtab_idx, qualifier: _ } => {
+                        let repr = ast.layouts[*symtab_idx].repr;
+                        (repr.into(), repr.is_signed())
+                    },
                     _ => panic!("type check should ensure only scalar types")
                 }
             };
 
-            let src_ty = cir_type_from_scalar_ctype(ctype1);
-            let dst_ty = cir_type_from_scalar_ctype(ctype);
+            let (src_ty, src_signed) = cir_type_from_scalar_ctype(ctype1);
+            let (dst_ty, _dst_signed) = cir_type_from_scalar_ctype(ctype);
 
             match (src_ty.is_ptr(), dst_ty.is_ptr()) {
                 (true, true) => return val,
@@ -756,7 +760,7 @@ fn lower_expr(
                 (true, true) => {
                     if src_ty.width() > dst_ty.width() {
                         func_builder.insert().trunc(val, dst_ty)
-                    } else if ctype1.as_basic().unwrap().is_signed() {
+                    } else if src_signed {
                         func_builder.insert().sext(val, dst_ty)
                     } else {
                         func_builder.insert().zext(val, dst_ty)
@@ -890,7 +894,9 @@ fn lower_expr(
                 CType::BasicType { basic_type, .. } => (*basic_type).into(),
                 CType::PointerType { .. } => Type::ptr,
                 CType::StructureTypeRef { .. } | CType::UnionTypeRef { .. } => break 'match_expr location,
-                CType::EnumTypeRef { .. } => todo!("handle enums"),
+                CType::EnumTypeRef { symtab_idx, qualifier: _ } => {
+                    ast.layouts[*symtab_idx].repr.into()
+                },
                 _ => unreachable!("other types shouldn't be possible")
             };
 
@@ -1123,5 +1129,22 @@ mod test {
         let module = cir::ast2cir::lower_ast(resolved);
 
         print!("{module}");
+    }
+
+    #[test]
+    fn test_enum() {
+        let code = r#"
+        enum color { RED, GREEN, BLUE };
+        int main() {
+            enum color c = RED;
+            return (int)c;
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+        let module = cir::ast2cir::lower_ast(resolved);
+
+        print!("{module}"); 
     }
 }

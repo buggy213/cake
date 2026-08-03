@@ -236,7 +236,7 @@ pub(super) fn resolve_declaration(
 }
 
 // Resolves empty declaration. This is generally only used for declaring a new type
-// (i.e. non-anonymous struct / union / enum)
+// (i.e. non-anonymous struct / union / enum), or possibly within a cast.
 pub(super) fn resolve_empty_declaration(
     symtab: &mut ScopedSymtab,
     declared_type: &CType,
@@ -358,6 +358,7 @@ fn resolve_declaration_type(
                     symtab.add_constant(scope, enum_variant.0, variant_value)?;
                 }
 
+                layouts.compute_enum_layout(ast_enum_type_idx, &enum_type);
                 complete_enum(symtab, ast_enum_type_idx, enum_type.clone())?;
 
                 *ast_idx = ast_enum_type_idx;

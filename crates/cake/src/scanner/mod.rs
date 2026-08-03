@@ -45,6 +45,9 @@ pub(crate) struct RawTokenSpan {
 }
 
 const BUFFER_SIZE: usize = 8;
+
+/// A raw token stream generates tokens from a &str directly. This is primarily used
+/// for tests where the full preprocessor is not required.
 pub(crate) struct RawTokenStream<'src, T: LexemeSet> {
     cursor: usize,
     scanner: DFAScanner,
@@ -99,7 +102,6 @@ impl<'src, T: LexemeSet> RawTokenStream<'src, T> {
     }
 }
 
-// TODO: optimize this
 impl<'a, T: LexemeSet> TokenStream<T, RawTokenSpan> for RawTokenStream<'a, T> {
     fn eat(&mut self, expected_lexeme: T) -> Option<RawTokenSpan> {
         self.refill_buffer();
@@ -133,12 +135,14 @@ impl<'a, T: LexemeSet> TokenStream<T, RawTokenSpan> for RawTokenStream<'a, T> {
     }
 }
 
+/// Wraps a TokenStream generating CToken lexemes, intercepting Identifiers to add them
+/// into a string pool 
 pub(crate) struct CTokenStream<S> {
     pub(crate) string_pool: StringPool,
     pub(crate) inner: S
 }
 
-// RawCTokenStream is only used for testing (i.e. bypassing preprocessor for unit tests)
+/// Only used for testing (i.e. bypassing preprocessor for unit tests)
 pub(crate) type RawCTokenStream<'src> = CTokenStream<RawTokenStream<'src, CLexemes>>;
 pub(crate) type PreprocessedCTokenStream = CTokenStream<Preprocessor>;
 

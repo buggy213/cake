@@ -44,6 +44,8 @@ pub(crate) fn verify_cir_module(module: &Module) -> ModuleResult<()> {
     todo!()
 }
 
+
+/// Check that functions and data defined in the module have unique names
 fn check_unique_names<'module>(state: &mut VerifierState<'module>, module: &'module Module) -> ModuleResult<()> {
     for data in module.data() {
         let Some(name) = data.name.as_ref() else {
@@ -64,13 +66,23 @@ fn check_unique_names<'module>(state: &mut VerifierState<'module>, module: &'mod
     Ok(())
 }
 
-fn verify_cir_function(function: &FunctionDefinition) -> FunctionResult<()> {
-    todo!()
+fn verify_cir_function(state: &mut VerifierState, function: &FunctionDefinition) -> FunctionResult<()> {
+    check_terminators(state, function)?;
+
+
+    Ok(())
 }
 
 /// Check that each instruction which transfers control to a block supplies the correct block arguments
-fn check_block_arguments() -> FunctionResult<()> {
-    todo!()
+fn check_block_arguments(function: &FunctionDefinition) -> FunctionResult<()> {
+    for block in &function.blocks {
+        let irefs = block.inst_refs.borrow();
+        let terminator = irefs.last();
+
+
+    }
+
+    Ok(())
 }
 
 /// Check that instructions have correctly-typed outputs and operands
@@ -85,9 +97,9 @@ fn check_usages() -> FunctionResult<()> {
 
 /// Check that all basic blocks have a terminator for final instruction
 /// and nowhere else
-fn check_terminators<'module>(
-    state: &mut VerifierState<'module>, 
-    function: &'module FunctionDefinition
+fn check_terminators(
+    state: &mut VerifierState, 
+    function: &FunctionDefinition
 ) -> FunctionResult<()> {
     for block in &function.blocks {
         for (i, &iref) in block.inst_refs.borrow().iter().enumerate() {

@@ -541,7 +541,14 @@ pub(super) fn resolve_expr(
             // can't use destination_type directly, have to resolve it (!!)
             // this requires scope and possible mutation of the symtab
             // (since you could, theoretically, declare a new type in a cast...)
-            let cast = TypedExpressionNode::Cast(todo!(), expr_ref, expr_type.clone());
+            let resolved_destination_type = resolve_empty_declaration(
+                ctx.symtab, 
+                destination_type, 
+                ctx.scope, 
+                ctx.parser_types, 
+                ctx.layouts
+            ).expect("TODO: make type resolution error separate from ResolveASTError to avoid circularity");
+            let cast = TypedExpressionNode::Cast(resolved_destination_type, expr_ref, expr_type.clone());
             let cast_ref = ExprRef::from_push(resolved_expr_vec, cast);
             Ok(cast_ref)
         }

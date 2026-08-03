@@ -1,7 +1,7 @@
 use std::ops::Index;
 
 use crate::semantics::resolved_ast::MemberRef;
-use crate::types::{StructureType, StructureTypeIdx, UnionType, UnionTypeIdx};
+use crate::types::{BasicType, EnumType, EnumTypeIdx, StructureType, StructureTypeIdx, UnionType, UnionTypeIdx};
 
 #[derive(Clone, Debug)]
 pub(crate) struct StructLayout {
@@ -16,13 +16,24 @@ pub(crate) struct UnionLayout {
     pub(crate) align: u32,
 }
 
+
+/// A enum "layout" is really just saying which integer type will be used to represent it, since
+/// enums are essentially just `int` in C. Only if the maximum value of variant is beyond the range 
+/// representable by `int` will it be represented using a `long`.
+#[derive(Clone, Debug)]
+pub(crate) struct EnumLayout {
+    pub(crate) repr: BasicType,
+}
+
 #[derive(Debug)]
 pub(crate) struct Layouts {
     pub(crate) struct_layouts: Vec<StructLayout>,
     pub(crate) union_layouts: Vec<UnionLayout>,
+    pub(crate) enum_layouts: Vec<EnumLayout>,
 
     struct_layout_valids: Vec<bool>,
-    union_layout_valids: Vec<bool>
+    union_layout_valids: Vec<bool>,
+    enum_layout_valids: Vec<bool>,
 }
 
 impl Index<StructureTypeIdx> for Layouts {
@@ -43,6 +54,15 @@ impl Index<UnionTypeIdx> for Layouts {
     }
 }
 
+impl Index<EnumTypeIdx> for Layouts {
+    type Output = EnumLayout;
+
+    fn index(&self, index: EnumTypeIdx) -> &Self::Output {
+        assert!(self.enum_layout_valids[index.get_inner()]);
+        &self.enum_layouts[index.get_inner()]
+    }
+}
+
 enum LayoutError {
 
 }
@@ -51,9 +71,11 @@ impl Layouts {
     pub(crate) fn new() -> Layouts {
         Layouts { 
             struct_layouts: Vec::new(), 
-            union_layouts: Vec::new(), 
+            union_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
             struct_layout_valids: Vec::new(), 
-            union_layout_valids: Vec::new() 
+            union_layout_valids: Vec::new(),
+            enum_layout_valids: Vec::new(), 
         }
     }
 
@@ -115,5 +137,17 @@ impl Layouts {
 
         self.union_layouts[union_ref.get_inner()] = UnionLayout { size: current_size, align: current_alignment };
         self.union_layout_valids[union_ref.get_inner()] = true;
+    }
+    
+    pub(crate) fn compute_enum_layout(&mut self, enum_ref: EnumTypeIdx, enum_type: &EnumType) {
+        if enum_ref.get_inner() >= self.enum_layouts.len() {
+            self.enum_layouts.resize(
+                enum_ref.get_inner() + 1, 
+                EnumLayout { repr: BasicType::Int }
+            );
+            self.enum_layout_valids.resize(enum_ref.get_inner() + 1, false);
+        }
+        self.enum_layouts[enum_ref.get_inner()] = EnumLayout { repr: BasicType::Int };
+        self.enum_layout_valids[enum_ref.get_inner()] = true;
     }
 }

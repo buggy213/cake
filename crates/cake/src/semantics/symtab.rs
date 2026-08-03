@@ -322,6 +322,10 @@ impl SymbolTable {
     pub(crate) fn union_types(&self) -> &[UnionType] {
         &self.union_types
     }
+
+    pub(crate) fn enum_types(&self) -> &[EnumType] {
+        &self.enum_types
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

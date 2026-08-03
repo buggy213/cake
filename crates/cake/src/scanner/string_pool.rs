@@ -7,6 +7,7 @@ use std::{hash::{Hash, Hasher}, num::NonZero};
 use hashbrown::HashTable;
 use rustc_hash::FxHasher;
 
+/// Implementation of string interning pool. Interned strings are represented by lightweight `StringPoolRef`
 pub(crate) struct StringPool {
     backing_mem: Vec<u8>,
     hash_table: HashTable<StringPoolRef>,
