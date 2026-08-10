@@ -1136,7 +1136,7 @@ mod test {
         let code = r#"
         enum color { RED, GREEN, BLUE };
         int main() {
-            enum color c = RED;
+            enum color c = GREEN;
             return (int)c;
         }
         "#;

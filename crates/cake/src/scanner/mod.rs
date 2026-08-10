@@ -73,7 +73,7 @@ impl<'src, T: LexemeSet> RawTokenStream<'src, T> {
 
     fn refill_buffer_to_size(&mut self, size: usize) {
         while self.buffer.len() < size {
-            let (lexeme, action, next_cursor) =
+            let (_, action, next_cursor) =
                 match self.scanner.next_word(self.source, self.cursor) {
                     ScannerResult::EndOfInput
                     | ScannerResult::Failed => break,
