@@ -1,46 +1,33 @@
-//! MIR: a low-level, machine-level IR sitting between [`crate::cir`] and final
-//! x86-64 encoding.
-//!
-//! Each [`MachineInst`] variant corresponds ~1-1 with a real x86 instruction
-//! (a curated subset, not iced-x86's full opcode zoo). Instructions operate over
-//! [`Reg`]s, which are either *virtual* ([`Vreg`]) or *physical* ([`Preg`]); the
-//! enum shape is identical in both phases so a register allocator can rewrite in
-//! place.
-//!
-//! Model (LLVM-style): instruction selection produces loosely-SSA MIR (block
-//! params act as phis, like CIR's `BlockArgument`). Later passes take it out of
-//! SSA (block-params -> copies), legalize the two-address ALU constraint
-//! (force a tied `dst == lhs` by inserting a `mov`), then run register
-//! allocation.
+//! MIR is x86-64 specific machine IR
+//! - Opcodes are meant to be 1-1 with a small subset of x86-64 instructions 
+//!   (ideally, those which are three-address like `lea`)
+//! - Prior to register allocation, MIR remains in three-address form with block params (i.e. φ-nodes).
+//!   It is the responsibility of the register allocator to eliminate φ's and tie one the `srcA` + `dst` together
+//!   to be compliant with x86's two-address encoding
+//! - Lowering CIR to MIR requires lowering 
+//!   1. calling convention, which is done by reading /writing SSA values from physical registers in prologue / epilogue
+//!      as well as around function calls (in addition to `push`ing and `pop`ing values as well for functions with many args)
+//!   2. stack usage + ABI requirements
+//! 
+//! 
+//! In addition, we make a few assumptions in the backend:
+//! - mcmodel=small, i.e. all data and code fits within 2 GiB, so that rel32 addressing always works 
+//! 
 
 use cake_util::make_type_idx;
 
-use crate::cir::{Data, SigRef, Signature, StackSlot, Type};
+use crate::cir::Type;
 
-// ---------------------------------------------------------------------------
-// Registers
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum RegClass {
-    /// General-purpose integer registers. (Xmm/float later)
-    Gpr,
-}
-
-/// A physical x86-64 register. Width-agnostic: the operating width (8/16/32/64)
-/// comes from the instruction / the defining vreg's [`Type`], and the right
-/// iced `Register` is picked at encode time.
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Preg {
+#[allow(non_camel_case_types, reason = "x86 convention")]
+enum PhysReg {
     rax,
+    rbx,
     rcx,
     rdx,
-    rbx,
-    rsp,
-    rbp,
     rsi,
     rdi,
+    rbp,
+    rsp,
     r8,
     r9,
     r10,
@@ -51,497 +38,150 @@ pub(crate) enum Preg {
     r15,
 }
 
-/// Registers clobbered by a `call` under the System V AMD64 ABI (caller-saved).
-/// Surfaced as implicit defs of [`MachineInst::Call`] so the allocator knows
-/// these values do not survive a call.
-pub(crate) const CALLER_SAVED: [Preg; 9] = [
-    Preg::rax,
-    Preg::rcx,
-    Preg::rdx,
-    Preg::rsi,
-    Preg::rdi,
-    Preg::r8,
-    Preg::r9,
-    Preg::r10,
-    Preg::r11,
-];
-
-// `Vreg` is both an index and a value: it indexes a side-table of [`VregData`]
-// held on the [`MachineFunction`].
-make_type_idx!(Vreg, VregData);
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct VregData {
-    pub(crate) class: RegClass,
-    pub(crate) ty: Type,
+struct VirtualReg {
+    
 }
 
-/// A register operand, virtual before allocation and physical after. The enum
-/// shape of [`MachineInst`] never changes; only the [`Reg`]s inside it do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Reg {
-    Virtual(Vreg),
-    Physical(Preg),
+enum OperandWidth {
+    Byte,
+    Word,
+    Dword,
+    Qword
 }
 
-// ---------------------------------------------------------------------------
-// Operands
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Scale {
-    S1,
-    S2,
-    S4,
-    S8,
+enum Reg {
+    VReg(VirtualReg, OperandWidth),
+    PReg(PhysReg, OperandWidth)
 }
 
-/// An x86 memory operand: `[base + index*scale + disp]`.
-///
-/// (Future: a RIP-relative + symbol form for globals/externs that lowers to an
-/// ELF relocation.)
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Mem {
-    pub(crate) base: Option<Reg>,
-    pub(crate) index: Option<(Reg, Scale)>,
-    pub(crate) disp: i32,
-}
-
-/// A general source/destination operand.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Operand {
-    Reg(Reg),
-    Imm(i64),
-    Mem(Mem),
-}
-
-/// Operating width for the width-carrying instructions (e.g. `movzx`/`movsx`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Width {
-    W8,
-    W16,
-    W32,
-    W64,
-}
-
-/// Condition codes for `jcc` / `setcc`. CIR's `CompareMode` plus operand
-/// signedness lowers into these (signed `L/Le/G/Ge` vs unsigned `B/Be/A/Ae`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Cond {
-    E,
-    Ne,
-    L,
-    Le,
-    G,
-    Ge,
-    B,
-    Be,
-    A,
-    Ae,
-    S,
-    Ns,
-}
-
-/// Target of a `call`: a named symbol (resolved to a relocation later) or an
-/// indirect register/memory target.
-#[derive(Debug, Clone)]
-pub(crate) enum CallTarget {
-    Symbol(String),
-    Indirect(Operand),
-}
-
-// ---------------------------------------------------------------------------
-// Instructions
-// ---------------------------------------------------------------------------
-
-/// One variant ~= one x86 mnemonic.
-///
-/// The ALU ops are written in three-field form (`dst`, `lhs`, `rhs`) so they are
-/// usable in loose-SSA with a fresh `dst` distinct from `lhs`. The real x86
-/// instruction is two-address: the two-address legalization pass forces
-/// `dst == lhs` (inserting a `mov dst, lhs` when they differ) before encoding.
-#[derive(Debug, Clone)]
-pub(crate) enum MachineInst {
-    /// `mov dst, src` — at most one operand may be memory.
-    Mov {
-        dst: Operand,
-        src: Operand,
+enum MemOperand {
+    PcRelative {
+        disp: u32,
+        width: OperandWidth
     },
-    /// `lea dst, [addr]`.
+    Normal {
+        base: Reg,
+        index: Reg,
+        scale: u32,
+        disp: u32,
+        width: OperandWidth
+    },
+}
+
+struct ImmediateOperand {
+    value: u64,
+    width: OperandWidth,
+}
+
+/// MachineInst are the opcodes of MIR, and correspond directly to a single x86 opcode + addressing mode selection
+/// The width of the operation (usually) comes from the OperandWidth field of its registers / memory operands, 
+/// except for sign-extend / zero-extend. `ImmediateOperand`s are sign-extended if not full-width.
+enum MachineInst {
+    // lea %dst [%op2]
     Lea {
         dst: Reg,
-        addr: Mem,
+        op2: MemOperand
     },
 
-    // two-address ALU (dst tied to lhs at legalization)
-    Add {
+    // add %dst/op1, %op2
+    AddRegToReg {
         dst: Reg,
-        lhs: Reg,
-        rhs: Operand,
+        op1: Reg,
+        op2: Reg,       
     },
-    Sub {
+    // add %dst/op1, [%op2]
+    AddMemToReg {
         dst: Reg,
-        lhs: Reg,
-        rhs: Operand,
+        op1: Reg,
+        op2: MemOperand,
     },
-    And {
-        dst: Reg,
-        lhs: Reg,
-        rhs: Operand,
+    // add [%op1], %op2
+    AddRegToMem {
+        op1: MemOperand,
+        op2: Reg,
     },
-    Or {
+    // add %dst/op1, %op2
+    AddImmToReg {
         dst: Reg,
-        lhs: Reg,
-        rhs: Operand,
+        op1: Reg,
+        op2: ImmediateOperand
     },
-    Xor {
-        dst: Reg,
-        lhs: Reg,
-        rhs: Operand,
-    },
-    Imul {
-        dst: Reg,
-        lhs: Reg,
-        rhs: Operand,
-    },
-    /// Shift; `amount` is an immediate or (implicitly) `cl`.
-    Shl {
-        dst: Reg,
-        lhs: Reg,
-        amount: Operand,
-    },
-    Shr {
-        dst: Reg,
-        lhs: Reg,
-        amount: Operand,
-    },
-    Sar {
-        dst: Reg,
-        lhs: Reg,
-        amount: Operand,
-    },
-    Neg {
-        dst: Reg,
-        src: Reg,
-    },
-    Not {
-        dst: Reg,
-        src: Reg,
+    // add [%op1], %op2
+    AddImmToMem {
+        op1: MemOperand,
+        op2: ImmediateOperand,
     },
 
-    /// `cqo`/`cdq`: sign-extend `rax` into `rdx:rax` ahead of `idiv`.
-    Cqo,
-    /// `idiv divisor`: dividend in `rdx:rax`, quotient -> `rax`, remainder -> `rdx`.
-    Idiv {
-        divisor: Operand,
+    
+
+    // mov %dst, [%op2]
+    Load {
+        dst: Reg,
+        op2: MemOperand
+    },
+    // mov %dst, %op2
+    LoadImm {
+        dst: Reg,
+        op2: ImmediateOperand,
+    },
+    // mov [%op1], %op2
+    StoreReg {
+        op1: MemOperand,
+        op2: Reg,
+    },
+    // mov [%op1], %op2
+    StoreImm {
+        op1: MemOperand,
+        op2: ImmediateOperand,
     },
 
-    Cmp {
-        lhs: Reg,
-        rhs: Operand,
-    },
-    Test {
-        lhs: Reg,
-        rhs: Operand,
-    },
-    /// `setcc dst` — writes the low byte of `dst`.
-    Setcc {
-        cond: Cond,
+    // in x86, writing to 32-bit register clears the upper 32 bits
+    // so, zero-extend (`movzx`) is only needed when widening from a unsigned byte or unsigned short. 
+    // on the other hand, sign-extend (`movsx`) is also needed when widening from a signed int, since the default
+    // behavior is zero extension
+
+    // movzx %dst, %op2
+    ZeroExtend {
         dst: Reg,
+        op2: Reg,
     },
-    /// Zero/sign-extend `src` (of width `src_width`) into `dst`.
-    Movzx {
+    // movsx %dst, %op2
+    SignExtend {
         dst: Reg,
-        src: Operand,
-        src_width: Width,
-    },
-    Movsx {
-        dst: Reg,
-        src: Operand,
-        src_width: Width,
+        op2: Reg
     },
 
+    // push %op1
     Push {
-        src: Reg,
+        op1: Reg
     },
+    // pop %dst
     Pop {
-        dst: Reg,
+        dst: Reg
     },
 
-    // terminators: always the last inst in a block. Branch args line up
-    // positionally with the target block's `params` (loose-SSA).
-    Jmp {
-        target: MblockRef,
-        args: Vec<Vreg>,
+    // this will always be encoded as `jmp rel32` (RIP-relative addressing) due to mcmodel assumption
+    Jump {
+        target: MachineBlockRef
     },
-    /// Conditional branch; the fall-through edge is the textually next block.
-    Jcc {
-        cond: Cond,
-        target: MblockRef,
-        args: Vec<Vreg>,
-    },
+
+    // this will always be encoded as `call rel32` (RIP-relative addressing) due to mcmodel assumption
     Call {
-        target: CallTarget,
+        // TODO: relocation
     },
-    Ret,
+    Ret
 }
 
-/// Whether a register operand is read, written, or both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OperandRole {
-    Def,
-    Use,
-    /// Read-modify-write of a single physical register (e.g. `idiv`'s `rdx:rax`).
-    DefUse,
+make_type_idx!(MachineInstRef, MachineInst);
+
+struct MachineBlock {
+    irefs: Vec<MachineInstRef>,
 }
 
-impl MachineInst {
-    /// Visit every register touched by this instruction, with its role —
-    /// including *implicit* fixed-physical-register operands (`idiv`'s
-    /// `rdx:rax`, `call`'s caller-saved clobbers, `ret`'s return reg). Used by
-    /// liveness, clobber analysis, and the future register allocator.
-    ///
-    /// For mutation/rewriting use [`MachineInst::for_each_reg_mut`], which only
-    /// visits the *explicit* (rewritable) operands.
-    pub(crate) fn for_each_reg(&self, mut f: impl FnMut(Reg, OperandRole)) {
-        // helper: a read operand contributes its register(s) as Use
-        let use_operand = |op: &Operand, f: &mut dyn FnMut(Reg, OperandRole)| match op {
-            Operand::Reg(r) => f(*r, OperandRole::Use),
-            Operand::Mem(m) => mem_regs(m, f),
-            Operand::Imm(_) => {}
-        };
+make_type_idx!(MachineBlockRef, MachineBlock);
 
-        match self {
-            MachineInst::Mov { dst, src } => {
-                use_operand(src, &mut f);
-                match dst {
-                    // a register destination is a pure def
-                    Operand::Reg(r) => f(*r, OperandRole::Def),
-                    // a memory destination only *reads* its address registers
-                    Operand::Mem(m) => mem_regs(m, &mut f),
-                    Operand::Imm(_) => {}
-                }
-            }
-            MachineInst::Lea { dst, addr } => {
-                mem_regs(addr, &mut f);
-                f(*dst, OperandRole::Def);
-            }
-            MachineInst::Add { dst, lhs, rhs }
-            | MachineInst::Sub { dst, lhs, rhs }
-            | MachineInst::And { dst, lhs, rhs }
-            | MachineInst::Or { dst, lhs, rhs }
-            | MachineInst::Xor { dst, lhs, rhs }
-            | MachineInst::Imul { dst, lhs, rhs }
-            | MachineInst::Shl {
-                dst,
-                lhs,
-                amount: rhs,
-            }
-            | MachineInst::Shr {
-                dst,
-                lhs,
-                amount: rhs,
-            }
-            | MachineInst::Sar {
-                dst,
-                lhs,
-                amount: rhs,
-            } => {
-                f(*lhs, OperandRole::Use);
-                use_operand(rhs, &mut f);
-                f(*dst, OperandRole::Def);
-            }
-            MachineInst::Neg { dst, src } | MachineInst::Not { dst, src } => {
-                f(*src, OperandRole::Use);
-                f(*dst, OperandRole::Def);
-            }
-            MachineInst::Cqo => {
-                f(Reg::Physical(Preg::rax), OperandRole::Use);
-                f(Reg::Physical(Preg::rdx), OperandRole::Def);
-            }
-            MachineInst::Idiv { divisor } => {
-                use_operand(divisor, &mut f);
-                f(Reg::Physical(Preg::rax), OperandRole::DefUse);
-                f(Reg::Physical(Preg::rdx), OperandRole::DefUse);
-            }
-            MachineInst::Cmp { lhs, rhs } | MachineInst::Test { lhs, rhs } => {
-                f(*lhs, OperandRole::Use);
-                use_operand(rhs, &mut f);
-            }
-            MachineInst::Setcc { dst, .. } => f(*dst, OperandRole::Def),
-            MachineInst::Movzx { dst, src, .. } | MachineInst::Movsx { dst, src, .. } => {
-                use_operand(src, &mut f);
-                f(*dst, OperandRole::Def);
-            }
-            MachineInst::Push { src } => f(*src, OperandRole::Use),
-            MachineInst::Pop { dst } => f(*dst, OperandRole::Def),
-            MachineInst::Jmp { args, .. } | MachineInst::Jcc { args, .. } => {
-                for v in args {
-                    f(Reg::Virtual(*v), OperandRole::Use);
-                }
-            }
-            MachineInst::Call { target } => {
-                if let CallTarget::Indirect(op) = target {
-                    use_operand(op, &mut f);
-                }
-                // caller-saved registers are clobbered across the call
-                for preg in CALLER_SAVED {
-                    f(Reg::Physical(preg), OperandRole::Def);
-                }
-            }
-            // The return value reg (rax / xmm0) is set up by the preceding mov;
-            // ret itself reads it. Modeled as a use of rax for now.
-            MachineInst::Ret => f(Reg::Physical(Preg::rax), OperandRole::Use),
-        }
-    }
+struct MachineFunction {
+    insts: Vec<MachineInst>,
 
-    /// Visit every *explicit* register operand mutably — the operands a register
-    /// allocator rewrites from virtual to physical. Implicit fixed-preg
-    /// constraints are already physical and are intentionally NOT yielded here.
-    pub(crate) fn for_each_reg_mut(&mut self, mut f: impl FnMut(&mut Reg)) {
-        fn operand_regs(op: &mut Operand, f: &mut dyn FnMut(&mut Reg)) {
-            match op {
-                Operand::Reg(r) => f(r),
-                Operand::Mem(m) => mem_regs_mut(m, f),
-                Operand::Imm(_) => {}
-            }
-        }
-
-        match self {
-            MachineInst::Mov { dst, src } => {
-                operand_regs(dst, &mut f);
-                operand_regs(src, &mut f);
-            }
-            MachineInst::Lea { dst, addr } => {
-                f(dst);
-                mem_regs_mut(addr, &mut f);
-            }
-            MachineInst::Add { dst, lhs, rhs }
-            | MachineInst::Sub { dst, lhs, rhs }
-            | MachineInst::And { dst, lhs, rhs }
-            | MachineInst::Or { dst, lhs, rhs }
-            | MachineInst::Xor { dst, lhs, rhs }
-            | MachineInst::Imul { dst, lhs, rhs }
-            | MachineInst::Shl {
-                dst,
-                lhs,
-                amount: rhs,
-            }
-            | MachineInst::Shr {
-                dst,
-                lhs,
-                amount: rhs,
-            }
-            | MachineInst::Sar {
-                dst,
-                lhs,
-                amount: rhs,
-            } => {
-                f(dst);
-                f(lhs);
-                operand_regs(rhs, &mut f);
-            }
-            MachineInst::Neg { dst, src } | MachineInst::Not { dst, src } => {
-                f(dst);
-                f(src);
-            }
-            MachineInst::Cqo => {}
-            MachineInst::Idiv { divisor } => operand_regs(divisor, &mut f),
-            MachineInst::Cmp { lhs, rhs } | MachineInst::Test { lhs, rhs } => {
-                f(lhs);
-                operand_regs(rhs, &mut f);
-            }
-            MachineInst::Setcc { dst, .. } => f(dst),
-            MachineInst::Movzx { dst, src, .. } | MachineInst::Movsx { dst, src, .. } => {
-                f(dst);
-                operand_regs(src, &mut f);
-            }
-            MachineInst::Push { src } => f(src),
-            MachineInst::Pop { dst } => f(dst),
-            MachineInst::Jmp { args, .. } | MachineInst::Jcc { args, .. } => {
-                for v in args {
-                    // args are vregs; wrap/unwrap through Reg for uniform rewrite
-                    let mut r = Reg::Virtual(*v);
-                    f(&mut r);
-                    if let Reg::Virtual(nv) = r {
-                        *v = nv;
-                    }
-                }
-            }
-            MachineInst::Call { target } => {
-                if let CallTarget::Indirect(op) = target {
-                    operand_regs(op, &mut f);
-                }
-            }
-            MachineInst::Ret => {}
-        }
-    }
-
-    /// Successor blocks of this terminator (empty for non-terminators / `ret`).
-    pub(crate) fn successors(&self) -> Option<MblockRef> {
-        match self {
-            MachineInst::Jmp { target, .. } => Some(*target),
-            MachineInst::Jcc { target, .. } => Some(*target),
-            _ => None,
-        }
-    }
 }
 
-fn mem_regs(m: &Mem, f: &mut dyn FnMut(Reg, OperandRole)) {
-    if let Some(base) = m.base {
-        f(base, OperandRole::Use);
-    }
-    if let Some((index, _)) = m.index {
-        f(index, OperandRole::Use);
-    }
-}
-
-fn mem_regs_mut(m: &mut Mem, f: &mut dyn FnMut(&mut Reg)) {
-    if let Some(base) = m.base.as_mut() {
-        f(base);
-    }
-    if let Some((index, _)) = m.index.as_mut() {
-        f(index);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CFG containers
-// ---------------------------------------------------------------------------
-
-make_type_idx!(MblockRef, Mblock);
-
-#[derive(Debug)]
-pub(crate) struct Mblock {
-    /// The terminator is the last instruction.
-    pub(crate) insts: Vec<MachineInst>,
-}
-
-impl Mblock {
-    fn new() -> Mblock {
-        Mblock { insts: Vec::new() }
-    }
-}
-
-make_type_idx!(MFuncRef, MachineFunction);
-
-#[derive(Debug)]
-pub(crate) struct MachineFunction {
-    pub(crate) signature: SigRef,
-    pub(crate) blocks: Vec<Mblock>,
-    pub(crate) vregs: Vec<VregData>,
-    pub(crate) stack_slots: Vec<StackSlot>,
-}
-
-impl MachineFunction {
-    pub(crate) fn new_vreg(&mut self, class: RegClass, ty: Type) -> Vreg {
-        Vreg::from_push(&mut self.vregs, VregData { class, ty })
-    }
-}
-
-mod cir2mir;
-
-#[cfg(test)]
-mod test {
-    use super::*;
-}
