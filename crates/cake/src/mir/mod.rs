@@ -73,6 +73,28 @@ struct ImmediateOperand {
     width: OperandWidth,
 }
 
+enum Condition {
+    // overflow
+    O,
+    No,
+
+    // zero / not zero (equal / not equal) 
+    Z,
+    Nz,
+
+    // "below" and "above" are used for unsigned comparisons
+    B,
+    Ae,
+    Be,
+    A,
+
+    // "less" and "greater" are used for signed comparisons
+    L,
+    Ge,
+    Le,
+    G
+}
+
 /// MachineInst are the opcodes of MIR, and correspond directly to a single x86 opcode + addressing mode selection
 /// The width of the operation (usually) comes from the OperandWidth field of its registers / memory operands, 
 /// except for sign-extend / zero-extend. `ImmediateOperand`s are sign-extended if not full-width.
@@ -111,8 +133,6 @@ enum MachineInst {
         op1: MemOperand,
         op2: ImmediateOperand,
     },
-
-    
 
     // mov %dst, [%op2]
     Load {
@@ -169,7 +189,105 @@ enum MachineInst {
     Call {
         // TODO: relocation
     },
-    Ret
+    // ret
+    Ret,
+
+    // x86 offers a one-operand form `imul`, but it always writes to rdx:rax, which is pretty inflexible
+    // this is mostly useful if you want a true 128-bit multiplication, which is not really required for us
+    // thus, we only encode two-operand and two-operand one-imm form
+    MulRegToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
+    },
+    MulMemToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: MemOperand
+    },
+    MulRegWithImm {
+        dst: Reg,
+        op1: Reg,
+        op2: ImmediateOperand
+    },
+    MulMemWithImm {
+        dst: Reg,
+        op1: MemOperand,
+        op2: ImmediateOperand,
+    },
+
+    // x86 division operates on rdx:rax (or subregisters thereof) as the dividend, 
+    // outputting quotient in rax and remainder in rdx
+    UDivByReg {
+        dst_quo: Reg,
+        dst_rem: Reg,
+        op1: Reg,
+    },
+    UDivByMem {
+        dst_quo: Reg,
+        dst_rem: Reg,
+        op1: MemOperand
+    },
+    SDivByReg {
+        dst_quo: Reg,
+        dst_rem: Reg,
+        op1: Reg,
+    },
+    SDivByMem {
+        dst_quo: Reg,
+        dst_rem: Reg,
+        op1: MemOperand
+    },
+
+    // cwd / cdq / cqo, depending on width
+    PrepareDiv {
+        width: OperandWidth       
+    },
+
+    // and %op1, %op2
+    AndRegToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
+    },
+
+    // or %op1, %op2
+    OrRegToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
+    },
+
+    // xor %op1, %op2
+    XorRegToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg
+    },
+    
+    // not %op1
+    NotReg {
+        dst: Reg,
+        op1: Reg,
+    },
+
+    // test %op1, %op2
+    TestRegWithImm {
+        op1: Reg,
+        op2: ImmediateOperand
+    },
+    // cmp %op1, %op2
+    CmpRegWithImm {
+        op1: Reg,
+        op2: ImmediateOperand
+    },
+
+    JmpWithCond {
+        cond: Condition,
+        target: MachineBlockRef,
+    },
+
+
 }
 
 make_type_idx!(MachineInstRef, MachineInst);
@@ -182,6 +300,6 @@ make_type_idx!(MachineBlockRef, MachineBlock);
 
 struct MachineFunction {
     insts: Vec<MachineInst>,
-
 }
 
+mod cir2mir;
