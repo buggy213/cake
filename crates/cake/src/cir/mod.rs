@@ -69,6 +69,7 @@ impl Module {
             inst_types: vec![],
             value_vecs: vec![],
             inst_uses: vec![],
+            inst_block: vec![],
             blocks: vec![entry_block], 
             stack_slots: vec![]
         });
@@ -222,7 +223,7 @@ pub(crate) struct Function {
 
 // note: a use of a tuple element does not distinguish which element of the tuple is being used
 // in order to save space
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Use {
     user: InstRef,
     operand_idx: u32,
@@ -236,10 +237,47 @@ pub(crate) struct FunctionDefinition {
     pub(crate) inst_types: Vec<TypeVec>,
     pub(crate) value_vecs: Vec<ValueVec>,
     pub(crate) inst_uses: Vec<UseVec>,
+    pub(crate) inst_block: Vec<Option<BlockRef>>,
 
     pub(crate) blocks: Vec<Block>,
 
     pub(crate) stack_slots: Vec<StackSlot>,
+}
+
+impl FunctionDefinition {
+    pub(crate) fn uses(&self, def: Value) -> &[Use] {
+        match def {
+            Value::Inst(inst_ref) => {
+                &self.inst_uses[inst_ref]
+            },
+            Value::BlockArgument(block_ref, idx) => {
+                &self.blocks[block_ref].block_arg_uses[idx as usize]
+            },
+            Value::TupleElement(inst_ref, _) => {
+                &self.inst_uses[inst_ref]
+            },
+        }
+    }
+
+    // returns remaining number of uses
+    pub(crate) fn remove_use(&mut self, def: Value, use_: Use) -> usize {
+        let use_vec = match def {
+            Value::Inst(inst_ref) => {
+                &mut self.inst_uses[inst_ref]
+            },
+            Value::BlockArgument(block_ref, idx) => {
+                &mut self.blocks[block_ref].block_arg_uses[idx as usize]
+            },
+            Value::TupleElement(inst_ref, _) => {
+                &mut self.inst_uses[inst_ref]
+            },
+        };
+
+        let delete_idx = use_vec.iter().position(|x| use_ == *x).expect("failed to remove use");
+        use_vec.swap_remove(delete_idx);
+
+        use_vec.len()
+    }
 }
 
 make_type_idx!(StackSlotRef, StackSlot);
@@ -290,6 +328,7 @@ impl<'func> FunctionBuilder<'func> {
             insts: &mut self.func.insts,
             inst_types: &mut self.func.inst_types,
             inst_uses: &mut self.func.inst_uses,
+            inst_block: &mut self.func.inst_block,
             value_vecs: &mut self.func.value_vecs,
 
             sigs: self.sigs,
@@ -318,6 +357,7 @@ pub(crate) struct BlockBuilder<'block> {
     insts: &'block mut Vec<Inst>,
     inst_types: &'block mut Vec<TypeVec>,
     inst_uses: &'block mut Vec<UseVec>,
+    inst_block: &'block mut Vec<Option<BlockRef>>,
     value_vecs: &'block mut Vec<ValueVec>,
     
     sigs: &'block [Signature],
@@ -373,6 +413,7 @@ impl<'block> BlockBuilder<'block> {
             self.add_use(def, use_);
         }
         self.inst_uses.push(smallvec![]);
+        self.inst_block.push(Some(self.current_block));
         
         iref
     }
@@ -886,8 +927,52 @@ impl Inst {
             | Inst::Return { .. }
         )
     }
+    pub(crate) fn has_side_effects(&self) -> bool {
+        match self {
+            Inst::Constant { val } => false,
+            Inst::Add { a, b } => false,
+            Inst::Sub { a, b } => false,
+            Inst::Mul { a, b } => false,
+            Inst::Div { a, b } => false,
+            Inst::Modulo { a, b } => false,
+            Inst::And { a, b } => false,
+            Inst::Or { a, b } => false,
+            Inst::Xor { a, b } => false,
+            Inst::Shl { a, b } => false,
+            Inst::Ashr { a, b } => false,
+            Inst::Lshr { a, b } => false,
+            Inst::Icmp { mode, a, b, signed } => false,
+            Inst::Fadd { a, b } => false,
+            Inst::Fsub { a, b } => false,
+            Inst::Fmul { a, b } => false,
+            Inst::Fdiv { a, b } => false,
+            Inst::Fcmp { mode, a, b } => false,
+            Inst::IntToFp { v } => false,
+            Inst::FpToInt { v } => false,
+            Inst::Load { addr } => false,
+            Inst::Store { addr, val } => true,
+            Inst::StackAddr { slot } => false,
+            Inst::Zext { v } => false,
+            Inst::Sext { v } => false,
+            Inst::Truncate { v } => false,
+            Inst::FpCast { v } => false,
+            Inst::PtrAdd { ptr, offset } => false,
+            Inst::PtrToInt { v } => false,
+            Inst::IntToPtr { v } => false,
+            Inst::CompareInt { a, b, mode } => false,
+            Inst::CompareFloat { a, b, mode } => false,
+            Inst::Select { cond, x, y } => false,
+            Inst::BranchIf { cond, con, con_args, alt, alt_args } => true,
+            Inst::Return { values } => true,
+            Inst::Jump { target, arguments } => true,
+            Inst::Call { func, arguments } => true,
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } => true,
+            Inst::FuncAddr { func } => false,
+            Inst::DataAddr { data } => false,
+            Inst::Intrinsic { intrinsic, arguments } => true,
+        }
+    }
 
-    
     pub(crate) fn num_operands(&self, value_vecs: &[ValueVec]) -> usize {
         match self {
             Inst::Constant { .. } => 0,
@@ -1176,8 +1261,6 @@ impl Inst {
             Inst::DataAddr { data } => bad_operand_access(),
         }
     }
-
-
 }
 
 impl std::fmt::Display for Constant {
