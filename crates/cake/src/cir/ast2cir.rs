@@ -5,7 +5,7 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::{
     cir::{BlockRef, CompareMode, DataContents, DataRef, FuncRef, FunctionBuilder, Inst, Module, SigRef, Signature, StackSlotRef, Type, Value, ValueVec}, parser::ast, scanner::string_pool::StringPoolRef, semantics::{
-        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode}, resolver::ResolvedAST, symtab::{FunctionIdx, ObjectIdx, ObjectRangeRef, SymbolTable},
+        resolved_ast::{ExprRef, NodeRef, ResolvedASTNode, TypedExpressionNode}, resolver::ResolvedAST, symtab::{ObjectIdx, ObjectRangeRef, SymbolTable},
     }, types::{BasicType, CType, FunctionTypeIdx, TypeQualifier, layout::Layouts},
 };
 
@@ -791,7 +791,8 @@ fn lower_expr(
                 CType::UnionTypeRef { symtab_idx, qualifier } => {
                     break 'match_expr ptr;
                 },
-                CType::EnumTypeRef { symtab_idx, qualifier } => todo!("handle enum"),
+                CType::EnumTypeRef { symtab_idx, qualifier } => 
+                    ast.layouts[*symtab_idx].repr.into(),
                 _ => unreachable!("type check should prevent this")
             };
 
@@ -877,7 +878,7 @@ fn lower_expr(
                 CType::BasicType { basic_type, .. } => (*basic_type).into(),
                 CType::PointerType { .. } => Type::ptr,
                 CType::StructureTypeRef { .. } | CType::UnionTypeRef { .. } => break 'match_expr location,
-                CType::EnumTypeRef { .. } => todo!("handle enums"),
+                CType::EnumTypeRef { symtab_idx, qualifier: _ } => ast.layouts[*symtab_idx].repr.into(),
                 _ => unreachable!("other types shouldn't be possible")
             };
 
