@@ -78,13 +78,13 @@ impl X86Codegen {
     pub(crate) fn emit_module(&mut self, module: &Module) -> Elf {
         let mut elf = Elf::new();
         
-        for (data_ref, data) in DataRef::enumerate(module.data()) {            
-            self.emit_data(&mut elf, data, data_ref);
-        }
+        // for (data_ref, data) in DataRef::enumerate(module.data()) {            
+        //     self.emit_data(&mut elf, data, data_ref);
+        // }
         
-        for ((func_ref, func), sig) in std::iter::zip(FuncRef::enumerate(module.functions()), module.signatures()) {
-            self.emit_function(&mut elf, func, func_ref, sig);
-        }
+        // for ((func_ref, func), sig) in std::iter::zip(FuncRef::enumerate(module.functions()), module.signatures()) {
+        //     self.emit_function(&mut elf, func, func_ref, sig);
+        // }
 
         elf
     }
@@ -152,8 +152,8 @@ impl X86Codegen {
                 0
             );
             
-            let (offset, func_size) = self.emit_function_body(elf, func_body, func_sig);
-
+            // let (offset, func_size) = self.emit_function_body(elf, func_body, func_sig);
+            let (offset, func_size) : (usize, usize) = todo!();
             // align to 16-byte boundary for the next function
             let padding = func_size.next_multiple_of(16) - func_size;
             const PADDING: [u8; 16] = [0; 16];            
@@ -175,7 +175,8 @@ impl X86Codegen {
         
     }
 
-    /// returns how many bytes emitted into ELF's .text section
+    // returns how many bytes emitted into ELF's .text section
+    /* 
     fn emit_function_body(
         &mut self, 
         elf: &mut Elf, 
@@ -187,13 +188,13 @@ impl X86Codegen {
         // 0. layout the stack slots
         // (very) conservatively allocate 128 bytes for spilling callee-saved registers and 
         // issues with register allocation. if both happen at once we're kinda cooked lol
-        let mut static_stack_size = 128;
-        let mut stack_slot_to_offset_from_top = FxHashMap::default();
-        for (ss_ref, stack_slot) in StackSlotRef::enumerate(&func.stack_slots) {
-            static_stack_size += stack_slot.size;
-            static_stack_size = static_stack_size.next_multiple_of(stack_slot.align);
-            stack_slot_to_offset_from_top.insert(ss_ref, static_stack_size);
-        }
+        // let mut static_stack_size: usize = 128;
+        // let mut stack_slot_to_offset_from_top = FxHashMap::default();
+        // for (ss_ref, stack_slot) in StackSlotRef::enumerate(&func.stack_slots) {
+        //     static_stack_size += stack_slot.size;
+        //     static_stack_size = static_stack_size.next_multiple_of(stack_slot.align);
+        //     stack_slot_to_offset_from_top.insert(ss_ref, static_stack_size);
+        // }
         
         // stack needs to be 16-byte aligned
         static_stack_size = static_stack_size.next_multiple_of(16);
@@ -211,6 +212,7 @@ impl X86Codegen {
         // reversed_edges[b] returns all b' where b' -> b exists in CFG
         let mut reversed_edges: Vec<Vec<BlockRef>> = vec![Vec::new(); func.blocks.len()];
 
+        /* 
         for (b, block) in BlockRef::enumerate(&func.blocks) {
             let inst_refs = block.inst_refs.borrow();
             let terminator = inst_refs.last();
@@ -230,6 +232,7 @@ impl X86Codegen {
                 _ => unreachable!("function doesn't have terminator?")
             }
         }
+        */
 
         fn postorder_blocks(
             b: BlockRef,
@@ -251,10 +254,11 @@ impl X86Codegen {
 
         let mut visited = FxHashSet::default();
         let mut ordered = Vec::new();
+        /*
         for (block, _) in BlockRef::enumerate(&func.blocks) {
             postorder_blocks(block, &reversed_edges, &mut visited, &mut ordered);
         }
-
+        
         // 2. iterate in reverse-postorder
         for &block_ref in &ordered {
             let block = &func.blocks[block_ref];
@@ -326,6 +330,7 @@ impl X86Codegen {
                     param_idx += 1;
                 }
             }
+            
 
             // perform liveness analysis to determine live-in and live-out sets of each block
             // the values in both sets, as well as the values defined by the instructions in the
@@ -443,7 +448,9 @@ impl X86Codegen {
                 } 
             }
         }
+        */
         
         todo!()
     }
+    */
 }

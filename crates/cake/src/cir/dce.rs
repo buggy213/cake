@@ -12,7 +12,7 @@ fn eliminate_dead_code(func: &mut FunctionDefinition) {
         for &iref in block.inst_refs.borrow().iter() {
             let inst = func.insts[iref];
             if func.inst_uses[iref].len() == 0 && !inst.has_side_effects() {
-                func.inst_block[iref.get_inner()] = None;
+                func.inst_block[iref] = None;
                 worklist.push(iref);
             }
         }
@@ -37,7 +37,7 @@ fn eliminate_dead_code(func: &mut FunctionDefinition) {
                 match def {
                     Value::Inst(inst_ref)
                     | Value::TupleElement(inst_ref, _) => {
-                        func.inst_block[inst_ref.get_inner()] = None;
+                        func.inst_block[inst_ref] = None;
                         worklist.push(inst_ref);
                     }
                     Value::BlockArgument(block_ref, _) => {
@@ -53,7 +53,7 @@ fn eliminate_dead_code(func: &mut FunctionDefinition) {
     for block in &mut func.blocks {
         let irefs = block.inst_refs.get_mut();
         irefs.retain(|&iref| {
-            func.inst_block[iref.get_inner()].is_some()
+            func.inst_block[iref].is_some()
         });
     }
 }

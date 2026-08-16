@@ -10,10 +10,10 @@ pub(crate) enum Intrinsic {
 
 impl<'block> BlockBuilder<'block> {
     fn intrinsic_call(&mut self, intrinsic: Intrinsic, args: &[Value], outputs: &[Type]) -> InstRef {
-        let args = ValueVecRef::from_push(self.value_vecs, SmallVec::from_slice(args));
+        let args = ValueVecRef::from_push2(self.value_vecs, SmallVec::from_slice(args));
         let intrinsic_inst = Inst::Intrinsic { intrinsic, arguments: args };
         self.inst_types.push(TypeVec::from_slice(outputs));
-        InstRef::from_push(self.insts, intrinsic_inst)
+        InstRef::from_push2(self.insts, intrinsic_inst)
     }
     
     pub(crate) fn memcpy(&mut self, dst: Value, src: Value, size: Value) {

@@ -1,15 +1,15 @@
 use std::cell::RefCell;
 
-use cake_util::{add_additional_index, make_type_idx};
+use cake_util::{IndexSlice, IndexVec, add_additional_index, index_vec, make_type_idx};
 use smallvec::{SmallVec, ToSmallVec, smallvec};
 
 use crate::cir::intrinsics::Intrinsic;
 
 #[derive(Debug)]
 pub(crate) struct Module {
-    functions: Vec<Function>,
-    signatures: Vec<Signature>,
-    data: Vec<Data>,
+    functions: IndexVec<FuncRef, Function>,
+    signatures: IndexVec<FuncRef, Signature>,
+    data: IndexVec<DataRef, Data>,
 }
 
 make_type_idx!(DataRef, Data);
@@ -34,9 +34,9 @@ pub(crate) enum DataContents {
 impl Module {
     pub(crate) fn new() -> Module {
         Module {
-            functions: Vec::new(),
-            signatures: Vec::new(),
-            data: Vec::new(),
+            functions: IndexVec::new(),
+            signatures: IndexVec::new(),
+            data: IndexVec::new(),
         }
     }
 
@@ -45,11 +45,11 @@ impl Module {
         let func = Function {
             name,
             
-            external_signatures: vec![],
+            external_signatures: index_vec![],
             definition: None,
         };
 
-        FuncRef::from_push(&mut self.functions, func)
+        FuncRef::from_push2(&mut self.functions, func)
     }
 
     pub(crate) fn define_function(&'_ mut self, func: FuncRef) -> FunctionBuilder<'_> {
@@ -61,17 +61,17 @@ impl Module {
 
         // append function parameters as block params of entry block
         let mut entry_block = Block::new();
-        let sig = &self.signatures[func.get_inner()];
+        let sig = &self.signatures[func];
         entry_block.block_args.extend_from_slice(&sig.argument_types);
         
         *definition = Some(FunctionDefinition { 
-            insts: vec![], 
-            inst_types: vec![],
-            value_vecs: vec![],
-            inst_uses: vec![],
-            inst_block: vec![],
-            blocks: vec![entry_block], 
-            stack_slots: vec![]
+            insts: index_vec![], 
+            inst_types: index_vec![],
+            value_vecs: index_vec![],
+            inst_uses: index_vec![],
+            inst_block: index_vec![],
+            blocks: index_vec![entry_block], 
+            stack_slots: index_vec![]
         });
 
         FunctionBuilder {
@@ -90,22 +90,22 @@ impl Module {
             read_only,
             contents: DataContents::Undefined,
         };
-        DataRef::from_push(&mut self.data, data)
+        DataRef::from_push2(&mut self.data, data)
     }
 
     pub(crate) fn define_data(&mut self, data: DataRef, contents: DataContents) {
         self.data[data].contents = contents;
     }
 
-    pub(crate) fn functions(&self) -> &[Function] {
+    pub(crate) fn functions(&self) -> &IndexSlice<FuncRef, [Function]> {
         &self.functions
     }
 
-    pub(crate) fn signatures(&self) -> &[Signature] {
+    pub(crate) fn signatures(&self) -> &IndexSlice<FuncRef, [Signature]> {
         &self.signatures
     }
 
-    pub(crate) fn data(&self) -> &[Data] {
+    pub(crate) fn data(&self) -> &IndexSlice<DataRef, [Data]> {
         &self.data
     }
 }
@@ -216,7 +216,7 @@ make_type_idx!(FuncRef, Function);
 #[derive(Debug)]
 pub(crate) struct Function {
     pub(crate) name: String,
-    pub(crate) external_signatures: Vec<Signature>,
+    pub(crate) external_signatures: IndexVec<SigRef, Signature>,
     
     pub(crate) definition: Option<FunctionDefinition> 
 }
@@ -233,15 +233,15 @@ type UseVec = SmallVec<[Use; 4]>;
 
 #[derive(Debug)]
 pub(crate) struct FunctionDefinition {
-    pub(crate) insts: Vec<Inst>,
-    pub(crate) inst_types: Vec<TypeVec>,
-    pub(crate) value_vecs: Vec<ValueVec>,
-    pub(crate) inst_uses: Vec<UseVec>,
-    pub(crate) inst_block: Vec<Option<BlockRef>>,
+    pub(crate) insts: IndexVec<InstRef, Inst>,
+    pub(crate) inst_types: IndexVec<InstRef, TypeVec>,
+    pub(crate) value_vecs: IndexVec<ValueVecRef, ValueVec>,
+    pub(crate) inst_uses: IndexVec<InstRef, UseVec>,
+    pub(crate) inst_block: IndexVec<InstRef, Option<BlockRef>>,
 
-    pub(crate) blocks: Vec<Block>,
+    pub(crate) blocks: IndexVec<BlockRef, Block>,
 
-    pub(crate) stack_slots: Vec<StackSlot>,
+    pub(crate) stack_slots: IndexVec<StackSlotRef, StackSlot>,
 }
 
 impl FunctionDefinition {
@@ -291,22 +291,22 @@ pub(crate) struct StackSlot {
 pub(crate) struct FunctionBuilder<'func> {
     func: &'func mut FunctionDefinition,
     current_block: BlockRef,
-    sigs: &'func mut Vec<Signature>,
+    sigs: &'func mut IndexVec<SigRef, Signature>,
 
-    module_sigs: &'func [Signature],
-    module_data: &'func mut Vec<Data>
+    module_sigs: &'func IndexSlice<FuncRef, [Signature]>,
+    module_data: &'func mut IndexVec<DataRef, Data>
 }
 
 impl<'func> FunctionBuilder<'func> {
     pub(crate) fn add_block(&mut self) -> BlockRef {
         let block = Block::new();
-        BlockRef::from_push(&mut self.func.blocks, block)
+        BlockRef::from_push2(&mut self.func.blocks, block)
     }
 
     pub(crate) fn add_stack_slot(&mut self, size: u32, align: u32) -> StackSlotRef {
         let slot = StackSlot { size, align };
 
-        StackSlotRef::from_push(&mut self.func.stack_slots, slot)
+        StackSlotRef::from_push2(&mut self.func.stack_slots, slot)
     }
 
     pub(crate) fn set_block(&mut self, block: BlockRef) {
@@ -342,7 +342,7 @@ impl<'func> FunctionBuilder<'func> {
             read_only,
             contents: DataContents::Undefined,
         };
-        DataRef::from_push(self.module_data, data)
+        DataRef::from_push2(self.module_data, data)
     }
 
     pub(crate) fn define_data(&mut self, data_ref: DataRef, contents: Box<[u8]>) {
@@ -352,16 +352,16 @@ impl<'func> FunctionBuilder<'func> {
 
 pub(crate) struct BlockBuilder<'block> {
     current_block: BlockRef,
-    all_blocks: &'block mut [Block],
+    all_blocks: &'block mut IndexSlice<BlockRef, [Block]>,
 
-    insts: &'block mut Vec<Inst>,
-    inst_types: &'block mut Vec<TypeVec>,
-    inst_uses: &'block mut Vec<UseVec>,
-    inst_block: &'block mut Vec<Option<BlockRef>>,
-    value_vecs: &'block mut Vec<ValueVec>,
+    insts: &'block mut IndexVec<InstRef, Inst>,
+    inst_types: &'block mut IndexVec<InstRef, TypeVec>,
+    inst_uses: &'block mut IndexVec<InstRef, UseVec>,
+    inst_block: &'block mut IndexVec<InstRef, Option<BlockRef>>,
+    value_vecs: &'block mut IndexVec<ValueVecRef, ValueVec>,
     
-    sigs: &'block [Signature],
-    module_sigs: &'block [Signature]
+    sigs: &'block IndexVec<SigRef, Signature>,
+    module_sigs: &'block IndexSlice<FuncRef, [Signature]>
 }
 
 impl<'block> BlockBuilder<'block> {
@@ -399,7 +399,7 @@ impl<'block> BlockBuilder<'block> {
         inst_types: impl Into<TypeVec>
     ) -> InstRef {
         self.inst_types.push(inst_types.into());
-        let iref = InstRef::from_push(self.insts, inst);
+        let iref = InstRef::from_push2(self.insts, inst);
         self.all_blocks[self.current_block].inst_refs.borrow_mut().push(iref);
         
         let num_operands = inst.num_operands(self.value_vecs);
@@ -610,8 +610,8 @@ impl<'block> BlockBuilder<'block> {
         alt: BlockRef,
         alt_args: &[Value]
     ) {
-        let con_args = ValueVecRef::from_push(self.value_vecs, con_args.to_smallvec());
-        let alt_args = ValueVecRef::from_push(self.value_vecs, alt_args.to_smallvec());
+        let con_args = ValueVecRef::from_push2(self.value_vecs, con_args.to_smallvec());
+        let alt_args = ValueVecRef::from_push2(self.value_vecs, alt_args.to_smallvec());
 
         let brif = Inst::BranchIf { 
             cond, 
@@ -626,27 +626,27 @@ impl<'block> BlockBuilder<'block> {
     }
 
     pub(crate) fn ret(&mut self, values: &[Value]) {
-        let values = ValueVecRef::from_push(self.value_vecs, values.to_smallvec());
+        let values = ValueVecRef::from_push2(self.value_vecs, values.to_smallvec());
         let ret = Inst::Return { values };
         self.add_inst(ret, smallvec![]);
     }
 
     pub(crate) fn call(&mut self, func_ref: FuncRef, arg_values: &[Value]) -> InstRef {
-        let arg_values = ValueVecRef::from_push(self.value_vecs, arg_values.to_smallvec());
+        let arg_values = ValueVecRef::from_push2(self.value_vecs, arg_values.to_smallvec());
         let call = Inst::Call { func: func_ref, arguments: arg_values };
-        let callee_sig = &self.module_sigs[func_ref.get_inner()];
+        let callee_sig = &self.module_sigs[func_ref];
         self.add_inst(call, SmallVec::from_slice(&callee_sig.return_types))
     }
 
     pub(crate) fn call_indirect(&mut self, callee_sig: SigRef, func_ptr: Value, arg_values: &[Value]) -> InstRef {
-        let arg_values = ValueVecRef::from_push(self.value_vecs, arg_values.to_smallvec());
+        let arg_values = ValueVecRef::from_push2(self.value_vecs, arg_values.to_smallvec());
         let call_indirect = Inst::CallIndirect { callee_sig, func_ptr, arguments: arg_values };
         let callee_sig = &self.sigs[callee_sig];
         self.add_inst(call_indirect, SmallVec::from_slice(&callee_sig.return_types))
     }
 
     pub(crate) fn jmp(&mut self, target: BlockRef, arg_values: &[Value]) {
-        let arg_values = ValueVecRef::from_push(self.value_vecs, arg_values.to_smallvec());
+        let arg_values = ValueVecRef::from_push2(self.value_vecs, arg_values.to_smallvec());
         let jmp = Inst::Jump { target, arguments: arg_values };
         self.add_inst(jmp, smallvec![]);
         self.add_pred(self.current_block, target);
@@ -993,7 +993,7 @@ impl Inst {
         }
     }
 
-    pub(crate) fn num_operands(&self, value_vecs: &[ValueVec]) -> usize {
+    pub(crate) fn num_operands(&self, value_vecs: &IndexSlice<ValueVecRef, [ValueVec]>) -> usize {
         match self {
             Inst::Constant { .. } => 0,
             Inst::Add { .. } => 2,
@@ -1051,7 +1051,7 @@ impl Inst {
         }
     }
 
-    pub(crate) fn operand(&self, value_vecs: &[ValueVec], idx: usize) -> Value {
+    pub(crate) fn operand(&self, value_vecs: &IndexSlice<ValueVecRef, [ValueVec]>, idx: usize) -> Value {
         let bad_operand_access = || {
             panic!("bad operand access to {idx} for {}", self.mnemonic())
         };
@@ -1166,7 +1166,7 @@ impl Inst {
         }
     }
 
-    pub(crate) fn operand_mut<'inst>(&'inst mut self, value_vecs: &'inst mut [ValueVec], idx: usize) -> &'inst mut Value {
+    pub(crate) fn operand_mut<'inst>(&'inst mut self, value_vecs: &'inst mut IndexSlice<ValueVecRef, [ValueVec]>, idx: usize) -> &'inst mut Value {
         let mnemonic = self.mnemonic();
         let bad_operand_access = || {
             panic!("bad operand access to {idx} for {mnemonic}")
@@ -1539,7 +1539,7 @@ impl std::fmt::Display for Module {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "functions:")?;
         let mut idx = 0;
-        for (func, sig) in std::iter::zip(&self.functions, &self.signatures) {
+        for (func, sig) in std::iter::zip(self.functions.as_ref(), self.signatures.as_ref()) {
             write!(f, "f{idx}: {sig}, ")?;
             writeln!(f, "{func}")?;
             idx += 1;
