@@ -418,6 +418,10 @@ impl<'block> BlockBuilder<'block> {
         iref
     }
 
+    fn add_pred(&mut self, pred: BlockRef, succ: BlockRef) {
+        self.all_blocks[succ].preds.push(pred);
+    }
+
     fn constant(&mut self, ty: Type, val: Constant) -> Value {
         assert!(val.ty() == ty, "type mismatch while inserting constant");
 
@@ -617,6 +621,8 @@ impl<'block> BlockBuilder<'block> {
             alt_args
         };
         self.add_inst(brif, smallvec![]);
+        self.add_pred(self.current_block, con);
+        self.add_pred(self.current_block, alt);
     }
 
     pub(crate) fn ret(&mut self, values: &[Value]) {
@@ -643,6 +649,7 @@ impl<'block> BlockBuilder<'block> {
         let arg_values = ValueVecRef::from_push(self.value_vecs, arg_values.to_smallvec());
         let jmp = Inst::Jump { target, arguments: arg_values };
         self.add_inst(jmp, smallvec![]);
+        self.add_pred(self.current_block, target);
     }
 
     pub(crate) fn data_addr(&mut self, data_ref: DataRef) -> Value {
@@ -663,6 +670,9 @@ pub(crate) struct Block {
     pub(crate) inst_refs: RefCell<Vec<InstRef>>,
     pub(crate) block_args: Vec<Type>,
     pub(crate) block_arg_uses: Vec<UseVec>,
+
+    pub(crate) preds: Vec<BlockRef>,
+    pub(crate) is_entry: bool,
 }
 
 impl Block {
@@ -671,6 +681,16 @@ impl Block {
             inst_refs: Vec::new().into(),
             block_args: Vec::new(),
             block_arg_uses: Vec::new(),
+
+            preds: Vec::new(),
+            is_entry: false
+        }
+    }
+
+    fn new_entry_block() -> Block {
+        Block {
+            is_entry: true,
+            ..Block::new()
         }
     }
 }
