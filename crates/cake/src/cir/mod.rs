@@ -1051,7 +1051,7 @@ impl Inst {
             Inst::FpToInt { v } => 1,
             Inst::Load { addr } => 1,
             Inst::Store { addr, val } => 1,
-            Inst::StackAddr { slot } => 1,
+            Inst::StackAddr { slot } => 0,
             Inst::Zext { v } => 1,
             Inst::Sext { v } => 1,
             Inst::Truncate { v } => 1,
@@ -1116,13 +1116,19 @@ impl Inst {
                     _ => 0,
                 }
             },
-            Inst::Return { values } => todo!(),
-            Inst::Jump { target, arguments } => todo!(),
-            Inst::Call { func, arguments } => todo!(),
-            Inst::CallIndirect { callee_sig, func_ptr, arguments } => todo!(),
+            Inst::Return { values } => value_vecs[*values].len() as u32,
+            Inst::Jump { target, arguments } => value_vecs[*arguments].len() as u32,
+            Inst::Call { func, arguments } => value_vecs[*arguments].len() as u32,
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } => {
+                match kind {
+                    0 => 1,
+                    1 => value_vecs[*arguments].len() as u32,
+                    _ => 0,
+                }
+            },
             Inst::FuncAddr { func } => todo!(),
             Inst::DataAddr { data } => todo!(),
-            Inst::Intrinsic { intrinsic, arguments } => todo!(),
+            Inst::Intrinsic { intrinsic, arguments } => value_vecs[*arguments].len() as u32,
         }
     }
 
@@ -1142,6 +1148,12 @@ impl Inst {
             type Item = OperandCoord;
         
             fn next(&mut self) -> Option<Self::Item> {
+                while self.current_kind < self.num_kinds
+                    && self.num_idxs[self.current_kind as usize] == 0
+                {
+                    self.current_kind += 1;
+                }
+
                 if self.current_kind >= self.num_kinds {
                     return None;
                 }

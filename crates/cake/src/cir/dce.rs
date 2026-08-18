@@ -264,11 +264,10 @@ mod test {
         builder.set_block(b1);
         builder.insert().ret(&[]);
 
-        println!("before:\n{}", &module.functions()[func]);
+        eliminate_dead_code(builder.func);
+        drop(builder);
 
-        eliminate_dead_code(module.define_function(func).func);
-
-        println!("after:\n{}", &module.functions()[func]);
+        println!("{}", &module.functions()[func]);
     }
 
     #[test]
@@ -295,11 +294,10 @@ mod test {
         builder.set_block(b1);
         builder.insert().ret(&[live_arg]);
 
-        println!("before:\n{}", &module.functions()[func]);
+        eliminate_dead_code(builder.func);
+        drop(builder);
 
-        eliminate_dead_code(module.define_function(func).func);
-
-        println!("after:\n{}", &module.functions()[func]);
+        println!("{}", &module.functions()[func]);
     }
 
     #[test]
