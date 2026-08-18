@@ -132,6 +132,14 @@ pub struct IndexSlice<I: Idx, T: ?Sized> {
 }
 
 impl<I: Idx, T> IndexSlice<I, [T]> {
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.inner.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
+        self.inner.iter_mut()
+    }
+
     fn from_slice(slice: &[T]) -> &Self {
         // SAFETY: IndexSlice is repr(transparent) over [T], and PhantomData is a ZST,
         // so &[T] and &IndexSlice<I, [T]> have the same layout

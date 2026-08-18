@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{assert_matches, cell::RefCell};
 
 use cake_util::{IndexSlice, IndexVec, add_additional_index, index_vec, make_type_idx};
 use smallvec::{SmallVec, ToSmallVec, smallvec};
@@ -63,6 +63,7 @@ impl Module {
         let mut entry_block = Block::new();
         let sig = &self.signatures[func];
         entry_block.block_args.extend_from_slice(&sig.argument_types);
+        entry_block.block_arg_uses.resize(entry_block.block_args.len(), smallvec![]);
         
         *definition = Some(FunctionDefinition { 
             insts: index_vec![], 
@@ -221,12 +222,19 @@ pub(crate) struct Function {
     pub(crate) definition: Option<FunctionDefinition> 
 }
 
-// note: a use of a tuple element does not distinguish which element of the tuple is being used
-// in order to save space
+/// An index into the operands of an `Inst`. SSA values only; References to StackSlot, Function, and Data
+/// are not considered as operands (for now)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct OperandCoord {
+    kind: u32,
+    idx: u32,
+}
+
+/// A use of an SSA value
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Use {
     user: InstRef,
-    operand_idx: u32,
+    operand_coord: OperandCoord,
 }
 
 type UseVec = SmallVec<[Use; 4]>;
@@ -258,10 +266,13 @@ impl FunctionDefinition {
             },
         }
     }
+    
+    // Low-level functions to manipulate the def-use chains directly, primarily meant for DCE.
+    // Other passes should use RAUW (replace-all-uses-with), RO (replace-operand), etc. to deal
+    // with the bookkeeping. 
 
-    // returns remaining number of uses
-    pub(crate) fn remove_use(&mut self, def: Value, use_: Use) -> usize {
-        let use_vec = match def {
+    fn uses_mut(&mut self, def: Value) -> &mut UseVec {
+        match def {
             Value::Inst(inst_ref) => {
                 &mut self.inst_uses[inst_ref]
             },
@@ -271,13 +282,25 @@ impl FunctionDefinition {
             Value::TupleElement(inst_ref, _) => {
                 &mut self.inst_uses[inst_ref]
             },
-        };
+        }
+    }
+
+    /// Returns remaining number of uses.
+    fn remove_use(&mut self, def: Value, use_: Use) -> usize {
+        let use_vec = self.uses_mut(def);
 
         let delete_idx = use_vec.iter().position(|x| use_ == *x).expect("failed to remove use");
         use_vec.swap_remove(delete_idx);
 
         use_vec.len()
     }
+    
+    fn add_use(&mut self, def: Value, use_: Use) {
+        let use_vec = self.uses_mut(def);
+        use_vec.push(use_);
+    }
+
+
 }
 
 make_type_idx!(StackSlotRef, StackSlot);
@@ -314,9 +337,14 @@ impl<'func> FunctionBuilder<'func> {
     }
 
     pub(crate) fn add_block_arg(&mut self, ty: Type) -> Value {
-        let block_args = &mut self.func.blocks[self.current_block].block_args;
+        let block = &mut self.func.blocks[self.current_block];
+        let block_args = &mut block.block_args;
+        let block_arg_uses = &mut block.block_arg_uses;
+
         let block_arg_idx = block_args.len();
         block_args.push(ty);
+        block_arg_uses.push(smallvec![]);
+        
         Value::BlockArgument(self.current_block, block_arg_idx as u32)
     }
 
@@ -402,14 +430,13 @@ impl<'block> BlockBuilder<'block> {
         let iref = InstRef::from_push2(self.insts, inst);
         self.all_blocks[self.current_block].inst_refs.borrow_mut().push(iref);
         
-        let num_operands = inst.num_operands(self.value_vecs);
-        for operand_idx in 0..num_operands {
+        for operand_coord in inst.operand_coord_iter(self.value_vecs) {
             let use_ = Use {
                 user: iref,
-                operand_idx: operand_idx as u32,
+                operand_coord,
             };
 
-            let def = inst.operand(self.value_vecs, operand_idx);
+            let def = inst.get_operand(self.value_vecs, operand_coord);
             self.add_use(def, use_);
         }
         self.inst_uses.push(smallvec![]);
@@ -418,7 +445,7 @@ impl<'block> BlockBuilder<'block> {
         iref
     }
 
-    fn add_pred(&mut self, pred: BlockRef, succ: BlockRef) {
+    fn add_pred(&mut self, pred: BlockPredecessor, succ: BlockRef) {
         self.all_blocks[succ].preds.push(pred);
     }
 
@@ -621,8 +648,8 @@ impl<'block> BlockBuilder<'block> {
             alt_args
         };
         self.add_inst(brif, smallvec![]);
-        self.add_pred(self.current_block, con);
-        self.add_pred(self.current_block, alt);
+        self.add_pred(BlockPredecessor { pred_ref: self.current_block, edge_idx: 0 }, con);
+        self.add_pred(BlockPredecessor { pred_ref: self.current_block, edge_idx: 1 }, alt);
     }
 
     pub(crate) fn ret(&mut self, values: &[Value]) {
@@ -649,7 +676,7 @@ impl<'block> BlockBuilder<'block> {
         let arg_values = ValueVecRef::from_push2(self.value_vecs, arg_values.to_smallvec());
         let jmp = Inst::Jump { target, arguments: arg_values };
         self.add_inst(jmp, smallvec![]);
-        self.add_pred(self.current_block, target);
+        self.add_pred(BlockPredecessor { pred_ref: self.current_block, edge_idx: 0 }, target);
     }
 
     pub(crate) fn data_addr(&mut self, data_ref: DataRef) -> Value {
@@ -665,13 +692,20 @@ impl<'block> BlockBuilder<'block> {
 
 make_type_idx!(BlockRef, Block);
 
+#[derive(Debug, Clone, Copy)]
+
+pub(crate) struct BlockPredecessor {
+    pred_ref: BlockRef,
+    edge_idx: u32,
+}
+
 #[derive(Debug)]
 pub(crate) struct Block {
     pub(crate) inst_refs: RefCell<Vec<InstRef>>,
     pub(crate) block_args: Vec<Type>,
     pub(crate) block_arg_uses: Vec<UseVec>,
 
-    pub(crate) preds: Vec<BlockRef>,
+    pub(crate) preds: Vec<BlockPredecessor>,
     pub(crate) is_entry: bool,
 }
 
@@ -825,18 +859,7 @@ pub(crate) enum Inst {
     },
     IntToPtr {
         v: Value
-    },
-
-    CompareInt {
-        a: Value,
-        b: Value,
-        mode: CompareMode,
-    },
-    CompareFloat {
-        a: Value,
-        b: Value,
-        mode: CompareMode,
-    },
+    }, 
 
     Select {
         cond: Value,
@@ -927,8 +950,6 @@ impl Inst {
             Inst::PtrAdd { .. } => "padd",
             Inst::PtrToInt { .. } => "p2i",
             Inst::IntToPtr { .. } => "i2p",
-            Inst::CompareInt { .. } => "icmp",
-            Inst::CompareFloat { .. } => "fcmp",
             Inst::Select { .. } => "select",
             Inst::BranchIf { .. } => "brif",
             Inst::Return { .. } => "ret",
@@ -949,338 +970,329 @@ impl Inst {
     }
     pub(crate) fn has_side_effects(&self) -> bool {
         match self {
-            Inst::Constant { val } => false,
-            Inst::Add { a, b } => false,
-            Inst::Sub { a, b } => false,
-            Inst::Mul { a, b } => false,
-            Inst::Div { a, b } => false,
-            Inst::Modulo { a, b } => false,
-            Inst::And { a, b } => false,
-            Inst::Or { a, b } => false,
-            Inst::Xor { a, b } => false,
-            Inst::Shl { a, b } => false,
-            Inst::Ashr { a, b } => false,
-            Inst::Lshr { a, b } => false,
-            Inst::Icmp { mode, a, b, signed } => false,
-            Inst::Fadd { a, b } => false,
-            Inst::Fsub { a, b } => false,
-            Inst::Fmul { a, b } => false,
-            Inst::Fdiv { a, b } => false,
-            Inst::Fcmp { mode, a, b } => false,
-            Inst::IntToFp { v } => false,
-            Inst::FpToInt { v } => false,
-            Inst::Load { addr } => false,
-            Inst::Store { addr, val } => true,
-            Inst::StackAddr { slot } => false,
-            Inst::Zext { v } => false,
-            Inst::Sext { v } => false,
-            Inst::Truncate { v } => false,
-            Inst::FpCast { v } => false,
-            Inst::PtrAdd { ptr, offset } => false,
-            Inst::PtrToInt { v } => false,
-            Inst::IntToPtr { v } => false,
-            Inst::CompareInt { a, b, mode } => false,
-            Inst::CompareFloat { a, b, mode } => false,
-            Inst::Select { cond, x, y } => false,
-            Inst::BranchIf { cond, con, con_args, alt, alt_args } => true,
-            Inst::Return { values } => true,
-            Inst::Jump { target, arguments } => true,
-            Inst::Call { func, arguments } => true,
-            Inst::CallIndirect { callee_sig, func_ptr, arguments } => true,
-            Inst::FuncAddr { func } => false,
-            Inst::DataAddr { data } => false,
-            Inst::Intrinsic { intrinsic, arguments } => true,
+            Inst::Constant { .. } => false,
+            Inst::Add { .. } => false,
+            Inst::Sub { .. } => false,
+            Inst::Mul { .. } => false,
+            Inst::Div { .. } => false,
+            Inst::Modulo { .. } => false,
+            Inst::And { .. } => false,
+            Inst::Or { .. } => false,
+            Inst::Xor { .. } => false,
+            Inst::Shl { .. } => false,
+            Inst::Ashr { .. } => false,
+            Inst::Lshr { .. } => false,
+            Inst::Icmp { .. } => false,
+            Inst::Fadd { .. } => false,
+            Inst::Fsub { .. } => false,
+            Inst::Fmul { .. } => false,
+            Inst::Fdiv { .. } => false,
+            Inst::Fcmp { .. } => false,
+            Inst::IntToFp { .. } => false,
+            Inst::FpToInt { .. } => false,
+            Inst::Load { .. } => false,
+            Inst::Store { .. } => true,
+            Inst::StackAddr { .. } => false,
+            Inst::Zext { .. } => false,
+            Inst::Sext { .. } => false,
+            Inst::Truncate { .. } => false,
+            Inst::FpCast { .. } => false,
+            Inst::PtrAdd { .. } => false,
+            Inst::PtrToInt { .. } => false,
+            Inst::IntToPtr { .. } => false,
+            Inst::Select { .. } => false,
+            Inst::BranchIf { .. } => true,
+            Inst::Return { .. } => true,
+            Inst::Jump { .. } => true,
+            Inst::Call { .. } => true,
+            Inst::CallIndirect { .. } => true,
+            Inst::FuncAddr { .. } => false,
+            Inst::DataAddr { .. } => false,
+            Inst::Intrinsic { .. } => true,
         }
     }
 
-    pub(crate) fn num_operands(&self, value_vecs: &IndexSlice<ValueVecRef, [ValueVec]>) -> usize {
+    pub(crate) fn num_operand_kinds(&self) -> u32 {
         match self {
-            Inst::Constant { .. } => 0,
-            Inst::Add { .. } => 2,
-            Inst::Sub { .. } => 2,
-            Inst::Mul { .. } => 2,
-            Inst::Div { .. } => 2,
-            Inst::Modulo { .. } => 2,
-            Inst::And { .. } => 2,
-            Inst::Or { .. } => 2,
-            Inst::Xor { .. } => 2,
-            Inst::Shl { .. } => 2,
-            Inst::Ashr { .. } => 2,
-            Inst::Lshr { .. } => 2,
-            Inst::Icmp { .. } => 2,
-            Inst::Fadd { .. } => 2,
-            Inst::Fsub { .. } => 2,
-            Inst::Fmul { .. } => 2,
-            Inst::Fdiv { .. } => 2,
-            Inst::Fcmp { .. } => 2,
-            Inst::IntToFp { .. } => 1,
-            Inst::FpToInt { .. } => 1,
-            Inst::Load { .. } => 1,
-            Inst::Store { .. } => 2,
-            Inst::StackAddr { .. } => 0,
-            Inst::Zext { .. } => 1,
-            Inst::Sext { .. } => 1,
-            Inst::Truncate { .. } => 1,
-            Inst::FpCast { .. } => 1,
-            Inst::PtrAdd { .. } => 2,
-            Inst::PtrToInt { .. } => 1,
-            Inst::IntToPtr { .. } => 1,
-            Inst::CompareInt { .. } => 2,
-            Inst::CompareFloat { .. } => 2,
-            Inst::Select { .. } => 3,
-            Inst::BranchIf { con_args, alt_args, .. } => {
-                1 + value_vecs[*con_args].len() + value_vecs[*alt_args].len()
-            },
-            Inst::Return { values, .. } => {
-                value_vecs[*values].len()
-            },
-            Inst::Jump { arguments, .. } => {
-                value_vecs[*arguments].len()
-            },
-            Inst::Call { arguments, .. } => {
-                value_vecs[*arguments].len()
-            },
-            Inst::CallIndirect { arguments, .. } => {
-                1 + value_vecs[*arguments].len()
-            },
-            Inst::FuncAddr { .. } => 0,
-            Inst::DataAddr { .. } => 0,
-            Inst::Intrinsic { arguments, .. } => {
-                value_vecs[*arguments].len()
-            },
+            Inst::Constant { val } => 0,
+            Inst::Add { a, b } => 1,
+            Inst::Sub { a, b } => 1,
+            Inst::Mul { a, b } => 1,
+            Inst::Div { a, b } => 1,
+            Inst::Modulo { a, b } => 1,
+            Inst::And { a, b } => 1,
+            Inst::Or { a, b } => 1,
+            Inst::Xor { a, b } => 1,
+            Inst::Shl { a, b } => 1,
+            Inst::Ashr { a, b } => 1,
+            Inst::Lshr { a, b } => 1,
+            Inst::Icmp { mode, a, b, signed } => 1,
+            Inst::Fadd { a, b } => 1,
+            Inst::Fsub { a, b } => 1,
+            Inst::Fmul { a, b } => 1,
+            Inst::Fdiv { a, b } => 1,
+            Inst::Fcmp { mode, a, b } => 1,
+            Inst::IntToFp { v } => 1,
+            Inst::FpToInt { v } => 1,
+            Inst::Load { addr } => 1,
+            Inst::Store { addr, val } => 1,
+            Inst::StackAddr { slot } => 1,
+            Inst::Zext { v } => 1,
+            Inst::Sext { v } => 1,
+            Inst::Truncate { v } => 1,
+            Inst::FpCast { v } => 1,
+            Inst::PtrAdd { ptr, offset } => 1,
+            Inst::PtrToInt { v } => 1,
+            Inst::IntToPtr { v } => 1,
+            Inst::Select { cond, x, y } => 1,
+            Inst::BranchIf { cond, con, con_args, alt, alt_args } => 3,
+            Inst::Return { values } => 1,
+            Inst::Jump { target, arguments } => 1,
+            Inst::Call { func, arguments } => 1,
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } => 2,
+            Inst::FuncAddr { func } => 0,
+            Inst::DataAddr { data } => 0,
+            Inst::Intrinsic { intrinsic, arguments } => 1,
         }
     }
 
-    pub(crate) fn operand(&self, value_vecs: &IndexSlice<ValueVecRef, [ValueVec]>, idx: usize) -> Value {
-        let bad_operand_access = || {
-            panic!("bad operand access to {idx} for {}", self.mnemonic())
-        };
-
-        macro_rules! basic_op {
-            ($idx:expr, $v:expr, $bad_operand_access:expr) => {
-                match $idx {
-                    0 => *$v,
-                    _ => $bad_operand_access(),
-                }
-            };
-            ($idx:expr, $a:expr, $b:expr, $bad_operand_access:expr) => {
-                match $idx {
-                    0 => *$a,
-                    1 => *$b,
-                    _ => $bad_operand_access(),
-                }
-            };
-            ($idx:expr, $a:expr, $b:expr, $c:expr, $bad_operand_access:expr) => {
-                match $idx {
-                    0 => *$a,
-                    1 => *$b,
-                    2 => *$c,
-                    _ => $bad_operand_access(),
-                }
-            };
-        }        
+    pub(crate) fn num_operands_of_kind(
+        &self, 
+        value_vecs: &IndexSlice<ValueVecRef, [ValueVec]>, 
+        kind: u32
+    ) -> u32 {
         match self {
-            Inst::Constant { .. } => bad_operand_access(),
-            Inst::Add { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Sub { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Mul { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Div { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Modulo { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::And { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Or { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Xor { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Shl { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Ashr { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Lshr { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Icmp { mode, a, b, signed } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fadd { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fsub { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fmul { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fdiv { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fcmp { mode, a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::IntToFp { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::FpToInt { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::Load { addr } => basic_op!(idx, addr, bad_operand_access),
-            Inst::Store { addr, val } => basic_op!(idx, addr, val, bad_operand_access),
-            Inst::StackAddr { slot } => bad_operand_access(),
-            Inst::Zext { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::Sext { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::Truncate { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::FpCast { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::PtrAdd { ptr, offset } => basic_op!(idx, ptr, offset, bad_operand_access),
-            Inst::PtrToInt { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::IntToPtr { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::CompareInt { a, b, mode } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::CompareFloat { a, b, mode } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Select { cond, x, y } => basic_op!(idx, cond, x, y, bad_operand_access),
+            Inst::Constant { val } => todo!(),
+            Inst::Add { a, b } => 2,
+            Inst::Sub { a, b } => 2,
+            Inst::Mul { a, b } => 2,
+            Inst::Div { a, b } => 2,
+            Inst::Modulo { a, b } => 2,
+            Inst::And { a, b } => 2,
+            Inst::Or { a, b } => 2,
+            Inst::Xor { a, b } => 2,
+            Inst::Shl { a, b } => 2,
+            Inst::Ashr { a, b } => 2,
+            Inst::Lshr { a, b } => 2,
+            Inst::Icmp { mode, a, b, signed } => 2,
+            Inst::Fadd { a, b } => 2,
+            Inst::Fsub { a, b } => 2,
+            Inst::Fmul { a, b } => 2,
+            Inst::Fdiv { a, b } => 2,
+            Inst::Fcmp { mode, a, b } => 2,
+            Inst::IntToFp { v } => 1,
+            Inst::FpToInt { v } => 1,
+            Inst::Load { addr } => 1,
+            Inst::Store { addr, val } => 2,
+            Inst::StackAddr { slot } => todo!(),
+            Inst::Zext { v } => 1,
+            Inst::Sext { v } => 1,
+            Inst::Truncate { v } => 1,
+            Inst::FpCast { v } => 1,
+            Inst::PtrAdd { ptr, offset } => 2,
+            Inst::PtrToInt { v } => 1,
+            Inst::IntToPtr { v } => 1,
+            Inst::Select { cond, x, y } => 3,
             Inst::BranchIf { cond, con, con_args, alt, alt_args } => {
-                let con_args_len = value_vecs[*con_args].len();
-                let alt_args_len = value_vecs[*alt_args].len();
-                if idx == 0 {
-                    *cond
-                }
-                else if idx < 1 + con_args_len {
-                    value_vecs[*con_args][idx - 1]
-                }
-                else if idx < 1 + con_args_len + alt_args_len {
-                    value_vecs[*alt_args][idx - (1 + con_args_len)]
-                }
-                else {
-                    bad_operand_access()
+                match kind {
+                    0 => 1,
+                    1 => value_vecs[*con_args].len() as u32,
+                    2 => value_vecs[*alt_args].len() as u32,
+                    _ => 0,
                 }
             },
-            Inst::Return { values } => {
-                let values_len = value_vecs[*values].len();
-                if idx < values_len {
-                    value_vecs[*values][idx]
-                }
-                else {
-                    bad_operand_access()
-                }
-            },
-            Inst::Jump { arguments, .. }
-            | Inst::Call { arguments, .. }
-            | Inst::Intrinsic { arguments, .. } => {
-                let arguments_len = value_vecs[*arguments].len();
-                if idx < arguments_len {
-                    value_vecs[*arguments][idx]
-                }
-                else {
-                    bad_operand_access()
-                }
-            },
-            Inst::CallIndirect { callee_sig, func_ptr, arguments } => {
-                let arguments_len = value_vecs[*arguments].len();
-                if idx == 0 {
-                    *func_ptr
-                }
-                else if idx < 1 + arguments_len {
-                    value_vecs[*arguments][idx - 1]
-                }
-                else {
-                    bad_operand_access()
-                }
-            },
-            Inst::FuncAddr { func } => bad_operand_access(),
-            Inst::DataAddr { data } => bad_operand_access(),
+            Inst::Return { values } => todo!(),
+            Inst::Jump { target, arguments } => todo!(),
+            Inst::Call { func, arguments } => todo!(),
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } => todo!(),
+            Inst::FuncAddr { func } => todo!(),
+            Inst::DataAddr { data } => todo!(),
+            Inst::Intrinsic { intrinsic, arguments } => todo!(),
         }
     }
 
-    pub(crate) fn operand_mut<'inst>(&'inst mut self, value_vecs: &'inst mut IndexSlice<ValueVecRef, [ValueVec]>, idx: usize) -> &'inst mut Value {
-        let mnemonic = self.mnemonic();
-        let bad_operand_access = || {
-            panic!("bad operand access to {idx} for {mnemonic}")
-        };
+    pub(crate) fn operand_coord_iter<'inst, 'vvec>(
+        &'inst self, 
+        value_vecs: &'vvec IndexSlice<ValueVecRef, [ValueVec]>
+    ) -> impl Iterator<Item = OperandCoord> + use<'inst> {        
+        struct OperandCoordIter<'inst> {
+            inst: &'inst Inst,
+            current_kind: u32,
+            num_kinds: u32,
+            current_idx: u32,
+            num_idxs: SmallVec<[u32; 4]>,
+        }
 
-        macro_rules! basic_op {
-            ($idx:expr, $v:expr, $bad_operand_access:expr) => {
-                match $idx {
-                    0 => $v,
-                    _ => $bad_operand_access(),
+        impl<'inst> Iterator for OperandCoordIter<'inst> {
+            type Item = OperandCoord;
+        
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.current_kind >= self.num_kinds {
+                    return None;
+                }
+
+                let coord = OperandCoord {
+                    kind: self.current_kind,
+                    idx: self.current_idx,
+                };
+
+                self.current_idx += 1;
+                if self.current_idx >= self.num_idxs[self.current_kind as usize] {
+                    self.current_kind += 1;
+                    self.current_idx = 0;
+                }
+
+                Some(coord)
+            }
+        }
+
+        let num_kinds = self.num_operand_kinds();
+        let num_idxs = (0..num_kinds)
+            .map(|k| self.num_operands_of_kind(value_vecs, k)).collect();
+
+        OperandCoordIter {
+            inst: self,
+            current_kind: 0,
+            num_kinds,
+            current_idx: 0,
+            num_idxs,
+        }
+    }
+
+    pub(crate) fn get_operand(
+        &self, 
+        value_vecs: &IndexSlice<ValueVecRef, [ValueVec]>, 
+        coord: OperandCoord
+    ) -> Value {
+        macro_rules! operand_arm {
+            // Nullary instruction - panics
+            ($self:expr, $variant:path) => {
+                match $self {
+                    $variant { .. } => panic!("get_operand called on nullary instruction"),
+                    _ => ()
                 }
             };
-            ($idx:expr, $a:expr, $b:expr, $bad_operand_access:expr) => {
-                match $idx {
-                    0 => $a,
-                    1 => $b,
-                    _ => $bad_operand_access(),
+
+            // Unary instruction
+            ($self:expr, $variant:path, $x:ident, $coord:expr) => {
+                match $self {
+                    $variant { $x } if $coord.kind == 0 && $coord.idx == 0 => return *$x,
+                    _ => ()
                 }
             };
-            ($idx:expr, $a:expr, $b:expr, $c:expr, $bad_operand_access:expr) => {
-                match $idx {
-                    0 => $a,
-                    1 => $b,
-                    2 => $c,
-                    _ => $bad_operand_access(),
+
+            // Binary instruction
+            ($self:expr, $variant:path, $x:ident, $y:ident, $coord:expr) => {
+                match $self {
+                    $variant { $x, .. } if $coord.kind == 0 && $coord.idx == 0 => return *$x,
+                    $variant { $y, .. } if $coord.kind == 0 && $coord.idx == 1 => return *$y,
+                    _ => ()
                 }
             };
-        }        
+
+            // Ternary instruction
+            ($self:expr, $variant:path, $x:ident, $y:ident, $z:ident, $coord:expr) => {
+                match $self {
+                    $variant { $x, .. } if $coord.kind == 0 && $coord.idx == 0 => return *$x,
+                    $variant { $y, .. } if $coord.kind == 0 && $coord.idx == 1 => return *$y,
+                    $variant { $z, .. } if $coord.kind == 0 && $coord.idx == 2 => return *$z,
+                    _ => ()
+                }
+            }
+        }
+
+        operand_arm!(self, Inst::Constant);
+        operand_arm!(self, Inst::Add, a, b, coord);
+        operand_arm!(self, Inst::Sub, a, b, coord);
+        operand_arm!(self, Inst::Mul, a, b, coord);
+        operand_arm!(self, Inst::Div, a, b, coord);
+        operand_arm!(self, Inst::Modulo, a, b, coord);
+        operand_arm!(self, Inst::And, a, b, coord);
+        operand_arm!(self, Inst::Or, a, b, coord);
+        operand_arm!(self, Inst::Xor, a, b, coord); 
+        operand_arm!(self, Inst::Shl, a, b, coord); 
+        operand_arm!(self, Inst::Ashr, a, b, coord);   
+        operand_arm!(self, Inst::Lshr, a, b, coord);   
+        operand_arm!(self, Inst::Icmp, a, b, coord);   
+        operand_arm!(self, Inst::Fadd, a, b, coord);   
+        operand_arm!(self, Inst::Fsub, a, b, coord);   
+        operand_arm!(self, Inst::Fmul, a, b, coord);   
+        operand_arm!(self, Inst::Fdiv, a, b, coord);
+        operand_arm!(self, Inst::Fcmp, a, b, coord);
+        operand_arm!(self, Inst::IntToFp, v, coord);
+        operand_arm!(self, Inst::FpToInt, v, coord);
+        operand_arm!(self, Inst::Load, addr, coord);
+        operand_arm!(self, Inst::Store, addr, val, coord);
+        operand_arm!(self, Inst::StackAddr);
+        operand_arm!(self, Inst::Zext, v, coord);
+        operand_arm!(self, Inst::Sext, v, coord);
+        operand_arm!(self, Inst::Truncate, v, coord);
+        operand_arm!(self, Inst::FpCast, v, coord);
+        operand_arm!(self, Inst::PtrAdd, ptr, offset, coord);
+        operand_arm!(self, Inst::PtrToInt, v, coord);
+        operand_arm!(self, Inst::IntToFp, v, coord);
+        operand_arm!(self, Inst::Select, cond, x, y, coord);
+        operand_arm!(self, Inst::FuncAddr);
+        operand_arm!(self, Inst::DataAddr);
+
         match self {
-            Inst::Constant { .. } => bad_operand_access(),
-            Inst::Add { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Sub { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Mul { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Div { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Modulo { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::And { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Or { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Xor { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Shl { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Ashr { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Lshr { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Icmp { mode, a, b, signed } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fadd { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fsub { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fmul { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fdiv { a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Fcmp { mode, a, b } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::IntToFp { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::FpToInt { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::Load { addr } => basic_op!(idx, addr, bad_operand_access),
-            Inst::Store { addr, val } => basic_op!(idx, addr, val, bad_operand_access),
-            Inst::StackAddr { slot } => bad_operand_access(),
-            Inst::Zext { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::Sext { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::Truncate { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::FpCast { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::PtrAdd { ptr, offset } => basic_op!(idx, ptr, offset, bad_operand_access),
-            Inst::PtrToInt { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::IntToPtr { v } => basic_op!(idx, v, bad_operand_access),
-            Inst::CompareInt { a, b, mode } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::CompareFloat { a, b, mode } => basic_op!(idx, a, b, bad_operand_access),
-            Inst::Select { cond, x, y } => basic_op!(idx, cond, x, y, bad_operand_access),
-            Inst::BranchIf { cond, con, con_args, alt, alt_args } => {
-                let con_args_len = value_vecs[*con_args].len();
-                let alt_args_len = value_vecs[*alt_args].len();
-                if idx == 0 {
-                    cond
+            Inst::BranchIf { cond, .. } if coord.kind == 0 && coord.idx == 0 => { return *cond },
+            Inst::BranchIf { con_args, .. } 
+                if coord.kind == 1 && coord.idx < value_vecs[*con_args].len() as u32 => { return value_vecs[*con_args][coord.idx as usize] },
+            Inst::BranchIf { alt_args, .. } 
+                if coord.kind == 2 && coord.idx < value_vecs[*alt_args].len() as u32 => { return value_vecs[*alt_args][coord.idx as usize] },
+            Inst::Return { values } 
+                if coord.kind == 0 && coord.idx < value_vecs[*values].len() as u32 => { return value_vecs[*values][coord.idx as usize] },
+            Inst::Jump { target, arguments } 
+                if coord.kind == 0 && coord.idx < value_vecs[*arguments].len() as u32 => { return value_vecs[*arguments][coord.idx as usize] },
+            Inst::Call { func, arguments } 
+                if coord.kind == 0 && coord.idx < value_vecs[*arguments].len() as u32 => { return value_vecs[*arguments][coord.idx as usize] },
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } 
+                if coord.kind == 0 && coord.idx == 0 => { return *func_ptr },
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } 
+                if coord.kind == 1 && coord.idx < value_vecs[*arguments].len() as u32 => { return value_vecs[*arguments][coord.idx as usize] },
+            Inst::Intrinsic { intrinsic, arguments }
+                if coord.kind == 0 && coord.idx < value_vecs[*arguments].len() as u32 => { return value_vecs[*arguments][coord.idx as usize]},
+            _ => todo!()
+        }
+
+        panic!("get_operand failed (bad OperandCoord?)");
+    }
+    
+    /// Returns info about a single CFG edge leaving this (terminator) instruction: its
+    /// target block, the `ValueVecRef` of arguments passed along it, and the `OperandCoord`
+    /// kind of those arguments.
+    /// Only applies to: `jmp`, `brif` (guarded by assert). Panics for out-of-bounds edges
+    pub(crate) fn edge(&self, edge_idx: u32) -> Edge {
+        assert_matches!(self, Inst::BranchIf { .. } | Inst::Jump { .. });
+
+        match self {
+            Inst::BranchIf { cond: _, con, con_args, alt, alt_args } => {
+                assert!(edge_idx < 2);
+                match edge_idx {
+                    0 => Edge { target: *con, args: *con_args, args_kind: 1 },
+                    1 => Edge { target: *alt, args: *alt_args, args_kind: 2 },
+                    _ => unreachable!()
                 }
-                else if idx < 1 + con_args_len {
-                    &mut value_vecs[*con_args][idx - 1]
+            }
+            Inst::Jump { target, arguments } => {
+                assert!(edge_idx == 0);
+                match edge_idx {
+                    0 => Edge { target: *target, args: *arguments, args_kind: 0 },
+                    _ => unreachable!()
                 }
-                else if idx < 1 + con_args_len + alt_args_len {
-                    &mut value_vecs[*alt_args][idx - (1 + con_args_len)]
-                }
-                else {
-                    bad_operand_access()
-                }
-            },
-            Inst::Return { values } => {
-                let values_len = value_vecs[*values].len();
-                if idx < values_len {
-                    &mut value_vecs[*values][idx]
-                }
-                else {
-                    bad_operand_access()
-                }
-            },
-            Inst::Jump { arguments, .. }
-            | Inst::Call { arguments, .. }
-            | Inst::Intrinsic { arguments, .. } => {
-                let arguments_len = value_vecs[*arguments].len();
-                if idx < arguments_len {
-                    &mut value_vecs[*arguments][idx]
-                }
-                else {
-                    bad_operand_access()
-                }
-            },
-            Inst::CallIndirect { callee_sig, func_ptr, arguments } => {
-                let arguments_len = value_vecs[*arguments].len();
-                if idx == 0 {
-                    func_ptr
-                }
-                else if idx < 1 + arguments_len {
-                    &mut value_vecs[*arguments][idx - 1]
-                }
-                else {
-                    bad_operand_access()
-                }
-            },
-            Inst::FuncAddr { func } => bad_operand_access(),
-            Inst::DataAddr { data } => bad_operand_access(),
+            }
+            _ => unreachable!()
         }
     }
+}
+
+/// A CFG edge originating from a terminator instruction (`jmp`/`brif`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Edge {
+    pub(crate) target: BlockRef,
+    pub(crate) args: ValueVecRef,
+    pub(crate) args_kind: u32,
 }
 
 impl std::fmt::Display for Constant {
@@ -1375,8 +1387,6 @@ impl std::fmt::Display for DisplayInst<'_> {
             Inst::PtrToInt { v } => write!(f, "{m} {v}"),
             Inst::IntToPtr { v } => write!(f, "{m} {v}"),
             Inst::StackAddr { slot } => write!(f, "{m} ss{}", slot.0),
-            Inst::CompareInt { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
-            Inst::CompareFloat { a, b, mode } => write!(f, "{m}.{mode} {a} {b}"),
             Inst::Select { cond, x, y } => write!(f, "{m} {cond} {x} {y}"),
             Inst::BranchIf { cond, con, con_args, alt, alt_args } => {      
                 write!(f, "{m} {cond} ")?;
