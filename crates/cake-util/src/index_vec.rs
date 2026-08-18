@@ -1,4 +1,6 @@
-use std::{array::IntoIter, fmt::Debug, hash::Hash, marker::PhantomData, ops::{Deref, DerefMut, Index, IndexMut}};
+use std::{fmt::Debug, hash::Hash, marker::PhantomData, ops::{Deref, DerefMut, Index, IndexMut}};
+
+use smallvec::{Array, SmallVec};
 
 /// Idx is implemented by newtyped index types
 pub trait Idx : Clone + Copy + Hash + PartialEq + Eq + PartialOrd + Ord + Debug + Into<usize> {}
@@ -125,6 +127,89 @@ macro_rules! index_vec {
     );
 }
 
+/// Like `IndexVec`, but backed by a `SmallVec` so that small collections don't allocate on the heap at all.
+pub struct SmallIndexVec<I: Idx, A: Array> {
+    inner: SmallVec<A>,
+
+    _unused: PhantomData<I>,
+}
+
+impl<I: Idx, A: Array> SmallIndexVec<I, A> {
+    pub fn new() -> Self {
+        Self { inner: SmallVec::new(), _unused: PhantomData }
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, A::Item> {
+        self.inner.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, A::Item> {
+        self.inner.iter_mut()
+    }
+
+    pub fn push(&mut self, value: A::Item) {
+        self.inner.push(value);
+    }
+
+    pub fn from_smallvec(inner: SmallVec<A>) -> Self {
+        Self { inner, _unused: PhantomData }
+    }
+}
+
+impl<I: Idx, A: Array> Default for SmallIndexVec<I, A> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<I: Idx, A: Array> Index<I> for SmallIndexVec<I, A> {
+    type Output = A::Item;
+
+    fn index(&self, index: I) -> &Self::Output {
+        &self.inner[index.into()]
+    }
+}
+
+impl<I: Idx, A: Array> IndexMut<I> for SmallIndexVec<I, A> {
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        &mut self.inner[index.into()]
+    }
+}
+
+impl<I: Idx, A: Array> Debug for SmallIndexVec<I, A> where A::Item: Debug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <SmallVec<A> as Debug>::fmt(&self.inner, f)
+    }
+}
+
+impl<'a, I: Idx, A: Array> IntoIterator for &'a SmallIndexVec<I, A> {
+    type Item = &'a A::Item;
+
+    type IntoIter = std::slice::Iter<'a, A::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.iter()
+    }
+}
+
+impl<'a, I: Idx, A: Array> IntoIterator for &'a mut SmallIndexVec<I, A> {
+    type Item = &'a mut A::Item;
+
+    type IntoIter = std::slice::IterMut<'a, A::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.iter_mut()
+    }
+}
+
 #[repr(transparent)]
 pub struct IndexSlice<I: Idx, T: ?Sized> {
     _unused: PhantomData<fn(I)>,
@@ -132,6 +217,10 @@ pub struct IndexSlice<I: Idx, T: ?Sized> {
 }
 
 impl<I: Idx, T> IndexSlice<I, [T]> {
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
     pub fn iter(&self) -> std::slice::Iter<'_, T> {
         self.inner.iter()
     }

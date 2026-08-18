@@ -169,6 +169,9 @@ dependencies = [
 [[package]]
 name = "cake-util"
 version = "0.1.0"
+dependencies = [
+ "smallvec",
+]
 
 [[package]]
 name = "cfg-if"

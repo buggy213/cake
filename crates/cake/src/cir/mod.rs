@@ -1,6 +1,6 @@
 use std::{assert_matches, cell::RefCell};
 
-use cake_util::{IndexSlice, IndexVec, add_additional_index, index_vec, make_type_idx};
+use cake_util::{IndexSlice, IndexVec, SmallIndexVec, add_additional_index, index_vec, make_type_idx};
 use smallvec::{SmallVec, ToSmallVec, smallvec};
 
 use crate::cir::intrinsics::Intrinsic;
@@ -62,9 +62,10 @@ impl Module {
         // append function parameters as block params of entry block
         let mut entry_block = Block::new();
         let sig = &self.signatures[func];
-        entry_block.block_args.extend_from_slice(&sig.argument_types);
-        entry_block.block_arg_uses.resize(entry_block.block_args.len(), smallvec![]);
-        
+        for &ty in &sig.argument_types {
+            entry_block.push_block_arg(ty);
+        }
+
         *definition = Some(FunctionDefinition { 
             insts: index_vec![], 
             inst_types: index_vec![],
@@ -258,26 +259,26 @@ impl FunctionDefinition {
             Value::Inst(inst_ref) => {
                 &self.inst_uses[inst_ref]
             },
-            Value::BlockArgument(block_ref, idx) => {
-                &self.blocks[block_ref].block_arg_uses[idx as usize]
+            Value::BlockArgument(block_ref, arg_ref) => {
+                &self.blocks[block_ref].block_arg_uses[arg_ref]
             },
             Value::TupleElement(inst_ref, _) => {
                 &self.inst_uses[inst_ref]
             },
         }
     }
-    
+
     // Low-level functions to manipulate the def-use chains directly, primarily meant for DCE.
     // Other passes should use RAUW (replace-all-uses-with), RO (replace-operand), etc. to deal
-    // with the bookkeeping. 
+    // with the bookkeeping.
 
     fn uses_mut(&mut self, def: Value) -> &mut UseVec {
         match def {
             Value::Inst(inst_ref) => {
                 &mut self.inst_uses[inst_ref]
             },
-            Value::BlockArgument(block_ref, idx) => {
-                &mut self.blocks[block_ref].block_arg_uses[idx as usize]
+            Value::BlockArgument(block_ref, arg_ref) => {
+                &mut self.blocks[block_ref].block_arg_uses[arg_ref]
             },
             Value::TupleElement(inst_ref, _) => {
                 &mut self.inst_uses[inst_ref]
@@ -338,14 +339,9 @@ impl<'func> FunctionBuilder<'func> {
 
     pub(crate) fn add_block_arg(&mut self, ty: Type) -> Value {
         let block = &mut self.func.blocks[self.current_block];
-        let block_args = &mut block.block_args;
-        let block_arg_uses = &mut block.block_arg_uses;
+        let arg_ref = block.push_block_arg(ty);
 
-        let block_arg_idx = block_args.len();
-        block_args.push(ty);
-        block_arg_uses.push(smallvec![]);
-        
-        Value::BlockArgument(self.current_block, block_arg_idx as u32)
+        Value::BlockArgument(self.current_block, arg_ref)
     }
 
     pub(crate) fn insert(&'_ mut self) -> BlockBuilder<'_> {
@@ -398,22 +394,22 @@ impl<'block> BlockBuilder<'block> {
             Value::Inst(inst_ref) => {
                 self.inst_types[inst_ref][0]
             },
-            Value::BlockArgument(block_ref, idx) => {
-                self.all_blocks[block_ref].block_args[idx as usize]
+            Value::BlockArgument(block_ref, arg_ref) => {
+                self.all_blocks[block_ref].block_arg_types[arg_ref]
             },
             Value::TupleElement(inst_ref, idx) => {
                 self.inst_types[inst_ref][idx as usize]
             },
         }
     }
-    
+
     fn add_use(&mut self, def: Value, use_: Use) {
         match def {
             Value::Inst(inst_ref) => {
                 self.inst_uses[inst_ref].push(use_);
             },
-            Value::BlockArgument(block_ref, idx) => {
-                self.all_blocks[block_ref].block_arg_uses[idx as usize].push(use_);
+            Value::BlockArgument(block_ref, arg_ref) => {
+                self.all_blocks[block_ref].block_arg_uses[arg_ref].push(use_);
             },
             Value::TupleElement(inst_ref, _) => {
                 self.inst_uses[inst_ref].push(use_);
@@ -699,11 +695,21 @@ pub(crate) struct BlockPredecessor {
     edge_idx: u32,
 }
 
+make_type_idx!(BlockArgRef, Type);
+
+type BlockArgTypes = SmallIndexVec<BlockArgRef, [Type; 4]>;
+type BlockArgUseLists = IndexVec<BlockArgRef, UseVec>;
+
+/// Indices into the parallel "arenas" of BlockArgTypes and BlockArgUseLists 
+type BlockArgOrder = SmallVec<[BlockArgRef; 4]>;
+
 #[derive(Debug)]
 pub(crate) struct Block {
     pub(crate) inst_refs: RefCell<Vec<InstRef>>,
-    pub(crate) block_args: Vec<Type>,
-    pub(crate) block_arg_uses: Vec<UseVec>,
+
+    pub(crate) block_arg_types: BlockArgTypes,
+    pub(crate) block_arg_uses: BlockArgUseLists,
+    pub(crate) block_arg_order: BlockArgOrder,
 
     pub(crate) preds: Vec<BlockPredecessor>,
     pub(crate) is_entry: bool,
@@ -713,8 +719,10 @@ impl Block {
     fn new() -> Block {
         Block {
             inst_refs: Vec::new().into(),
-            block_args: Vec::new(),
-            block_arg_uses: Vec::new(),
+
+            block_arg_types: SmallIndexVec::new(),
+            block_arg_uses: IndexVec::new(),
+            block_arg_order: SmallVec::new(),
 
             preds: Vec::new(),
             is_entry: false
@@ -727,12 +735,19 @@ impl Block {
             ..Block::new()
         }
     }
+
+    fn push_block_arg(&mut self, ty: Type) -> BlockArgRef {
+        let arg_ref = BlockArgRef::from_push3(&mut self.block_arg_types, ty);
+        self.block_arg_uses.push(smallvec![]);
+        self.block_arg_order.push(arg_ref);
+        arg_ref
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Value {
     Inst(InstRef),
-    BlockArgument(BlockRef, u32),
+    BlockArgument(BlockRef, BlockArgRef),
     TupleElement(InstRef, u32)
 }
 
@@ -1327,7 +1342,7 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Inst(inst_ref) => write!(f, "v{}", inst_ref.0),
-            Value::BlockArgument(block_ref, idx) => write!(f, "p{}.{}", block_ref.0, *idx),
+            Value::BlockArgument(block_ref, idx) => write!(f, "p{}.{}", block_ref.0, idx.get_inner()),
             Value::TupleElement(inst_ref, component) => write!(f, "v{}.{}", inst_ref.0, component)
         }
     }
@@ -1509,9 +1524,10 @@ impl std::fmt::Display for Function {
 
         for (block_idx, block) in defn.blocks.iter().enumerate() {
             write!(f, "b{block_idx}(")?;
-            for (block_arg_idx, block_arg) in block.block_args.iter().enumerate() {
-                write!(f, "p{block_idx}.{block_arg_idx} : {block_arg}")?;
-                if block_arg_idx + 1 < block.block_args.len() {
+            for (block_arg_idx, block_arg) in block.block_arg_order.iter().enumerate() {
+                let block_arg_type = block.block_arg_types[*block_arg];
+                write!(f, "p{block_idx}.{block_arg_idx} : {block_arg_type}")?;
+                if block_arg_idx + 1 < block.block_arg_order.len() {
                     write!(f, ", ")?;
                 }
             }

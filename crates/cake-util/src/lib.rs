@@ -38,6 +38,15 @@ macro_rules! make_type_idx {
                 idx
             }
 
+            pub(crate) fn from_push3<SmallArray: smallvec::Array<Item = $type_name>>(
+                small_index_vec: &mut cake_util::SmallIndexVec<$type_idx_name, SmallArray>,
+                val: $type_name
+            ) -> $type_idx_name {
+                let idx = $type_idx_name(small_index_vec.len() as u32);
+                small_index_vec.push(val);
+                idx
+            }
+
             pub(crate) fn get_inner(&self) -> usize {
                 self.0 as usize
             }
@@ -46,8 +55,12 @@ macro_rules! make_type_idx {
                 slice.iter().enumerate().map(|(i, x)| ($type_idx_name(i as u32), x))
             }
 
-            pub(crate) fn enumerate2(slice: &$crate::IndexSlice<$type_idx_name, [$type_name]>) -> impl Iterator<Item = ($type_idx_name, &$type_name)> {
+            pub(crate) fn enumerate2<T>(slice: &$crate::IndexSlice<$type_idx_name, [T]>) -> impl Iterator<Item = ($type_idx_name, &T)> {
                 slice.iter().enumerate().map(|(i, x)| ($type_idx_name(i as u32), x))
+            }
+
+            pub(crate) fn iter<T>(slice: &$crate::IndexSlice<$type_idx_name, [T]>) -> impl Iterator<Item = $type_idx_name> {
+                (0..slice.len()).map(|i| $type_idx_name(i as u32))
             }
         }
 
@@ -139,4 +152,4 @@ macro_rules! add_additional_index {
 }
 
 mod index_vec;
-pub use index_vec::{IndexVec, IndexSlice, Idx};
+pub use index_vec::{IndexVec, IndexSlice, Idx, SmallIndexVec};

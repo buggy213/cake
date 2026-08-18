@@ -143,8 +143,10 @@ pub(crate) fn lower_ast(ast: ResolvedAST) -> Module {
             let stack_slot = stack_frame.get_object_stack_slot(param_idx);
             
             let addr = func_builder.insert().stack_addr(stack_slot);
-            let entry_block = func_builder.current_block;
-            func_builder.insert().store(addr, Value::BlockArgument(entry_block, i as u32));
+            let entry_block_ref = func_builder.current_block;
+            let entry_block = &func_builder.func.blocks[entry_block_ref];
+            let arg_ref = entry_block.block_arg_order[i];
+            func_builder.insert().store(addr, Value::BlockArgument(entry_block_ref, arg_ref));
         }
 
         lower_function_body(&ast, *body, &mut func_builder, &stack_frame, &lower_module_ctx);
