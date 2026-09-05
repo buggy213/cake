@@ -60,7 +60,7 @@ impl Module {
         } = &mut self.functions[func];
 
         // append function parameters as block params of entry block
-        let mut entry_block = Block::new();
+        let mut entry_block = Block::new_entry_block();
         let sig = &self.signatures[func];
         for &ty in &sig.argument_types {
             entry_block.push_block_arg(ty);
