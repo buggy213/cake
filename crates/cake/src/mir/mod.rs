@@ -19,7 +19,7 @@ use cake_util::make_type_idx;
 use crate::cir::Type;
 
 #[allow(non_camel_case_types, reason = "x86 convention")]
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum PhysReg {
     rax,
     rbx,
@@ -70,19 +70,6 @@ impl PhysReg {
             PhysReg::r15 => 0b111,
         }
     }
-
-    /// True if encoding this register as an operand requires the REX prefix,
-    /// (i.e. SPL, BPL, SIL, DIL, since they would otherwise be interpreted as AH, CH, DH, BH)
-    pub(crate) fn needs_rex(self, width: OperandWidth) -> bool {
-        if width != OperandWidth::Byte {
-            return false;
-        }
-
-        return match self {
-            PhysReg::rsp | PhysReg::rbp | PhysReg::rsi | PhysReg::rdi => true,
-            _ => false
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -103,6 +90,17 @@ pub(crate) enum OperandWidth {
 pub(crate) enum Reg {
     VReg(VirtualReg, OperandWidth),
     PReg(PhysReg, OperandWidth)
+}
+
+pub(crate) mod phys_regs {
+    use crate::mir::{OperandWidth, PhysReg, Reg};
+
+    pub(crate) const rax: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Qword);
+    pub(crate) const rbx: Reg = Reg::PReg(PhysReg::rbx, OperandWidth::Qword);
+    pub(crate) const rsp: Reg = Reg::PReg(PhysReg::rsp, OperandWidth::Qword);
+    pub(crate) const rbp: Reg = Reg::PReg(PhysReg::rbp, OperandWidth::Qword);
+    pub(crate) const eax: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Dword);
+    // TODO: widths + mnemonics
 }
 
 #[derive(Clone, Copy)]
@@ -180,8 +178,8 @@ impl MemOperand {
 }
 
 pub(crate) struct ImmediateOperand {
-    value: u64,
-    width: OperandWidth,
+    pub(crate) value: u64,
+    pub(crate) width: OperandWidth,
 }
 
 pub(crate) enum Condition {
@@ -264,6 +262,16 @@ pub(crate) enum MachineInst {
     StoreImm {
         op1: MemOperand,
         op2: ImmediateOperand,
+    },
+
+    // mov %op1, %op2
+    Mov {
+        dst: Reg,
+        op2: Reg
+    },
+    Xchg {
+        op1: Reg,
+        op2: Reg
     },
 
     // in x86, writing to 32-bit register clears the upper 32 bits
