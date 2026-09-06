@@ -1,456 +1,466 @@
-//! For a first attempt, just build a dead-simple templating instruction selector with no attempt at peephole optimization
-use cranelift::codegen::ir::Block;
-use iced_x86::code_asm::*;
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::mir::{ImmediateOperand, MachineInst, MemOperand, MemOperandDisplacement, MemOperandScale, OperandWidth, PhysReg, Reg};
 
-use iced_x86;
-use crate::cir::{BlockRef, Constant, Data, DataContents, DataRef, FuncRef, Function, FunctionDefinition, Inst, Module, Signature, StackSlotRef, Type};
-use crate::elf::{Elf, ElfSymbolBinding, ElfSymbolType, Section, SymbolTableIndex};
-
-enum OperandSize {
-    Byte,
-    Word,
-    Dword,
-    Qword
+/// ModR/M byte in x86 instruction encoding
+struct ModRM {
+    mod_: u8,
+    reg: u8,
+    rm: u8
 }
 
-/// helper to get the 32-bit version of a register
-fn register_dword(reg: AsmRegister64) -> AsmRegister32 {
-    let reg64 = [rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15];
-    let reg32 = [eax, ecx, edx, ebx, esp, ebp, esi, edi, r8d, r9d, r10d, r11d, r12d, r13d, r14d, r15d];
-    
-    let pos = reg64.iter().position(|&r| r == reg).unwrap();
-    reg32[pos]
-}
-
-/// helper to get the 32-bit version of a register
-fn register_word(reg: AsmRegister64) -> AsmRegister16 {
-    let reg64 = [rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15];
-    let reg16 = [ax, cx, dx, bx, sp, bp, si, di, r8w, r9w, r10w, r11w, r12w, r13w, r14w, r15w];
-    
-    let pos = reg64.iter().position(|&r| r == reg).unwrap();
-    reg16[pos]
-}
-
-/// helper to get the 32-bit version of a register
-fn register_byte(reg: AsmRegister64) -> AsmRegister8 {
-    let reg64 = [rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15];
-    let reg8 = [al, cl, dl, bl, spl, bpl, sil, dil, r8b, r9b, r10b, r11b, r12b, r13b, r14b, r15b];
-    
-    let pos = reg64.iter().position(|&r| r == reg).unwrap();
-    reg8[pos]
-}
-
-/// helper to emit a memcpy through `reg`, copying a fixed number of bytes
-fn emit_memcpy(
-    assembler: &mut CodeAssembler, 
-    reg: AsmRegister64, 
-    src: AsmMemoryOperand, 
-    dst: AsmMemoryOperand, 
-    size: u32
-) {
-    assert!(size % 8 == 0 || size % 4 == 0, "i'm lazy, and iced-x86 is annoying");
-    if size % 8 == 0 {
-        for off in 0..size / 8 {
-            assembler.mov(reg, src + off);
-            assembler.mov(dst + off, reg);
-        }
-    }
-
-    if size % 4 == 0 {
-        let reg = register_dword(reg);
-        for off in 0..size / 4 {
-            assembler.mov(reg, src + off);
-            assembler.mov(dst + off, reg);
-        }
+impl From<ModRM> for u8 {
+    fn from(value: ModRM) -> Self {
+        value.mod_ << 6 | value.reg << 3 | value.rm
     }
 }
 
-struct X86Codegen {
-    data_to_symbol: FxHashMap<DataRef, SymbolTableIndex>,
-    func_to_symbol: FxHashMap<FuncRef, SymbolTableIndex>,
-
-    /// used to name unnamed global variables `_unnamed_{i}`
-    unnamed_global_counter: usize,
+struct SIB {
+    scale: u8,
+    index: u8,
+    base: u8
 }
 
-impl X86Codegen {
-    pub(crate) fn emit_module(&mut self, module: &Module) -> Elf {
-        let mut elf = Elf::new();
-        
-        // for (data_ref, data) in DataRef::enumerate(module.data()) {            
-        //     self.emit_data(&mut elf, data, data_ref);
-        // }
-        
-        // for ((func_ref, func), sig) in std::iter::zip(FuncRef::enumerate(module.functions()), module.signatures()) {
-        //     self.emit_function(&mut elf, func, func_ref, sig);
-        // }
+impl From<SIB> for u8 {
+    fn from(value: SIB) -> Self {
+        value.scale << 6 | value.index << 3 | value.base
+    }
+}
 
-        elf
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct REX {
+    w: bool,
+    r: bool,
+    x: bool,
+    b: bool
+}
+
+impl REX {
+    fn new() -> REX {
+        Self {
+            w: false,
+            r: false,
+            x: false,
+            b: false,
+        }
     }
 
-    fn emit_data(&mut self, elf: &mut Elf, data: &Data, data_ref: DataRef) {
-        let unnamed;
-        let name = if let Some(name) = &data.name {
-            unnamed = false;
-            name.as_str()
-        }
-        else {
-            unnamed = true;
-            self.unnamed_global_counter += 1;
-            &format!("_unnamed_{}", self.unnamed_global_counter)
-        };
+    fn is_empty(self) -> bool {
+        self == REX::default()
+    }
+}
 
-        match &data.contents {
-            DataContents::Defined(items) => {
-                let data_offset = elf.add_data(&items);
-                let symbol = elf.define_symbol(
-                    name, 
-                    ElfSymbolBinding::Global, 
-                    ElfSymbolType::Object, 
-                    Section::Data, 
-                    data_offset, 
-                    items.len()
-                );
+impl Default for REX {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-                self.data_to_symbol.insert(data_ref, symbol);
-            },
-            DataContents::Zeros(size) => {
-                let bss_offset = elf.add_bss(*size);
-                let symbol = elf.define_symbol(
-                    name, 
-                    ElfSymbolBinding::Global, 
-                    ElfSymbolType::Object, 
-                    Section::Bss, 
-                    bss_offset, 
-                    *size
-                );
+impl From<REX> for u8 {
+    fn from(value: REX) -> Self {
+        0x40 | (value.w as u8) << 3 | (value.r as u8) << 2 | (value.x as u8) << 1 | value.b as u8
+    }
+}
 
-                self.data_to_symbol.insert(data_ref, symbol);
-            },
-            DataContents::Undefined => {
-                debug_assert!(!unnamed, "unnamed and undefined symbol should not be produced by frontend");
-                let symbol = elf.undefined_symbol(
-                    name, 
-                    ElfSymbolBinding::Global,
-                    ElfSymbolType::Object
-                );
+#[derive(Clone, Copy)]
+enum AssemblerMemOperandDisplacement {
+    Disp8(u8),
+    Disp32(u32),
+}
 
-                self.data_to_symbol.insert(data_ref, symbol);
+impl AssemblerMemOperandDisplacement {
+    fn assemble_into_buffer(self, buffer: &mut Vec<u8>) {
+        match self {
+            AssemblerMemOperandDisplacement::Disp8(b) => buffer.push(b),
+            AssemblerMemOperandDisplacement::Disp32(dw) => {
+                for b in dw.to_le_bytes() {
+                    buffer.push(b);
+                }
             },
         }
     }
+}
 
-    fn emit_function(&mut self, elf: &mut Elf, func: &Function, func_ref: FuncRef, func_sig: &Signature) {
-        if let Some(func_body) = &func.definition {
-            let symbol = elf.define_symbol(
-                &func.name, 
-                ElfSymbolBinding::Global, 
-                ElfSymbolType::Func, 
-                Section::Text, 
-                0, 
-                0
-            );
+impl From<MemOperandDisplacement> for Option<AssemblerMemOperandDisplacement> {
+    fn from(value: MemOperandDisplacement) -> Self {
+        match value {
+            MemOperandDisplacement::Disp32(disp) => Some(AssemblerMemOperandDisplacement::Disp32(disp)),
+            MemOperandDisplacement::Disp8(disp) => Some(AssemblerMemOperandDisplacement::Disp8(disp)),
+            MemOperandDisplacement::Zero => None,
+        }
+    }
+}
+
+impl From<MemOperandScale> for u8 {
+    fn from(value: MemOperandScale) -> Self {
+        match value {
+            MemOperandScale::One => 0b00,
+            MemOperandScale::Two => 0b01,
+            MemOperandScale::Four => 0b10,
+            MemOperandScale::Eight => 0b11,
+        }
+    }
+}
+
+struct AssemblerMemOperand {
+    sib: Option<SIB>,
+    disp: Option<AssemblerMemOperandDisplacement>,
+    width: OperandWidth,
+}
+
+fn validate_tied_pregs(a: Reg, b: Reg, c: Reg) -> (PhysReg, PhysReg, OperandWidth) {
+    match (a, b, c) {
+        (Reg::PReg(r1, w1), 
+            Reg::PReg(r2, w2),
+            Reg::PReg(r3, w3)) => {
+            if r1 != r2 {
+                panic!("registers must be tied")
+            }
+
+            if w1 != w2 || w1 != w3 {
+                panic!("registers must be equal width")
+            }
+
+            (r1, r3, w1)
+        },
+        _ => panic!("cannot assemble instruction with virtual registers")
+    }
+}
+
+fn validate_preg(a: Reg) -> (PhysReg, OperandWidth) {
+    match a {
+        Reg::PReg(phys_reg, operand_width) => (phys_reg, operand_width),
+        _ => panic!("cannot assemble instruction with virtual registers")
+    }
+}
+
+// We never use 32-bit address size override, so ensure that virtual registers are always 64-bit wide
+// when used in a mem operand
+fn validate_mem_operand_preg(a: Reg) -> PhysReg {
+    match a {
+        Reg::PReg(phys_reg, operand_width) => {
+            if operand_width != OperandWidth::Qword {
+                panic!("register used in memory operand must be full-width")
+            }
+
+            phys_reg
+        },
+        _ => panic!("cannot assemble instruction with virtual registers")
+    }
+}
+
+fn validate_pregs(a: Reg, b: Reg) -> (PhysReg, PhysReg, OperandWidth) {
+    todo!()
+}
+
+fn validate_pregs_and_imm(a: Reg, b: Reg, c: ImmediateOperand) -> (PhysReg, PhysReg, u64, OperandWidth) {
+    todo!()
+}
+
+/// Performs logic needed to assemble an MIR memory operand
+/// Including selecting correct B.R/M, Mod, and returning an SIB / displacement if they are required
+fn assemble_mem_operand(mem_operand: MemOperand, mod_rm: &mut ModRM, rex: &mut REX) -> AssemblerMemOperand {
+    match mem_operand {
+        MemOperand::PcRelative { disp, width } => {
+            mod_rm.mod_ = 0b00;
+            mod_rm.rm = 0b101;
+            rex.b = false;
+
+            AssemblerMemOperand {
+                sib: None,
+                disp: disp.into(),
+                width
+            }
+        },
+        MemOperand::Full { base, index, scale, mut disp, width } => {
+            let base = validate_mem_operand_preg(base);
+            let index = validate_mem_operand_preg(index);
+            assert!(index != PhysReg::rsp && index != PhysReg::r12);
+
+            // mod=0b00 and rm=0b101 encodes no PC-relative addressing, so we need to use mod=0b01 instead
+            if matches!(disp, MemOperandDisplacement::Zero) && matches!(base, PhysReg::rbp | PhysReg::r13) {
+                disp = MemOperandDisplacement::Disp8(0);
+            }
             
-            // let (offset, func_size) = self.emit_function_body(elf, func_body, func_sig);
-            let (offset, func_size) : (usize, usize) = todo!();
-            // align to 16-byte boundary for the next function
-            let padding = func_size.next_multiple_of(16) - func_size;
-            const PADDING: [u8; 16] = [0; 16];            
-            elf.add_text(&PADDING[..padding]);
-            elf.update_symbol(symbol, offset, func_size);
-
-            self.func_to_symbol.insert(func_ref, symbol);
-        }
-        else {
-            let symbol = elf.undefined_symbol(
-                &func.name, 
-                ElfSymbolBinding::Global, 
-                ElfSymbolType::Func
-            );
-
-            self.func_to_symbol.insert(func_ref, symbol);
-        }
-
-        
-    }
-
-    // returns how many bytes emitted into ELF's .text section
-    /* 
-    fn emit_function_body(
-        &mut self, 
-        elf: &mut Elf, 
-        func: &FunctionDefinition,
-        func_sig: &Signature,
-    ) -> (usize, usize) {
-        let mut assembler = CodeAssembler::new(64).unwrap();
-        
-        // 0. layout the stack slots
-        // (very) conservatively allocate 128 bytes for spilling callee-saved registers and 
-        // issues with register allocation. if both happen at once we're kinda cooked lol
-        // let mut static_stack_size: usize = 128;
-        // let mut stack_slot_to_offset_from_top = FxHashMap::default();
-        // for (ss_ref, stack_slot) in StackSlotRef::enumerate(&func.stack_slots) {
-        //     static_stack_size += stack_slot.size;
-        //     static_stack_size = static_stack_size.next_multiple_of(stack_slot.align);
-        //     stack_slot_to_offset_from_top.insert(ss_ref, static_stack_size);
-        // }
-        
-        // stack needs to be 16-byte aligned
-        static_stack_size = static_stack_size.next_multiple_of(16);
-        assembler.sub(rsp, static_stack_size as i32);
-        
-        let stack_slot_to_rsp_offset = |ss_ref: StackSlotRef| -> u32 {
-            static_stack_size - stack_slot_to_offset_from_top[&ss_ref]
-        };
-
-        let mut dynamic_stack_size = 0;
-        
-        // 1. perform critical edge splitting
-
-        // 2. obtain a reverse-post order over blocks
-        // reversed_edges[b] returns all b' where b' -> b exists in CFG
-        let mut reversed_edges: Vec<Vec<BlockRef>> = vec![Vec::new(); func.blocks.len()];
-
-        /* 
-        for (b, block) in BlockRef::enumerate(&func.blocks) {
-            let inst_refs = block.inst_refs.borrow();
-            let terminator = inst_refs.last();
-            let Some(&terminator_inst) = terminator else {
-                continue;
+            mod_rm.mod_ = match disp {
+                MemOperandDisplacement::Disp32(_) => 0b10,
+                MemOperandDisplacement::Disp8(_) => 0b01,
+                MemOperandDisplacement::Zero => 0b00,
+            };
+            mod_rm.rm = 0b100;
+            
+            let sib = SIB {
+                scale: scale.into(),
+                index: index.encoding(),
+                base: base.encoding(),
             };
 
-            match func.insts[terminator_inst] {
-                Inst::BranchIf { con, alt, .. } => {
-                    reversed_edges[con.get_inner()].push(b);
-                    reversed_edges[alt.get_inner()].push(b);
+            rex.x = index.is_extended_reg();
+            rex.b = base.is_extended_reg();
+
+            AssemblerMemOperand { 
+                sib: Some(sib), 
+                disp: disp.into(),
+                width
+            }
+        },
+        MemOperand::BasePlusDisp { base, mut disp, width } => {
+            let base = validate_mem_operand_preg(base);
+
+            // mod=0b00 and rm=0b101 encodes PC-relative addressing, so we need to use mod=0b01 instead
+            if matches!(disp, MemOperandDisplacement::Zero) && matches!(base, PhysReg::rbp | PhysReg::r13) {
+                disp = MemOperandDisplacement::Disp8(0);
+            }
+
+            mod_rm.mod_ = match disp {
+                MemOperandDisplacement::Disp32(_) => 0b10,
+                MemOperandDisplacement::Disp8(_) => 0b01,
+                MemOperandDisplacement::Zero => 0b00,
+            };
+            mod_rm.rm = base.encoding();
+
+            // when rm=0b100, we must put in a SIB byte; use index=0b100 (rsp) to not include index
+            let sib = if matches!(base, PhysReg::rsp) {
+                Some(SIB { scale: 0b00, index: 0b100, base: base.encoding() })
+            } else { None };
+
+            rex.b = base.is_extended_reg();
+
+            AssemblerMemOperand { 
+                sib, 
+                disp: disp.into(), 
+                width 
+            }
+        },
+        MemOperand::AbsoluteDisp { mut disp, width } => {
+            // mod=0b00, rm=0b100, base=0b101, index=0b100 encodes [disp32], so widen displacement if needed
+            match disp {
+                MemOperandDisplacement::Disp32(_) => (),
+                MemOperandDisplacement::Disp8(v) => {
+                    disp = MemOperandDisplacement::Disp32(v as u32)
                 },
-                Inst::Return { .. } => continue,
-                Inst::Jump { target, .. } => {
-                    reversed_edges[target.get_inner()].push(b);
+                MemOperandDisplacement::Zero => {
+                    disp = MemOperandDisplacement::Disp32(0u32)
                 },
-                _ => unreachable!("function doesn't have terminator?")
-            }
-        }
-        */
-
-        fn postorder_blocks(
-            b: BlockRef,
-            adjacency: &Vec<Vec<BlockRef>>, 
-            visited: &mut FxHashSet<BlockRef>, 
-            ordered: &mut Vec<BlockRef>
-        ) {
-            if visited.contains(&b) {
-                return;
-            }
-
-            visited.insert(b);
-            for &neighbor in &adjacency[b.get_inner()] {
-                postorder_blocks(neighbor, adjacency, visited, ordered);
-            }
-
-            ordered.push(b);            
-        }
-
-        let mut visited = FxHashSet::default();
-        let mut ordered = Vec::new();
-        /*
-        for (block, _) in BlockRef::enumerate(&func.blocks) {
-            postorder_blocks(block, &reversed_edges, &mut visited, &mut ordered);
-        }
-        
-        // 2. iterate in reverse-postorder
-        for &block_ref in &ordered {
-            let block = &func.blocks[block_ref];
-            
-            // special handling for the first block, move arguments into assigned stack slots
-            if block_ref.get_inner() == 0 {
-                let mut param_idx = 0;
-                for (&param, (ss_ref, _)) in 
-                    Iterator::zip(func_sig.argument_types.iter(), StackSlotRef::enumerate(&func.stack_slots)) {
-
-                    let dst = match param {
-                        Type::i8 => byte_ptr(rsp + stack_slot_to_rsp_offset(ss_ref)),
-                        Type::i16 => word_ptr(rsp + stack_slot_to_rsp_offset(ss_ref)),
-                        Type::i32 => dword_ptr(rsp + stack_slot_to_rsp_offset(ss_ref)),
-                        Type::i64 => qword_ptr(rsp + stack_slot_to_rsp_offset(ss_ref)),
-                        Type::ptr => qword_ptr(rsp + stack_slot_to_rsp_offset(ss_ref)),
-                        Type::f32 => dword_ptr(rsp + stack_slot_to_rsp_offset(ss_ref)),
-                        Type::f64 => qword_ptr(rsp + stack_slot_to_rsp_offset(ss_ref)),
-                    };
-
-                    if param.is_integral() {
-                        let source = match param_idx {
-                            0 => rcx,
-                            1 => rdx,
-                            2 => r8,
-                            3 => r9,
-                            _ => todo!()
-                        };
-
-                        match param {
-                            Type::i8 => {
-                                assembler.mov(dst, register_byte(source))
-                            }
-                            Type::i16 => {
-                                assembler.mov(dst, register_word(source))
-                            },
-                            Type::i32 => {
-                                assembler.mov(dst, register_dword(source))
-                            },
-                            Type::i64 => {
-                                assembler.mov(dst, source)
-                            }
-                            Type::ptr => {
-                                assembler.mov(dst, source)
-                            }
-                            _ => unreachable!()
-                        }.unwrap();
-                    }
-                    else {
-                        let source = match param_idx {
-                            0 => xmm0,
-                            1 => xmm1,
-                            2 => xmm2,
-                            3 => xmm3,
-                            _ => todo!()
-                        };
-
-                        match param {
-                            Type::f32 => {
-                                assembler.movss(dst, source)
-                            },
-                            Type::f64 => {
-                                assembler.movsd_2(dst, source)
-                            },
-                            _ => unreachable!(),
-                        }.unwrap();
-                    }
-
-                    param_idx += 1;
-                }
             }
             
+            mod_rm.mod_ = 0b00;
+            mod_rm.rm = 0b100;
+            
+            let sib = SIB {
+                scale: 0b00,
+                index: 0b100,
+                base: 0b101,
+            };
 
-            // perform liveness analysis to determine live-in and live-out sets of each block
-            // the values in both sets, as well as the values defined by the instructions in the
-            // block itself, are collected into live ranges (live-in = live range starts at beginning, 
-            // live-out = live range goes to end). then, run a local register allocation algorithm
-            // 
-            // live-in and live-out values must be spilled to memory (i.e. SSA values are only registers within a block)
-            // this also requires splitting critical edges
-            // if a block has >1 successor, then it spills its live-out (dictating the basic block memory interface)
-            // if a block has >1 predecessor, then it loads its live-in (dictating the basic block memory interface)
-            for &iref in block.inst_refs.borrow().iter() {
-                let inst = &func.insts[iref];    
-                
-
-
-                match inst {
-                    Inst::Constant { val } => {
-                        // assembler.mov(op0, op1)  
-                    },
-                    Inst::Add { a, b } => {
-                        // assembler.lea()  
-                    },
-                    Inst::Sub { a, b } => {
-                        // assembler.mov() if lhs needs to be used later
-                        // assembler.sub(op0, op1)
-                    },
-                    Inst::Mul { a, b } => {
-                        // try to use lea if one side is a nice constant
-                        // assembler.mov() if lhs needs to be used later
-                        // assembler.imul_2()  
-                    },
-                    Inst::Div { a, b } => {
-                        // this one monopolizes rax and rdx, which is annoying
-                        // assembler.idiv(op0)
-                    },
-                    Inst::Modulo { a, b } => {
-                        // modulo comes out in rdx
-                        // assembler.idiv(op0)
-                    },
-                    Inst::And { a, b } => {
-                        // assembler.and(op0, op1)
-                    },
-                    Inst::Or { a, b } => todo!(),
-                    Inst::Xor { a, b } => todo!(),
-                    Inst::Shl { a, b } => todo!(),
-                    Inst::Ashr { a, b } => todo!(),
-                    Inst::Lshr { a, b } => todo!(),
-                    Inst::Icmp { mode, a, b, signed } => {
-                        // 
-                    },
-                    Inst::Fadd { a, b } => {
-                        // assembler.vaddss(op0, op1)
-                    },
-                    Inst::Fsub { a, b } => {
-                        // assembler.vsubss(op0, op1)
-                    },
-                    Inst::Fmul { a, b } => {
-                        // assembler.vmulss()
-                    },
-                    Inst::Fdiv { a, b } => {
-                        // assembler.vdivss(op0, op1)
-                    },
-                    Inst::Fcmp { mode, a, b } => todo!(),
-                    Inst::IntToFp { v } => {
-                        // assembler.cvtsi2ss(op0, op1)
-                    },
-                    Inst::FpToInt { v } => todo!(),
-                    Inst::Load { addr } => {
-                        // assembler.mov(op0, op1)
-                    },
-                    Inst::Store { addr, val } => todo!(),
-                    Inst::StackAddr { slot } => {
-                        let offset = stack_slot_to_rsp_offset(*slot);
-                        // assember.lea()
-                    },
-                    Inst::Zext { v } => {
-                        // no-op on x86 due to implicit zero extension
-                    },
-                    Inst::Sext { v } => {
-                        // assembler.movsx(op0, op1)
-                    },
-                    Inst::Truncate { v } => {
-                        // ??
-                    },
-                    Inst::FpCast { v } => {
-                        
-                    },
-                    Inst::PtrAdd { ptr, offset } => {
-                        // assembler.lea()
-                    },
-                    Inst::PtrToInt { v } => {
-                        // no-op
-                    },
-                    Inst::IntToPtr { v } => todo!(),
-                    Inst::CompareInt { a, b, mode } => todo!(),
-                    Inst::CompareFloat { a, b, mode } => todo!(),
-                    Inst::Select { cond, x, y } => {
-                        // assembler.sub(cond, 1)
-                        // assembler.cmov()
-                    },
-                    Inst::BranchIf { cond, con, con_args, alt, alt_args } => todo!(),
-                    Inst::Return { values } => todo!(),
-                    Inst::Jump { target, arguments } => todo!(),
-                    Inst::Call { func, arguments } => todo!(),
-                    Inst::CallIndirect { callee_sig, func_ptr, arguments } => todo!(),
-                    Inst::FuncAddr { func } => {
-                        // assembler.mov()
-                        // assembler.instructions().last().unwrap().ip();
-                    },
-                    Inst::DataAddr { data } => {
-                        // assembler.mov(op0, op1);
-                        // assembler.instructions().last().unwrap().ip();
-                    },
-                    Inst::Intrinsic { intrinsic, arguments } => todo!(),
-                } 
+            AssemblerMemOperand { 
+                sib: Some(sib), 
+                disp: disp.into(), 
+                width 
             }
-        }
-        */
-        
-        todo!()
+        },
     }
-    */
+}
+
+fn assemble_inst(buffer: &mut Vec<u8>, mir_inst: MachineInst) {
+    // Assembles instructions with one register operand and one memory operand specified by ModR/M
+    fn assemble_reg_mem_modrm(
+        width: OperandWidth, 
+        operand_prefix: bool, 
+        reg: PhysReg,
+        mem: MemOperand,
+        opcode: u8,
+        buffer: &mut Vec<u8>
+    ) {
+        let mut rex = REX::default();
+        if width == OperandWidth::Qword {
+            rex.w = true;
+        }
+        if reg.is_extended_reg() {
+            rex.r = true;
+        }
+
+        let mut mod_rm = ModRM {
+            mod_: 0b00,
+            reg: reg.encoding(),
+            rm: 0b000,
+        };
+
+        let AssemblerMemOperand { 
+            sib, 
+            disp, 
+            width 
+        } = assemble_mem_operand(mem, &mut mod_rm, &mut rex);
+
+        if operand_prefix {
+            buffer.push(0x66);
+        }
+        if !rex.is_empty() || reg.needs_rex(width) {
+            buffer.push(rex.into());
+        }
+        buffer.push(opcode);
+        buffer.push(mod_rm.into());
+        if let Some(sib) = sib {
+            buffer.push(sib.into());
+        }
+        if let Some(disp) = disp {
+            disp.assemble_into_buffer(buffer);
+        }
+    }
+
+    // Assembles instructions with two register operands specified by ModR/M
+    fn assemble_reg_reg_modrm(
+        width: OperandWidth, 
+        operand_prefix: bool, 
+        reg: PhysReg,
+        r: PhysReg,
+        opcode: u8,
+        buffer: &mut Vec<u8>
+    ) {
+        let mut rex = REX::default();
+        if width == OperandWidth::Qword {
+            rex.w = true;
+        }
+        if r.is_extended_reg() {
+            rex.b = true;
+        }
+        if reg.is_extended_reg() {
+            rex.r = true;
+        }
+
+        let mod_rm = ModRM {
+            mod_: 0b11,
+            reg: reg.encoding(),
+            rm: r.encoding(),
+        };
+
+        if operand_prefix {
+            buffer.push(0x66);
+        }
+        if !rex.is_empty() | reg.needs_rex(width) | r.needs_rex(width) {
+            buffer.push(rex.into());
+        }
+        buffer.push(opcode);
+        buffer.push(mod_rm.into());
+    }
+
+    // Assembles instructions with one register operand in the opcode
+    fn assemble_reg_opcode(
+        width: OperandWidth,
+        operand_prefix: bool,
+        reg: PhysReg,
+        opcode: u8,
+        buffer: &mut Vec<u8>
+    ) {
+        let mut rex = REX::default();
+        if width == OperandWidth::Qword {
+            rex.w = true;
+        }
+        if reg.is_extended_reg() {
+            rex.b = true;
+        }
+
+        if operand_prefix {
+            buffer.push(0x66);
+        }
+        if !rex.is_empty() {
+            buffer.push(rex.into())
+        }
+        buffer.push(opcode + reg.encoding());
+    }
+
+
+    match mir_inst {
+        MachineInst::Lea { dst, op2 } => {
+            let (dst, width) = validate_preg(dst);
+            assert!(width != OperandWidth::Byte);
+
+            let opcode: u8 = 0x8d;
+            let operand_prefix = width == OperandWidth::Word;
+
+            
+            assemble_reg_mem_modrm(width, operand_prefix, dst, op2, opcode, buffer);
+        },
+        MachineInst::AddRegToReg { dst, op1, op2 } => {
+            let (op1, op2, width) = validate_tied_pregs(dst, op1, op2);
+
+            let (opcode, operand_prefix): (u8, bool) = match width {
+                OperandWidth::Byte => (0x00, false),
+                OperandWidth::Word => (0x01, true),
+                OperandWidth::Dword
+                | OperandWidth::Qword => (0x01, false),
+            };
+
+            assemble_reg_reg_modrm(width, operand_prefix, op2, op1, opcode, buffer);
+        },
+        MachineInst::AddMemToReg { dst, op1, op2 } => todo!(),
+        MachineInst::AddRegToMem { op1, op2 } => todo!(),
+        MachineInst::AddImmToReg { dst, op1, op2 } => todo!(),
+        MachineInst::AddImmToMem { op1, op2 } => todo!(),
+        MachineInst::Load { dst, op2 } => {
+            let (dst, width) = validate_preg(dst);
+
+            let (opcode, operand_prefix) = match width {
+                OperandWidth::Byte => (0x8a, false),
+                OperandWidth::Word => (0x8b, true),
+                OperandWidth::Dword
+                | OperandWidth::Qword => (0x8b, false),
+            };
+
+            assemble_reg_mem_modrm(width, operand_prefix, dst, op2, opcode, buffer);
+        },
+        MachineInst::LoadImm { dst, op2 } => todo!(),
+        MachineInst::StoreReg { op1, op2 } => todo!(),
+        MachineInst::StoreImm { op1, op2 } => todo!(),
+        MachineInst::ZeroExtend { dst, op2 } => todo!(),
+        MachineInst::SignExtend { dst, op2 } => todo!(),
+        MachineInst::Push { op1 } => {
+            let (op1, width) = validate_preg(op1);
+            assert!(width != OperandWidth::Byte && width != OperandWidth::Dword);
+
+            let operand_prefix = width == OperandWidth::Word;
+            let opcode: u8 = 0x50;
+
+            assemble_reg_opcode(width, operand_prefix, op1, opcode, buffer);
+        },
+        MachineInst::PushImm { op1 } => todo!(),
+        MachineInst::Pop { dst } => todo!(),
+        MachineInst::Jump { target } => todo!(),
+        MachineInst::Call { target } => todo!(),
+        MachineInst::CallIndirect { target } => {
+            let (target, width) = validate_preg(target);
+            assert!(width == OperandWidth::Qword);
+
+            let mut rex = REX::default();
+            if target.is_extended_reg() {
+                rex.b = true;
+            }
+
+            let opcode = 0xff;
+            
+            if !rex.is_empty() {
+                buffer.push(rex.into());
+            }
+            buffer.push(opcode);
+        },
+        MachineInst::Ret => {
+            buffer.push(0xc3);
+        },
+        MachineInst::MulRegToReg { dst, op1, op2 } => todo!(),
+        MachineInst::MulMemToReg { dst, op1, op2 } => todo!(),
+        MachineInst::MulRegWithImm { dst, op1, op2 } => {
+            
+        },
+        MachineInst::MulMemWithImm { dst, op1, op2 } => todo!(),
+        MachineInst::UDivByReg { dst_quo, dst_rem, op1 } => todo!(),
+        MachineInst::UDivByMem { dst_quo, dst_rem, op1 } => todo!(),
+        MachineInst::SDivByReg { dst_quo, dst_rem, op1 } => todo!(),
+        MachineInst::SDivByMem { dst_quo, dst_rem, op1 } => todo!(),
+        MachineInst::PrepareDiv { width } => todo!(),
+        MachineInst::AndRegToReg { dst, op1, op2 } => todo!(),
+        MachineInst::OrRegToReg { dst, op1, op2 } => todo!(),
+        MachineInst::XorRegToReg { dst, op1, op2 } => todo!(),
+        MachineInst::NotReg { dst, op1 } => todo!(),
+        MachineInst::TestRegWithImm { op1, op2 } => todo!(),
+        MachineInst::CmpRegWithImm { op1, op2 } => todo!(),
+        MachineInst::JmpWithCond { cond, target } => todo!(),
+    }
 }

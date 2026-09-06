@@ -3,9 +3,9 @@
 //!   (ideally, those which are three-address like `lea`)
 //! - Prior to register allocation, MIR remains in three-address form with block params (i.e. φ-nodes).
 //!   It is the responsibility of the register allocator to eliminate φ's and tie one the `srcA` + `dst` together
-//!   to be compliant with x86's two-address encoding
+//!   into the same physical register to be compliant with x86's two-address encoding
 //! - Lowering CIR to MIR requires lowering 
-//!   1. calling convention, which is done by reading /writing SSA values from physical registers in prologue / epilogue
+//!   1. calling convention, which is done by reading / writing SSA values from physical registers in prologue / epilogue
 //!      as well as around function calls (in addition to `push`ing and `pop`ing values as well for functions with many args)
 //!   2. stack usage + ABI requirements
 //! 
@@ -19,7 +19,8 @@ use cake_util::make_type_idx;
 use crate::cir::Type;
 
 #[allow(non_camel_case_types, reason = "x86 convention")]
-enum PhysReg {
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) enum PhysReg {
     rax,
     rbx,
     rcx,
@@ -38,42 +39,114 @@ enum PhysReg {
     r15,
 }
 
+impl PhysReg {
+    pub(crate) fn is_extended_reg(self) -> bool {
+        match self {
+            PhysReg::r8 | PhysReg::r9 | PhysReg::r10 | PhysReg::r11 | 
+            PhysReg::r12 | PhysReg::r13 | PhysReg::r14 | PhysReg::r15 => true,
+            _ => false
+        }
+    }
+    
+    /// Encoding of the physical register in ModR/M or SIB bytes. Needs to be combined with
+    /// REX prefix for r8-r15
+    pub(crate) fn encoding(self) -> u8 {
+        match self {
+            PhysReg::rax => 0b000,
+            PhysReg::rbx => 0b011,
+            PhysReg::rcx => 0b001,
+            PhysReg::rdx => 0b010,
+            PhysReg::rsi => 0b110,
+            PhysReg::rdi => 0b111,
+            PhysReg::rbp => 0b101,
+            PhysReg::rsp => 0b100,
+            PhysReg::r8  => 0b000,
+            PhysReg::r9  => 0b001,
+            PhysReg::r10 => 0b010,
+            PhysReg::r11 => 0b011,
+            PhysReg::r12 => 0b100,
+            PhysReg::r13 => 0b101,
+            PhysReg::r14 => 0b110,
+            PhysReg::r15 => 0b111,
+        }
+    }
+
+    /// True if encoding this register as an operand requires the REX prefix,
+    /// (i.e. SPL, BPL, SIL, DIL, since they would otherwise be interpreted as AH, CH, DH, BH)
+    pub(crate) fn needs_rex(self, width: OperandWidth) -> bool {
+        if width != OperandWidth::Byte {
+            return false;
+        }
+
+        return match self {
+            PhysReg::rsp | PhysReg::rbp | PhysReg::rsi | PhysReg::rdi => true,
+            _ => false
+        }
+    }
+}
+
 struct VirtualReg {
     
 }
 
-enum OperandWidth {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperandWidth {
     Byte,
     Word,
     Dword,
     Qword
 }
 
-enum Reg {
+pub(crate) enum Reg {
     VReg(VirtualReg, OperandWidth),
     PReg(PhysReg, OperandWidth)
 }
 
-enum MemOperand {
-    PcRelative {
-        disp: u32,
-        width: OperandWidth
-    },
-    Normal {
-        base: Reg,
-        index: Reg,
-        scale: u32,
-        disp: u32,
-        width: OperandWidth
-    },
+pub(crate) enum MemOperandDisplacement {
+    Disp32(u32),
+    Disp8(u8),
+    Zero
 }
 
-struct ImmediateOperand {
+pub(crate) enum MemOperandScale {
+    One,
+    Two,
+    Four,
+    Eight
+}
+
+// the width field roughly corresponds to "BYTE PTR" / "DWORD PTR" / "QWORD PTR" in assembler
+// syntax; it is not used unless the memory operand is the destination of some instruction 
+pub(crate) enum MemOperand {
+    PcRelative {
+        disp: MemOperandDisplacement,
+        width: OperandWidth
+    },
+    // index is not allowed to be rsp or r12, since that r/m is used for SIB
+    Full {
+        base: Reg,
+        index: Reg,
+        scale: MemOperandScale,
+        disp: MemOperandDisplacement,
+        width: OperandWidth
+    },
+    BasePlusDisp {
+        base: Reg,
+        disp: MemOperandDisplacement,
+        width: OperandWidth
+    },
+    AbsoluteDisp {
+        disp: MemOperandDisplacement,
+        width: OperandWidth
+    }
+}
+
+pub(crate) struct ImmediateOperand {
     value: u64,
     width: OperandWidth,
 }
 
-enum Condition {
+pub(crate) enum Condition {
     // overflow
     O,
     No,
@@ -98,7 +171,7 @@ enum Condition {
 /// MachineInst are the opcodes of MIR, and correspond directly to a single x86 opcode + addressing mode selection
 /// The width of the operation (usually) comes from the OperandWidth field of its registers / memory operands, 
 /// except for sign-extend / zero-extend. `ImmediateOperand`s are sign-extended if not full-width.
-enum MachineInst {
+pub(crate) enum MachineInst {
     // lea %dst [%op2]
     Lea {
         dst: Reg,
@@ -175,6 +248,9 @@ enum MachineInst {
     Push {
         op1: Reg
     },
+    PushImm {
+        op1: ImmediateOperand,
+    },
     // pop %dst
     Pop {
         dst: Reg
@@ -187,7 +263,10 @@ enum MachineInst {
 
     // this will always be encoded as `call rel32` (RIP-relative addressing) due to mcmodel assumption
     Call {
-        // TODO: relocation
+        target: MachineFunctionRef,
+    },
+    CallIndirect {
+        target: Reg
     },
     // ret
     Ret,
@@ -301,5 +380,7 @@ make_type_idx!(MachineBlockRef, MachineBlock);
 struct MachineFunction {
     insts: Vec<MachineInst>,
 }
+
+make_type_idx!(MachineFunctionRef, MachineFunction);
 
 mod cir2mir;
