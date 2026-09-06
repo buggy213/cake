@@ -85,6 +85,7 @@ impl PhysReg {
     }
 }
 
+#[derive(Clone, Copy)]
 struct VirtualReg {
     
 }
@@ -97,17 +98,31 @@ pub(crate) enum OperandWidth {
     Qword
 }
 
+
+#[derive(Clone, Copy)]
 pub(crate) enum Reg {
     VReg(VirtualReg, OperandWidth),
     PReg(PhysReg, OperandWidth)
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum MemOperandDisplacement {
     Disp32(u32),
     Disp8(u8),
     Zero
 }
 
+impl MemOperandDisplacement {
+    pub(crate) fn as_u32(self) -> u32 {
+        match self {
+            MemOperandDisplacement::Disp32(v) => v,
+            MemOperandDisplacement::Disp8(v) => v as u32,
+            MemOperandDisplacement::Zero => 0u32,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum MemOperandScale {
     One,
     Two,
@@ -115,8 +130,20 @@ pub(crate) enum MemOperandScale {
     Eight
 }
 
+impl MemOperandScale {
+    pub(crate) fn as_u32(self) -> u32 {
+        match self {
+            MemOperandScale::One => 1,
+            MemOperandScale::Two => 2,
+            MemOperandScale::Four => 4,
+            MemOperandScale::Eight => 8,
+        }
+    }
+}
+
 // the width field roughly corresponds to "BYTE PTR" / "DWORD PTR" / "QWORD PTR" in assembler
 // syntax; it is not used unless the memory operand is the destination of some instruction 
+#[derive(Clone, Copy)]
 pub(crate) enum MemOperand {
     PcRelative {
         disp: MemOperandDisplacement,
@@ -138,6 +165,17 @@ pub(crate) enum MemOperand {
     AbsoluteDisp {
         disp: MemOperandDisplacement,
         width: OperandWidth
+    }
+}
+
+impl MemOperand {
+    pub(crate) fn width(&self) -> OperandWidth {
+        match self {
+            MemOperand::PcRelative { width, .. }
+            | MemOperand::Full { width, .. }
+            | MemOperand::BasePlusDisp { width, .. }
+            | MemOperand::AbsoluteDisp { width, .. } => *width,
+        }
     }
 }
 
