@@ -704,8 +704,16 @@ fn assemble_inst(
 mod tests {
     use iced_x86::code_asm::CodeAssembler;
 
-    use crate::{codegen::x64_backend::assemble_inst, mir::{ImmediateOperand, MachineInst, MemOperand, MemOperandDisplacement, OperandWidth, PhysReg, Reg, phys_regs::*}};
+    use crate::{
+        codegen::x64_backend::assemble_inst, 
+        mir::{
+            ImmediateOperand, MachineInst, MemOperand, MemOperandDisplacement, 
+            OperandWidth, PhysReg, Reg, 
+            phys_regs::*
+        }
+    };
 
+    // Basic smoke test for function encoding
     #[test]
     fn test_basic() {
         let mut assembler = CodeAssembler::new(64)
@@ -750,8 +758,12 @@ mod tests {
         }
 
         let bytes = assembler.assemble(0).expect("failed to assemble instructions");
-        for b in bytes {
-            print!("{:02X} ", b);
-        }
+        let expected_bytes = vec![
+            0x55, 0x48, 0x89, 0xE5, 0xC7, 0x85, 0xFC, 0x00, 0x00, 0x00, 0x02, 0x00, 
+            0x00, 0x00, 0x8B, 0x85, 0xFC, 0x00, 0x00, 0x00, 0x81, 0xC0, 0x02, 0x00, 
+            0x00, 0x00, 0x5D, 0xC3,
+        ];
+
+        assert_eq!(bytes, expected_bytes);
     }
 }

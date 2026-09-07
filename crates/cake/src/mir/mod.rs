@@ -11,7 +11,7 @@
 //! 
 //! 
 //! In addition, we make a few assumptions in the backend:
-//! - mcmodel=small, i.e. all data and code fits within 2 GiB, so that rel32 addressing always works 
+//! - mcmodel=small, i.e. all data and code fits within 2 GiB, so that rel32 addressing always works
 //! 
 
 use cake_util::make_type_idx;
@@ -97,10 +97,71 @@ pub(crate) mod phys_regs {
 
     pub(crate) const rax: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Qword);
     pub(crate) const rbx: Reg = Reg::PReg(PhysReg::rbx, OperandWidth::Qword);
+    pub(crate) const rcx: Reg = Reg::PReg(PhysReg::rcx, OperandWidth::Qword);
+    pub(crate) const rdx: Reg = Reg::PReg(PhysReg::rdx, OperandWidth::Qword);
+    pub(crate) const rsi: Reg = Reg::PReg(PhysReg::rsi, OperandWidth::Qword);
+    pub(crate) const rdi: Reg = Reg::PReg(PhysReg::rdi, OperandWidth::Qword);
     pub(crate) const rsp: Reg = Reg::PReg(PhysReg::rsp, OperandWidth::Qword);
     pub(crate) const rbp: Reg = Reg::PReg(PhysReg::rbp, OperandWidth::Qword);
+    pub(crate) const r8: Reg = Reg::PReg(PhysReg::r8, OperandWidth::Qword);
+    pub(crate) const r9: Reg = Reg::PReg(PhysReg::r9, OperandWidth::Qword);
+    pub(crate) const r10: Reg = Reg::PReg(PhysReg::r10, OperandWidth::Qword);
+    pub(crate) const r11: Reg = Reg::PReg(PhysReg::r11, OperandWidth::Qword);
+    pub(crate) const r12: Reg = Reg::PReg(PhysReg::r12, OperandWidth::Qword);
+    pub(crate) const r13: Reg = Reg::PReg(PhysReg::r13, OperandWidth::Qword);
+    pub(crate) const r14: Reg = Reg::PReg(PhysReg::r14, OperandWidth::Qword);
+    pub(crate) const r15: Reg = Reg::PReg(PhysReg::r15, OperandWidth::Qword);
+
     pub(crate) const eax: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Dword);
-    // TODO: widths + mnemonics
+    pub(crate) const ebx: Reg = Reg::PReg(PhysReg::rbx, OperandWidth::Dword);
+    pub(crate) const ecx: Reg = Reg::PReg(PhysReg::rcx, OperandWidth::Dword);
+    pub(crate) const edx: Reg = Reg::PReg(PhysReg::rdx, OperandWidth::Dword);
+    pub(crate) const esi: Reg = Reg::PReg(PhysReg::rsi, OperandWidth::Dword);
+    pub(crate) const edi: Reg = Reg::PReg(PhysReg::rdi, OperandWidth::Dword);
+    pub(crate) const esp: Reg = Reg::PReg(PhysReg::rsp, OperandWidth::Dword);
+    pub(crate) const ebp: Reg = Reg::PReg(PhysReg::rbp, OperandWidth::Dword);
+    pub(crate) const r8d: Reg = Reg::PReg(PhysReg::r8, OperandWidth::Dword);
+    pub(crate) const r9d: Reg = Reg::PReg(PhysReg::r9, OperandWidth::Dword);
+    pub(crate) const r10d: Reg = Reg::PReg(PhysReg::r10, OperandWidth::Dword);
+    pub(crate) const r11d: Reg = Reg::PReg(PhysReg::r11, OperandWidth::Dword);
+    pub(crate) const r12d: Reg = Reg::PReg(PhysReg::r12, OperandWidth::Dword);
+    pub(crate) const r13d: Reg = Reg::PReg(PhysReg::r13, OperandWidth::Dword);
+    pub(crate) const r14d: Reg = Reg::PReg(PhysReg::r14, OperandWidth::Dword);
+    pub(crate) const r15d: Reg = Reg::PReg(PhysReg::r15, OperandWidth::Dword);
+
+    pub(crate) const ax: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Word);
+    pub(crate) const bx: Reg = Reg::PReg(PhysReg::rbx, OperandWidth::Word);
+    pub(crate) const cx: Reg = Reg::PReg(PhysReg::rcx, OperandWidth::Word);
+    pub(crate) const dx: Reg = Reg::PReg(PhysReg::rdx, OperandWidth::Word);
+    pub(crate) const si: Reg = Reg::PReg(PhysReg::rsi, OperandWidth::Word);
+    pub(crate) const di: Reg = Reg::PReg(PhysReg::rdi, OperandWidth::Word);
+    pub(crate) const sp: Reg = Reg::PReg(PhysReg::rsp, OperandWidth::Word);
+    pub(crate) const bp: Reg = Reg::PReg(PhysReg::rbp, OperandWidth::Word);
+    pub(crate) const r8w: Reg = Reg::PReg(PhysReg::r8, OperandWidth::Word);
+    pub(crate) const r9w: Reg = Reg::PReg(PhysReg::r9, OperandWidth::Word);
+    pub(crate) const r10w: Reg = Reg::PReg(PhysReg::r10, OperandWidth::Word);
+    pub(crate) const r11w: Reg = Reg::PReg(PhysReg::r11, OperandWidth::Word);
+    pub(crate) const r12w: Reg = Reg::PReg(PhysReg::r12, OperandWidth::Word);
+    pub(crate) const r13w: Reg = Reg::PReg(PhysReg::r13, OperandWidth::Word);
+    pub(crate) const r14w: Reg = Reg::PReg(PhysReg::r14, OperandWidth::Word);
+    pub(crate) const r15w: Reg = Reg::PReg(PhysReg::r15, OperandWidth::Word);
+
+    pub(crate) const al: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Byte);
+    pub(crate) const bl: Reg = Reg::PReg(PhysReg::rbx, OperandWidth::Byte);
+    pub(crate) const cl: Reg = Reg::PReg(PhysReg::rcx, OperandWidth::Byte);
+    pub(crate) const dl: Reg = Reg::PReg(PhysReg::rdx, OperandWidth::Byte);
+    pub(crate) const sil: Reg = Reg::PReg(PhysReg::rsi, OperandWidth::Byte);
+    pub(crate) const dil: Reg = Reg::PReg(PhysReg::rdi, OperandWidth::Byte);
+    pub(crate) const spl: Reg = Reg::PReg(PhysReg::rsp, OperandWidth::Byte);
+    pub(crate) const bpl: Reg = Reg::PReg(PhysReg::rbp, OperandWidth::Byte);
+    pub(crate) const r8b: Reg = Reg::PReg(PhysReg::r8, OperandWidth::Byte);
+    pub(crate) const r9b: Reg = Reg::PReg(PhysReg::r9, OperandWidth::Byte);
+    pub(crate) const r10b: Reg = Reg::PReg(PhysReg::r10, OperandWidth::Byte);
+    pub(crate) const r11b: Reg = Reg::PReg(PhysReg::r11, OperandWidth::Byte);
+    pub(crate) const r12b: Reg = Reg::PReg(PhysReg::r12, OperandWidth::Byte);
+    pub(crate) const r13b: Reg = Reg::PReg(PhysReg::r13, OperandWidth::Byte);
+    pub(crate) const r14b: Reg = Reg::PReg(PhysReg::r14, OperandWidth::Byte);
+    pub(crate) const r15b: Reg = Reg::PReg(PhysReg::r15, OperandWidth::Byte);
 }
 
 #[derive(Clone, Copy)]

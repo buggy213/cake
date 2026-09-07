@@ -151,5 +151,5 @@ macro_rules! add_additional_index {
     };
 }
 
-mod index_vec;
+pub mod index_vec;
 pub use index_vec::{IndexVec, IndexSlice, Idx, SmallIndexVec};

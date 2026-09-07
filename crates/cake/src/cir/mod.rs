@@ -44,8 +44,6 @@ impl Module {
         self.signatures.push(signature);
         let func = Function {
             name,
-            
-            external_signatures: index_vec![],
             definition: None,
         };
 
@@ -55,7 +53,6 @@ impl Module {
     pub(crate) fn define_function(&'_ mut self, func: FuncRef) -> FunctionBuilder<'_> {
         let Function { 
             name: _, 
-            external_signatures, 
             definition 
         } = &mut self.functions[func];
 
@@ -72,14 +69,14 @@ impl Module {
             value_vecs: index_vec![],
             inst_uses: index_vec![],
             inst_block: index_vec![],
-            blocks: index_vec![entry_block], 
+            blocks: index_vec![entry_block],
+            external_signatures: index_vec![],
             stack_slots: index_vec![]
         });
 
         FunctionBuilder {
             func: definition.as_mut().unwrap(),
             current_block: BlockRef(0),
-            sigs: external_signatures,
 
             module_sigs: &self.signatures,
             module_data: &mut self.data,
@@ -218,8 +215,6 @@ make_type_idx!(FuncRef, Function);
 #[derive(Debug)]
 pub(crate) struct Function {
     pub(crate) name: String,
-    pub(crate) external_signatures: IndexVec<SigRef, Signature>,
-    
     pub(crate) definition: Option<FunctionDefinition> 
 }
 
@@ -251,6 +246,7 @@ pub(crate) struct FunctionDefinition {
     pub(crate) blocks: IndexVec<BlockRef, Block>,
 
     pub(crate) stack_slots: IndexVec<StackSlotRef, StackSlot>,
+    pub(crate) external_signatures: IndexVec<SigRef, Signature>,
 }
 
 impl FunctionDefinition {
@@ -271,7 +267,6 @@ impl FunctionDefinition {
     // Low-level functions to manipulate the def-use chains directly, primarily meant for DCE.
     // Other passes should use RAUW (replace-all-uses-with), RO (replace-operand), etc. to deal
     // with the bookkeeping.
-
     fn uses_mut(&mut self, def: Value) -> &mut UseVec {
         match def {
             Value::Inst(inst_ref) => {
@@ -301,7 +296,14 @@ impl FunctionDefinition {
         use_vec.push(use_);
     }
 
+    /// Returns a BlockRef to the entry block (for now, this is always just index 0 by construction)
+    pub(crate) fn entry_block(&self) -> BlockRef {
+        let Some((idx, _)) = self.blocks.iter().enumerate().find(|(_, b)| b.is_entry) else {
+            panic!("function has no entry block")
+        };
 
+        BlockRef(idx as u32)
+    }
 }
 
 make_type_idx!(StackSlotRef, StackSlot);
@@ -315,7 +317,6 @@ pub(crate) struct StackSlot {
 pub(crate) struct FunctionBuilder<'func> {
     func: &'func mut FunctionDefinition,
     current_block: BlockRef,
-    sigs: &'func mut IndexVec<SigRef, Signature>,
 
     module_sigs: &'func IndexSlice<FuncRef, [Signature]>,
     module_data: &'func mut IndexVec<DataRef, Data>
@@ -355,7 +356,7 @@ impl<'func> FunctionBuilder<'func> {
             inst_block: &mut self.func.inst_block,
             value_vecs: &mut self.func.value_vecs,
 
-            sigs: self.sigs,
+            sigs: &self.func.external_signatures,
             module_sigs: self.module_sigs,
         }
     }
@@ -741,6 +742,14 @@ impl Block {
         self.block_arg_uses.push(smallvec![]);
         self.block_arg_order.push(arg_ref);
         arg_ref
+    }
+
+    /// Returns the successors of this basic block; panics if last instruction does not exist
+    /// or is not a terminator
+    pub(crate) fn successors(&self, insts: &IndexSlice<InstRef, [Inst]>) -> impl Iterator<Item = BlockRef> {
+        let &terminator_ref = self.inst_refs.borrow().last().unwrap();
+
+        insts[terminator_ref].edges().map(|e| e.target)
     }
 }
 
@@ -1295,7 +1304,7 @@ impl Inst {
 
         match self {
             Inst::BranchIf { cond: _, con, con_args, alt, alt_args } => {
-                assert!(edge_idx < 2);
+                assert!(edge_idx == 0 || edge_idx == 1);
                 match edge_idx {
                     0 => Edge { target: *con, args: *con_args, args_kind: 1 },
                     1 => Edge { target: *alt, args: *alt_args, args_kind: 2 },
@@ -1311,6 +1320,21 @@ impl Inst {
             }
             _ => unreachable!()
         }
+    }
+
+    /// Returns info about all CFG edges leaving this (terminator) instruction.
+    /// Panics for non-terminator instructions
+    pub(crate) fn edges(&self) -> impl Iterator<Item = Edge> {
+        assert!(self.is_terminator());
+        
+        let arity = match self {
+            Inst::BranchIf { .. } => 2,
+            Inst::Jump { .. } => 1,
+            _ => unreachable!()
+        };
+
+        let edges: SmallVec<[Edge; 3]> = (0..arity).map(|i| self.edge(i)).collect();
+        edges.into_iter()
     }
 }
 
@@ -1594,6 +1618,11 @@ pub(crate) mod verifier;
 
 // Optimization passes
 pub(crate) mod dce;
+pub(crate) mod compact;
+
+// Analysis passes
+pub(crate) mod post_order;
+pub(crate) mod dom_tree;
 
 #[cfg(test)]
 mod test {

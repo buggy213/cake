@@ -854,7 +854,7 @@ fn lower_expr(
             let func_signature: SigRef = match func_ptr_type.as_pointee() {
                 Some(CType::FunctionTypeRef { symtab_idx }) => {
                     let callee_sig = function_type_signature(&ast.symtab, *symtab_idx);
-                    SigRef::from_push2(func_builder.sigs, callee_sig)
+                    SigRef::from_push2(&mut func_builder.func.external_signatures, callee_sig)
                 },
                 _ => unreachable!("resolver enforces pointer to function")
             };

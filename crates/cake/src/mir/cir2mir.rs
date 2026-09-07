@@ -11,8 +11,17 @@
 //!                  %3
 //! Assuming that:
 //! - we are matching %4
-//! - %1, %2, and %3 do not have any other uses
+//! - %2 does not have any other uses
 //! Then, it would be safe to lower this to AddMemToReg, since nothing else needs %2, 
-//! so it's ok to fold the memory load in
+//! so it's ok to fold the memory load in.
+//!
+//! Instruction selection is performed globally by iterating over basic blocks in post-order
+//! and selecting uses before defs in a dataflow-like fashion. This is similar to
+//! LLVM's GlobalISel
 
+use crate::cir::{Function, FunctionDefinition};
+
+fn select_function(function: &FunctionDefinition) {
+    
+}
 

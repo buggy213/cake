@@ -16,9 +16,7 @@ pub struct IndexVec<I: Idx, T> {
 impl<I: Idx, T> IndexVec<I, T> {
     pub fn new() -> Self {
         Self { inner: Vec::new(), _unused: PhantomData }
-    }
-
-    // TODO: from_elem needs work
+    } 
 
     pub fn len(&self) -> usize {
         self.inner.len()
@@ -45,6 +43,12 @@ impl<I: Idx, T> IndexVec<I, T> {
     pub fn from_vec(vec: Vec<T>) -> Self {
         Self { inner: vec, _unused: PhantomData }
     }
+}
+
+/// Helper function for the `index_vec!` macro
+pub fn from_elem<I: Idx, T>(elem: T, n: usize) -> IndexVec<I, T>
+    where T: Clone {
+    IndexVec { inner: std::vec::from_elem(elem, n), _unused: PhantomData }
 }
 
 impl<I: Idx, T> Index<I> for IndexVec<I, T> {
@@ -120,7 +124,7 @@ macro_rules! index_vec {
         $crate::IndexVec::new()
     );
     ($elem:expr; $n:expr) => (
-        $crate::IndexVec::from_elem($elem, $n)
+        $crate::index_vec::from_elem($elem, $n)
     );
     ($($x:expr),+ $(,)?) => (
         $crate::IndexVec::from_vec(vec![$($x),+])
