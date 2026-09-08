@@ -14,9 +14,9 @@
 //! - mcmodel=small, i.e. all data and code fits within 2 GiB, so that rel32 addressing always works
 //! 
 
-use cake_util::make_type_idx;
+use cake_util::{IndexVec, make_type_idx};
 
-use crate::cir::Type;
+use crate::cir::{self, Type};
 
 #[allow(non_camel_case_types, reason = "x86 convention")]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -73,8 +73,9 @@ impl PhysReg {
 }
 
 #[derive(Clone, Copy)]
-struct VirtualReg {
-    
+pub(crate) struct VirtualReg {
+    id: u32,
+    width: OperandWidth
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,7 +89,7 @@ pub(crate) enum OperandWidth {
 
 #[derive(Clone, Copy)]
 pub(crate) enum Reg {
-    VReg(VirtualReg, OperandWidth),
+    VReg(VirtualReg),
     PReg(PhysReg, OperandWidth)
 }
 
@@ -208,7 +209,8 @@ pub(crate) enum MemOperand {
         disp: MemOperandDisplacement,
         width: OperandWidth
     },
-    // index is not allowed to be rsp or r12, since that r/m is used for SIB
+    // index is not allowed to be physical register rsp or r12, 
+    // this is enforced by register allocator
     Full {
         base: Reg,
         index: Reg,
@@ -241,6 +243,26 @@ impl MemOperand {
 pub(crate) struct ImmediateOperand {
     pub(crate) value: u64,
     pub(crate) width: OperandWidth,
+}
+
+/// x86-64 has no support for floating-point immediates, so fail the conversion if we see one
+struct ImmediateOperandError;
+
+impl TryFrom<cir::Constant> for ImmediateOperand {
+    type Error = ImmediateOperandError;
+
+    fn try_from(value: cir::Constant) -> Result<Self, Self::Error> {
+        let imm = match value {
+            cir::Constant::i8(v) => ImmediateOperand { value: v as u64, width: OperandWidth::Byte },
+            cir::Constant::i16(v) => ImmediateOperand { value: v as u64, width: OperandWidth::Word },
+            cir::Constant::i32(v) => ImmediateOperand { value: v as u64, width: OperandWidth::Dword },
+            cir::Constant::i64(v) => ImmediateOperand { value: v as u64, width: OperandWidth::Qword },
+            cir::Constant::f32(_) => return Err(ImmediateOperandError),
+            cir::Constant::f64(_) => return Err(ImmediateOperandError),
+        };
+
+        Ok(imm)
+    }
 }
 
 pub(crate) enum Condition {
@@ -329,6 +351,10 @@ pub(crate) enum MachineInst {
     Mov {
         dst: Reg,
         op2: Reg
+    },
+    MovImm {
+        dst: Reg,
+        op2: ImmediateOperand
     },
     Xchg {
         op1: Reg,
@@ -472,8 +498,6 @@ pub(crate) enum MachineInst {
         cond: Condition,
         target: MachineBlockRef,
     },
-
-
 }
 
 make_type_idx!(MachineInstRef, MachineInst);
@@ -485,7 +509,10 @@ struct MachineBlock {
 make_type_idx!(MachineBlockRef, MachineBlock);
 
 struct MachineFunction {
-    insts: Vec<MachineInst>,
+    insts: IndexVec<MachineInstRef, MachineInst>,
+
+    // vreg_def: IndexVec<??, MachineInstRef>
+    // vreg_uses: IndexVec<??, MachineUseVec>
 }
 
 make_type_idx!(MachineFunctionRef, MachineFunction);

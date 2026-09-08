@@ -37,7 +37,7 @@ impl Iterator for PostOrder<'_> {
     }
 }
 
-fn post_order(function: &FunctionDefinition) -> impl Iterator<Item = BlockRef> {
+pub(crate) fn post_order(function: &FunctionDefinition) -> impl Iterator<Item = BlockRef> {
     PostOrder {
         func: function,
         stack: vec![function.entry_block()],

@@ -359,7 +359,21 @@ fn assemble_inst(
             let dst: Register = dst.to_register(width);
             let src: Register = op2.to_register(width);
             return assembler.add_instruction(Instruction::with2(code, dst, src)?)
-        }
+        },
+        MachineInst::MovImm { dst, op2 } => {
+            let (dst, width) = validate_preg(dst);
+
+            let code = match width {
+                OperandWidth::Byte => Code::Mov_r8_imm8,
+                OperandWidth::Word => Code::Mov_r16_imm16,
+                OperandWidth::Dword => Code::Mov_r32_imm32,
+                OperandWidth::Qword => Code::Mov_r64_imm64,
+            };
+
+            let dst: Register = dst.to_register(width);
+            let imm: u64 = op2.value;
+            return assembler.add_instruction(Instruction::with2(code, dst, imm)?);
+        },
         MachineInst::Xchg { op1, op2 } => {
             let (op1, op2, width) = validate_pregs(op1, op2);
             
