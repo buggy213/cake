@@ -12,7 +12,8 @@
 //! 
 //! In addition, we make a few assumptions in the backend:
 //! - mcmodel=small, i.e. all data and code fits within 2 GiB, so that rel32 addressing always works
-//! 
+//! - AVX is available (pretty much every x86-64 CPU made in the last 15 years supports it), so
+//!   that the three-address instruction encodings are available
 
 use cake_util::{IndexVec, make_type_idx};
 
@@ -37,132 +38,121 @@ pub(crate) enum PhysReg {
     r13,
     r14,
     r15,
+
+    xmm0,
+    xmm1,
+    xmm2,
+    xmm3,
+    xmm4,
+    xmm5,
+    xmm6,
+    xmm7,
+    xmm8,
+    xmm9,
+    xmm10,
+    xmm11,
+    xmm12,
+    xmm13,
+    xmm14,
+    xmm15,
+
+    /* 
+    ymm0,
+    ymm1,
+    ymm2,
+    ymm3,
+    ymm4,
+    ymm5,
+    ymm6,
+    ymm7,
+    ymm8,
+    ymm9,
+    ymm10,
+    ymm11,
+    ymm12,
+    ymm13,
+    ymm14,
+    ymm15
+    */
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GprOperandWidth {
+    Byte,
+    Word,
+    Dword,
+    Qword,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SseOperandWidth {
+    Single,
+    Double
+}
+
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegClass {
+    // all gprs
+    Gpr,
+
+    // all gprs except rsp / r12, as these cannot be used as index for memory addressing
+    GprNoSp,
+
+    // xmm/ymm/zmm
+    Sse
 }
 
 impl PhysReg {
-    pub(crate) fn is_extended_reg(self) -> bool {
-        match self {
-            PhysReg::r8 | PhysReg::r9 | PhysReg::r10 | PhysReg::r11 | 
-            PhysReg::r12 | PhysReg::r13 | PhysReg::r14 | PhysReg::r15 => true,
-            _ => false
+    pub(crate) fn reg_class(self) -> RegClass {
+        use PhysReg::*;
+
+        if matches!(
+            self,
+            xmm0 | xmm1 | xmm2  | xmm3  | xmm4  | xmm5  | xmm6  | xmm7  |
+            xmm8 | xmm9 | xmm10 | xmm11 | xmm12 | xmm13 | xmm14 | xmm15
+        ) {
+            return RegClass::Sse;
         }
-    }
-    
-    /// Encoding of the physical register in ModR/M or SIB bytes. Needs to be combined with
-    /// REX prefix for r8-r15
-    pub(crate) fn encoding(self) -> u8 {
-        match self {
-            PhysReg::rax => 0b000,
-            PhysReg::rbx => 0b011,
-            PhysReg::rcx => 0b001,
-            PhysReg::rdx => 0b010,
-            PhysReg::rsi => 0b110,
-            PhysReg::rdi => 0b111,
-            PhysReg::rbp => 0b101,
-            PhysReg::rsp => 0b100,
-            PhysReg::r8  => 0b000,
-            PhysReg::r9  => 0b001,
-            PhysReg::r10 => 0b010,
-            PhysReg::r11 => 0b011,
-            PhysReg::r12 => 0b100,
-            PhysReg::r13 => 0b101,
-            PhysReg::r14 => 0b110,
-            PhysReg::r15 => 0b111,
+
+        if matches!(self, rsp | r12) {
+            return RegClass::Gpr;
         }
+
+        RegClass::GprNoSp
     }
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct VirtualReg {
     id: u32,
-    width: OperandWidth
+    class: RegClass,
 }
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OperandWidth {
-    Byte,
-    Word,
-    Dword,
-    Qword
-}
-
 
 #[derive(Clone, Copy)]
 pub(crate) enum Reg {
     VReg(VirtualReg),
-    PReg(PhysReg, OperandWidth)
+    PReg(PhysReg)
 }
 
+/// Shorthands for constructing Reg::PReg in tests
 pub(crate) mod phys_regs {
-    use crate::mir::{OperandWidth, PhysReg, Reg};
+    use crate::mir::{PhysReg, Reg};
 
-    pub(crate) const rax: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Qword);
-    pub(crate) const rbx: Reg = Reg::PReg(PhysReg::rbx, OperandWidth::Qword);
-    pub(crate) const rcx: Reg = Reg::PReg(PhysReg::rcx, OperandWidth::Qword);
-    pub(crate) const rdx: Reg = Reg::PReg(PhysReg::rdx, OperandWidth::Qword);
-    pub(crate) const rsi: Reg = Reg::PReg(PhysReg::rsi, OperandWidth::Qword);
-    pub(crate) const rdi: Reg = Reg::PReg(PhysReg::rdi, OperandWidth::Qword);
-    pub(crate) const rsp: Reg = Reg::PReg(PhysReg::rsp, OperandWidth::Qword);
-    pub(crate) const rbp: Reg = Reg::PReg(PhysReg::rbp, OperandWidth::Qword);
-    pub(crate) const r8: Reg = Reg::PReg(PhysReg::r8, OperandWidth::Qword);
-    pub(crate) const r9: Reg = Reg::PReg(PhysReg::r9, OperandWidth::Qword);
-    pub(crate) const r10: Reg = Reg::PReg(PhysReg::r10, OperandWidth::Qword);
-    pub(crate) const r11: Reg = Reg::PReg(PhysReg::r11, OperandWidth::Qword);
-    pub(crate) const r12: Reg = Reg::PReg(PhysReg::r12, OperandWidth::Qword);
-    pub(crate) const r13: Reg = Reg::PReg(PhysReg::r13, OperandWidth::Qword);
-    pub(crate) const r14: Reg = Reg::PReg(PhysReg::r14, OperandWidth::Qword);
-    pub(crate) const r15: Reg = Reg::PReg(PhysReg::r15, OperandWidth::Qword);
+    macro_rules! decl_regs {
+        ($name:ident) => {
+            pub(crate) const $name: Reg = Reg::PReg(PhysReg::$name);
+        };
+        ($name:ident, $($rest:ident),*) => {
+            decl_regs!($name);
+            decl_regs!($($rest),*);
+        };
+    }
 
-    pub(crate) const eax: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Dword);
-    pub(crate) const ebx: Reg = Reg::PReg(PhysReg::rbx, OperandWidth::Dword);
-    pub(crate) const ecx: Reg = Reg::PReg(PhysReg::rcx, OperandWidth::Dword);
-    pub(crate) const edx: Reg = Reg::PReg(PhysReg::rdx, OperandWidth::Dword);
-    pub(crate) const esi: Reg = Reg::PReg(PhysReg::rsi, OperandWidth::Dword);
-    pub(crate) const edi: Reg = Reg::PReg(PhysReg::rdi, OperandWidth::Dword);
-    pub(crate) const esp: Reg = Reg::PReg(PhysReg::rsp, OperandWidth::Dword);
-    pub(crate) const ebp: Reg = Reg::PReg(PhysReg::rbp, OperandWidth::Dword);
-    pub(crate) const r8d: Reg = Reg::PReg(PhysReg::r8, OperandWidth::Dword);
-    pub(crate) const r9d: Reg = Reg::PReg(PhysReg::r9, OperandWidth::Dword);
-    pub(crate) const r10d: Reg = Reg::PReg(PhysReg::r10, OperandWidth::Dword);
-    pub(crate) const r11d: Reg = Reg::PReg(PhysReg::r11, OperandWidth::Dword);
-    pub(crate) const r12d: Reg = Reg::PReg(PhysReg::r12, OperandWidth::Dword);
-    pub(crate) const r13d: Reg = Reg::PReg(PhysReg::r13, OperandWidth::Dword);
-    pub(crate) const r14d: Reg = Reg::PReg(PhysReg::r14, OperandWidth::Dword);
-    pub(crate) const r15d: Reg = Reg::PReg(PhysReg::r15, OperandWidth::Dword);
-
-    pub(crate) const ax: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Word);
-    pub(crate) const bx: Reg = Reg::PReg(PhysReg::rbx, OperandWidth::Word);
-    pub(crate) const cx: Reg = Reg::PReg(PhysReg::rcx, OperandWidth::Word);
-    pub(crate) const dx: Reg = Reg::PReg(PhysReg::rdx, OperandWidth::Word);
-    pub(crate) const si: Reg = Reg::PReg(PhysReg::rsi, OperandWidth::Word);
-    pub(crate) const di: Reg = Reg::PReg(PhysReg::rdi, OperandWidth::Word);
-    pub(crate) const sp: Reg = Reg::PReg(PhysReg::rsp, OperandWidth::Word);
-    pub(crate) const bp: Reg = Reg::PReg(PhysReg::rbp, OperandWidth::Word);
-    pub(crate) const r8w: Reg = Reg::PReg(PhysReg::r8, OperandWidth::Word);
-    pub(crate) const r9w: Reg = Reg::PReg(PhysReg::r9, OperandWidth::Word);
-    pub(crate) const r10w: Reg = Reg::PReg(PhysReg::r10, OperandWidth::Word);
-    pub(crate) const r11w: Reg = Reg::PReg(PhysReg::r11, OperandWidth::Word);
-    pub(crate) const r12w: Reg = Reg::PReg(PhysReg::r12, OperandWidth::Word);
-    pub(crate) const r13w: Reg = Reg::PReg(PhysReg::r13, OperandWidth::Word);
-    pub(crate) const r14w: Reg = Reg::PReg(PhysReg::r14, OperandWidth::Word);
-    pub(crate) const r15w: Reg = Reg::PReg(PhysReg::r15, OperandWidth::Word);
-
-    pub(crate) const al: Reg = Reg::PReg(PhysReg::rax, OperandWidth::Byte);
-    pub(crate) const bl: Reg = Reg::PReg(PhysReg::rbx, OperandWidth::Byte);
-    pub(crate) const cl: Reg = Reg::PReg(PhysReg::rcx, OperandWidth::Byte);
-    pub(crate) const dl: Reg = Reg::PReg(PhysReg::rdx, OperandWidth::Byte);
-    pub(crate) const sil: Reg = Reg::PReg(PhysReg::rsi, OperandWidth::Byte);
-    pub(crate) const dil: Reg = Reg::PReg(PhysReg::rdi, OperandWidth::Byte);
-    pub(crate) const spl: Reg = Reg::PReg(PhysReg::rsp, OperandWidth::Byte);
-    pub(crate) const bpl: Reg = Reg::PReg(PhysReg::rbp, OperandWidth::Byte);
-    pub(crate) const r8b: Reg = Reg::PReg(PhysReg::r8, OperandWidth::Byte);
-    pub(crate) const r9b: Reg = Reg::PReg(PhysReg::r9, OperandWidth::Byte);
-    pub(crate) const r10b: Reg = Reg::PReg(PhysReg::r10, OperandWidth::Byte);
-    pub(crate) const r11b: Reg = Reg::PReg(PhysReg::r11, OperandWidth::Byte);
-    pub(crate) const r12b: Reg = Reg::PReg(PhysReg::r12, OperandWidth::Byte);
-    pub(crate) const r13b: Reg = Reg::PReg(PhysReg::r13, OperandWidth::Byte);
-    pub(crate) const r14b: Reg = Reg::PReg(PhysReg::r14, OperandWidth::Byte);
-    pub(crate) const r15b: Reg = Reg::PReg(PhysReg::r15, OperandWidth::Byte);
+    decl_regs!(
+        rax, rbx, rcx, rdx, rsi, rdi, rsp, rbp, r8, r9, r10, r11, r12, r13, r14, r15,
+        xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -207,7 +197,6 @@ impl MemOperandScale {
 pub(crate) enum MemOperand {
     PcRelative {
         disp: MemOperandDisplacement,
-        width: OperandWidth
     },
     // index is not allowed to be physical register rsp or r12, 
     // this is enforced by register allocator
@@ -216,47 +205,34 @@ pub(crate) enum MemOperand {
         index: Reg,
         scale: MemOperandScale,
         disp: MemOperandDisplacement,
-        width: OperandWidth
     },
     BasePlusDisp {
         base: Reg,
         disp: MemOperandDisplacement,
-        width: OperandWidth
     },
     AbsoluteDisp {
         disp: MemOperandDisplacement,
-        width: OperandWidth
     }
 }
 
-impl MemOperand {
-    pub(crate) fn width(&self) -> OperandWidth {
-        match self {
-            MemOperand::PcRelative { width, .. }
-            | MemOperand::Full { width, .. }
-            | MemOperand::BasePlusDisp { width, .. }
-            | MemOperand::AbsoluteDisp { width, .. } => *width,
-        }
-    }
-}
-
-pub(crate) struct ImmediateOperand {
-    pub(crate) value: u64,
-    pub(crate) width: OperandWidth,
-}
+/// The width of the operand is tracked once, on the `MachineInst` (or, for `MovImm`/`LoadImm`,
+/// implied by the instruction always taking a full-width immediate) - not duplicated here.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ImmediateOperand(pub(crate) i64);
 
 /// x86-64 has no support for floating-point immediates, so fail the conversion if we see one
-struct ImmediateOperandError;
+#[derive(Debug)]
+pub(crate) struct ImmediateOperandError;
 
 impl TryFrom<cir::Constant> for ImmediateOperand {
     type Error = ImmediateOperandError;
 
     fn try_from(value: cir::Constant) -> Result<Self, Self::Error> {
         let imm = match value {
-            cir::Constant::i8(v) => ImmediateOperand { value: v as u64, width: OperandWidth::Byte },
-            cir::Constant::i16(v) => ImmediateOperand { value: v as u64, width: OperandWidth::Word },
-            cir::Constant::i32(v) => ImmediateOperand { value: v as u64, width: OperandWidth::Dword },
-            cir::Constant::i64(v) => ImmediateOperand { value: v as u64, width: OperandWidth::Qword },
+            cir::Constant::i8(v) => ImmediateOperand(v as i64),
+            cir::Constant::i16(v) => ImmediateOperand(v as i64),
+            cir::Constant::i32(v) => ImmediateOperand(v as i64),
+            cir::Constant::i64(v) => ImmediateOperand(v as i64),
             cir::Constant::f32(_) => return Err(ImmediateOperandError),
             cir::Constant::f64(_) => return Err(ImmediateOperandError),
         };
@@ -287,78 +263,116 @@ pub(crate) enum Condition {
     G
 }
 
-/// MachineInst are the opcodes of MIR, and correspond directly to a single x86 opcode + addressing mode selection
-/// The width of the operation (usually) comes from the OperandWidth field of its registers / memory operands, 
-/// except for sign-extend / zero-extend. `ImmediateOperand`s are sign-extended if not full-width.
+/// MachineInst are the opcodes of MIR, and correspond directly to a single x86 opcode 
+/// and addressing mode selection
 pub(crate) enum MachineInst {
     // lea %dst [%op2]
     Lea {
         dst: Reg,
-        op2: MemOperand
+        op2: MemOperand,
+        width: GprOperandWidth
     },
 
     // add %dst/op1, %op2
     AddRegToReg {
         dst: Reg,
         op1: Reg,
-        op2: Reg,       
+        op2: Reg,
+        width: GprOperandWidth  
     },
     // add %dst/op1, [%op2]
     AddMemToReg {
         dst: Reg,
         op1: Reg,
         op2: MemOperand,
+        width: GprOperandWidth,
     },
     // add [%op1], %op2
     AddRegToMem {
         op1: MemOperand,
         op2: Reg,
+        width: GprOperandWidth
     },
     // add %dst/op1, %op2
     AddImmToReg {
         dst: Reg,
         op1: Reg,
-        op2: ImmediateOperand
+        op2: ImmediateOperand,
+        width: GprOperandWidth
     },
     // add [%op1], %op2
     AddImmToMem {
         op1: MemOperand,
         op2: ImmediateOperand,
+        width: GprOperandWidth
+    },
+    // vaddss %dst, %op1, %op2
+    FAddRegToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
+        width: SseOperandWidth
+    },
+    // vaddss %dst, %op1, [%op2]
+    FAddMemToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
+        width: SseOperandWidth,
     },
 
     // mov %dst, [%op2]
     Load {
         dst: Reg,
-        op2: MemOperand
+        op2: MemOperand,
+        width: GprOperandWidth
     },
     // mov %dst, %op2
     LoadImm {
         dst: Reg,
         op2: ImmediateOperand,
+        width: GprOperandWidth
+    },
+    // vmovss %dst, [%op2]
+    LoadFloat {
+        dst: Reg,
+        op2: MemOperand,
+        width: SseOperandWidth
     },
     // mov [%op1], %op2
     StoreReg {
         op1: MemOperand,
         op2: Reg,
+        width: GprOperandWidth
     },
     // mov [%op1], %op2
     StoreImm {
         op1: MemOperand,
         op2: ImmediateOperand,
+        width: GprOperandWidth
+    },
+    // vmovss [%op1], %op2
+    StoreFloat {
+        op1: MemOperand,
+        op2: Reg,
+        width: SseOperandWidth
     },
 
     // mov %op1, %op2
     Mov {
         dst: Reg,
-        op2: Reg
+        op2: Reg,
+        width: GprOperandWidth
     },
     MovImm {
         dst: Reg,
-        op2: ImmediateOperand
+        op2: ImmediateOperand,
+        width: GprOperandWidth,
     },
     Xchg {
         op1: Reg,
-        op2: Reg
+        op2: Reg,
+        width: GprOperandWidth,
     },
 
     // in x86, writing to 32-bit register clears the upper 32 bits
@@ -370,23 +384,30 @@ pub(crate) enum MachineInst {
     ZeroExtend {
         dst: Reg,
         op2: Reg,
+        dst_width: GprOperandWidth,
+        op2_width: GprOperandWidth,
     },
     // movsx %dst, %op2
     SignExtend {
         dst: Reg,
-        op2: Reg
+        op2: Reg,
+        dst_width: GprOperandWidth,
+        op2_width: GprOperandWidth,
     },
 
     // push %op1
     Push {
-        op1: Reg
+        op1: Reg,
+        width: GprOperandWidth
     },
     PushImm {
         op1: ImmediateOperand,
+        width: GprOperandWidth
     },
     // pop %dst
     Pop {
-        dst: Reg
+        dst: Reg,
+        width: GprOperandWidth
     },
 
     // this will always be encoded as `jmp rel32` (RIP-relative addressing) due to mcmodel assumption
@@ -411,21 +432,25 @@ pub(crate) enum MachineInst {
         dst: Reg,
         op1: Reg,
         op2: Reg,
+        width: GprOperandWidth
     },
     MulMemToReg {
         dst: Reg,
         op1: Reg,
-        op2: MemOperand
+        op2: MemOperand,
+        width: GprOperandWidth
     },
     MulRegWithImm {
         dst: Reg,
         op1: Reg,
-        op2: ImmediateOperand
+        op2: ImmediateOperand,
+        width: GprOperandWidth,
     },
     MulMemWithImm {
         dst: Reg,
         op1: MemOperand,
         op2: ImmediateOperand,
+        width: GprOperandWidth,
     },
 
     // x86 division operates on rdx:rax (or subregisters thereof) as the dividend, 
@@ -434,26 +459,30 @@ pub(crate) enum MachineInst {
         dst_quo: Reg,
         dst_rem: Reg,
         op1: Reg,
+        width: GprOperandWidth,
     },
     UDivByMem {
         dst_quo: Reg,
         dst_rem: Reg,
-        op1: MemOperand
+        op1: MemOperand,
+        width: GprOperandWidth,
     },
     SDivByReg {
         dst_quo: Reg,
         dst_rem: Reg,
         op1: Reg,
+        width: GprOperandWidth,
     },
     SDivByMem {
         dst_quo: Reg,
         dst_rem: Reg,
-        op1: MemOperand
+        op1: MemOperand,
+        width: GprOperandWidth,
     },
 
     // cwd / cdq / cqo, depending on width
     PrepareDiv {
-        width: OperandWidth       
+        width: GprOperandWidth
     },
 
     // and %op1, %op2
@@ -461,6 +490,7 @@ pub(crate) enum MachineInst {
         dst: Reg,
         op1: Reg,
         op2: Reg,
+        width: GprOperandWidth,
     },
 
     // or %op1, %op2
@@ -468,30 +498,35 @@ pub(crate) enum MachineInst {
         dst: Reg,
         op1: Reg,
         op2: Reg,
+        width: GprOperandWidth,
     },
 
     // xor %op1, %op2
     XorRegToReg {
         dst: Reg,
         op1: Reg,
-        op2: Reg
+        op2: Reg,
+        width: GprOperandWidth,
     },
-    
+
     // not %op1
     NotReg {
         dst: Reg,
         op1: Reg,
+        width: GprOperandWidth,
     },
 
     // test %op1, %op2
     TestRegWithImm {
         op1: Reg,
-        op2: ImmediateOperand
+        op2: ImmediateOperand,
+        width: GprOperandWidth,
     },
     // cmp %op1, %op2
     CmpRegWithImm {
         op1: Reg,
-        op2: ImmediateOperand
+        op2: ImmediateOperand,
+        width: GprOperandWidth,
     },
 
     JmpWithCond {

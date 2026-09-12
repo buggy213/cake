@@ -753,7 +753,7 @@ impl Block {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Value {
     Inst(InstRef),
     BlockArgument(BlockRef, BlockArgRef),
