@@ -141,6 +141,7 @@ pub(crate) mod phys_regs {
 
     macro_rules! decl_regs {
         ($name:ident) => {
+            #[allow(non_camel_case_types, reason = "x86 convention")]
             pub(crate) const $name: Reg = Reg::PReg(PhysReg::$name);
         };
         ($name:ident, $($rest:ident),*) => {
@@ -543,13 +544,26 @@ struct MachineBlock {
 
 make_type_idx!(MachineBlockRef, MachineBlock);
 
-struct MachineFunction {
+struct MachineFunctionDefinition {
     insts: IndexVec<MachineInstRef, MachineInst>,
 
     // vreg_def: IndexVec<??, MachineInstRef>
     // vreg_uses: IndexVec<??, MachineUseVec>
 }
 
+struct MachineFunction {
+    name: String,
+    definition: Option<MachineFunctionDefinition>,
+}
+
 make_type_idx!(MachineFunctionRef, MachineFunction);
+
+struct MachineModule {
+    functions: IndexVec<MachineFunctionRef, MachineFunction>,
+
+    // signatures and data can be imported directly from the CIR module
+    signatures: IndexVec<cir::SigRef, cir::Signature>,
+    data: IndexVec<cir::DataRef, cir::Data>,
+}
 
 mod cir2mir;

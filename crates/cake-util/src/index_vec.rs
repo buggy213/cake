@@ -39,6 +39,10 @@ impl<I: Idx, T> IndexVec<I, T> {
         self.inner.last_mut().unwrap()
     }
 
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+
     /// Helper function for the `index_vec!` macro
     pub fn from_vec(vec: Vec<T>) -> Self {
         Self { inner: vec, _unused: PhantomData }
