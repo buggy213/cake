@@ -754,10 +754,23 @@ impl SymbolTableSection {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::io::{BufWriter, Write};
+    use std::{io::{BufWriter, Write}, path::PathBuf};
+
+    fn test_artifacts_dir() -> PathBuf {
+        let workspace = std::env::var("CARGO_MANIFEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir());
+
+        let test_artifacts = workspace.join("test_artifacts");
+        // error is expected if it already exists
+        _ = std::fs::create_dir_all(&test_artifacts);
+        test_artifacts
+    }
 
     fn write_elf(elf: &Elf, path: impl AsRef<std::path::Path>) {
-        let f = std::fs::File::create(path).expect("failed to create file");
+        let test_artifacts_dir = test_artifacts_dir();
+        let test_output = test_artifacts_dir.join(path);
+        let f = std::fs::File::create(test_output).expect("failed to create file");
 
         let mut f_buffered = BufWriter::new(f);
         elf.write(&mut f_buffered).expect("failed to write");
