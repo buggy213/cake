@@ -62,6 +62,11 @@ macro_rules! make_type_idx {
             pub(crate) fn iter<T>(slice: &$crate::IndexSlice<$type_idx_name, [T]>) -> impl Iterator<Item = $type_idx_name> {
                 (0..slice.len()).map(|i| $type_idx_name(i as u32))
             }
+
+            #[cfg(test)]
+            pub(crate) fn new_for_test(id: u32) -> Self {
+                Self(id)
+            }
         }
 
         impl From<$type_idx_name> for usize {

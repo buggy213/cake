@@ -192,12 +192,13 @@ impl MemOperandScale {
     }
 }
 
-// the width field roughly corresponds to "BYTE PTR" / "DWORD PTR" / "QWORD PTR" in assembler
-// syntax; it is not used unless the memory operand is the destination of some instruction 
 #[derive(Clone, Copy)]
 pub(crate) enum MemOperand {
-    PcRelative {
-        disp: MemOperandDisplacement,
+    PcRelativeFn {
+        target: MachineFunctionRef
+    },
+    PcRelativeData {
+        target: cir::DataRef,
     },
     // index is not allowed to be physical register rsp or r12, 
     // this is enforced by register allocator
@@ -267,7 +268,7 @@ pub(crate) enum Condition {
 /// MachineInst are the opcodes of MIR, and correspond directly to a single x86 opcode 
 /// and addressing mode selection
 pub(crate) enum MachineInst {
-    // lea %dst [%op2]
+    // lea %dst, [%op2]
     Lea {
         dst: Reg,
         op2: MemOperand,
@@ -318,7 +319,7 @@ pub(crate) enum MachineInst {
     FAddMemToReg {
         dst: Reg,
         op1: Reg,
-        op2: Reg,
+        op2: MemOperand,
         width: SseOperandWidth,
     },
 
@@ -359,22 +360,17 @@ pub(crate) enum MachineInst {
         width: SseOperandWidth
     },
 
-    // mov %op1, %op2
+    // mov %dst, %op2
     Mov {
         dst: Reg,
         op2: Reg,
         width: GprOperandWidth
     },
-    MovImm {
-        dst: Reg,
-        op2: ImmediateOperand,
-        width: GprOperandWidth,
-    },
     Xchg {
         op1: Reg,
         op2: Reg,
         width: GprOperandWidth,
-    },
+    }, 
 
     // in x86, writing to 32-bit register clears the upper 32 bits
     // so, zero-extend (`movzx`) is only needed when widening from a unsigned byte or unsigned short. 

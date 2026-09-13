@@ -177,12 +177,12 @@ impl MemOperand {
         };
 
         match self {
-            MemOperand::PcRelative { disp } => {
-                // have to widen to disp32 for this addressing mode
-                let disp = disp.as_u32();
-
-                MemoryOperand::with_base_displ_size(Register::RIP, disp as i64, 4)
+            MemOperand::PcRelativeFn { target: _ } => {
+                MemoryOperand::with_base_displ_size(Register::RIP, 0, 4)
             },
+            MemOperand::PcRelativeData { target: _ } => {
+                MemoryOperand::with_base_displ_size(Register::RIP, 0, 4)
+            }
             MemOperand::Full { base, index, scale, disp } => {
                 let base = base.as_preg(valid);
                 let index = index.as_preg(valid);
@@ -215,16 +215,33 @@ impl MemOperand {
     }
 }
 
-enum MachineRelocation {
-    FnReloc {
-        code_offset: u64,
-        target: MachineFunctionRef,
-    },
+/// Describes what a relocatable rel32/disp32 field refers to
+#[derive(Debug, Clone, Copy)]
+enum Relocation {
+    /// A `call rel32` whose target function's address is not known yet
+    Call(MachineFunctionRef),
+    /// A RIP-relative memory operand referencing a function's address
+    FnReloc(MachineFunctionRef),
+    /// A RIP-relative memory operand referencing a data's address
+    DataReloc(cir::DataRef)
+}
 
-    DataReloc {
-        code_offset: u64,
-        target: cir::DataRef,
+impl MemOperand {
+    fn get_relocation(self) -> Option<Relocation> {
+        match self {
+            MemOperand::PcRelativeFn { target } => Some(Relocation::FnReloc(target)),
+            MemOperand::PcRelativeData { target } => Some(Relocation::DataReloc(target)),
+            MemOperand::Full { base, index, scale, disp } => None,
+            MemOperand::BasePlusDisp { base, disp } => None,
+            MemOperand::AbsoluteDisp { disp } => None,
+        }
     }
+}
+
+/// A `Relocation` at a particular offset that will be patched by the linker
+struct AssembledRelocation {
+    code_offset: u64,
+    reloc: Relocation
 }
 
 #[derive(Clone, Copy)]
@@ -233,7 +250,7 @@ struct MachineLabel(u64);
 struct Assembler {
     encoder: iced_x86::Encoder,
     current_offset: usize,
-    relocs: Vec<MachineRelocation>,
+    relocs: Vec<AssembledRelocation>,
 }
 
 /// Per-function context for assembling
@@ -249,8 +266,40 @@ impl AssembleFunctionContext {
 
 impl Assembler {
     /// Encodes `instruction` at the current offset and advances it by the encoded length.
-    fn emit(&mut self, instruction: Instruction) -> Result<(), IcedError> {
+    /// If `reloc` is given, zeroes the encoded rel32/disp32 field and records a relocation for
+    /// the linker to resolve later (iced treats the zero as an absolute address rather than a displacement
+    /// so we need to zero it manually) 
+    fn emit(&mut self, instruction: Instruction, reloc: Option<Relocation>) -> Result<(), IcedError> {
+        let start_offset = self.current_offset;
         self.current_offset += self.encoder.encode(&instruction, self.current_offset as u64)?;
+
+        if let Some(reloc) = reloc {
+            let offsets = self.encoder.get_constant_offsets();
+            let (field_offset, field_size) = match reloc {
+                Relocation::Call(_) => {
+                    assert!(offsets.has_immediate());
+                    (offsets.immediate_offset(), offsets.immediate_size())
+                }
+                Relocation::FnReloc(_)
+                | Relocation::DataReloc(_) => {
+                    assert!(offsets.has_displacement());
+                    (offsets.displacement_offset(), offsets.displacement_size())
+                }
+            };
+
+            assert_eq!(field_size, 4, "only rel32/disp32 relocations are supported for now");
+
+            let field_start = start_offset + field_offset;
+            let mut buf = self.encoder.take_buffer();
+            buf[field_start..field_start + 4].copy_from_slice(&[0; 4]);
+            self.encoder.set_buffer(buf);
+
+            self.relocs.push(AssembledRelocation {
+                code_offset: field_start as u64,
+                reloc
+            })
+        }
+
         Ok(())
     }
 
@@ -282,7 +331,10 @@ impl Assembler {
 
                 let dst: Register = dst.to_register(width);
                 let mem: MemoryOperand = op2.as_memory_operand(valid);
-                self.emit(Instruction::with2(code, dst, mem)?)
+                self.emit(
+                    Instruction::with2(code, dst, mem)?,
+                    op2.get_relocation()
+                )
             },
             MachineInst::AddRegToReg { dst, op1, op2, width } => {
                 let dst_op1 = Reg::tied_pregs(dst, op1, valid);
@@ -297,7 +349,10 @@ impl Assembler {
 
                 let dst_op1: Register = dst_op1.to_register(width);
                 let addend: Register = op2.to_register(width);
-                self.emit(Instruction::with2(code, dst_op1, addend)?)
+                self.emit(
+                    Instruction::with2(code, dst_op1, addend)?,
+                    None
+                )
             },
             MachineInst::AddMemToReg { dst, op1, op2, width } => {
                 let dst_op1 = Reg::tied_pregs(dst, op1, valid);
@@ -311,7 +366,10 @@ impl Assembler {
 
                 let dst_op1: Register = dst_op1.to_register(width);
                 let addend: MemoryOperand = op2.as_memory_operand(valid);
-                self.emit(Instruction::with2(code, dst_op1, addend)?)
+                self.emit(
+                    Instruction::with2(code, dst_op1, addend)?,
+                    op2.get_relocation()
+                )
             },
             MachineInst::AddRegToMem { op1, op2, width } => {
                 let op2 = op2.as_preg(valid);
@@ -325,7 +383,10 @@ impl Assembler {
 
                 let mem: MemoryOperand = op1.as_memory_operand(valid);
                 let addend: Register = op2.to_register(width);
-                self.emit(Instruction::with2(code, mem, addend)?)
+                self.emit(
+                    Instruction::with2(code, mem, addend)?,
+                    op1.get_relocation()
+                )
             },
             MachineInst::AddImmToReg { dst, op1, op2, width } => {
                 let dst_op1 = Reg::tied_pregs(dst, op1, valid);
@@ -338,7 +399,10 @@ impl Assembler {
                 };
 
                 let dst_op1: Register = dst_op1.to_register(width);
-                self.emit(Instruction::with2(code, dst_op1, op2.0 as i32)?)
+                self.emit(
+                    Instruction::with2(code, dst_op1, op2.0 as i32)?,
+                    None
+                )
             },
             MachineInst::AddImmToMem { op1, op2, width } => {
                 let code = match width {
@@ -349,10 +413,14 @@ impl Assembler {
                 };
 
                 let mem: MemoryOperand = op1.as_memory_operand(valid);
-                self.emit(Instruction::with2(code, mem, op2.0 as i32)?)
+                self.emit(
+                    Instruction::with2(code, mem, op2.0 as i32)?,
+                    op1.get_relocation()
+                )
             },
             MachineInst::FAddRegToReg { dst, op1, op2, width } => {
-                let dst_op1 = Reg::tied_pregs(dst, op1, valid);
+                let dst = dst.as_preg(valid);
+                let op1 = op1.as_preg(valid);
                 let op2 = op2.as_preg(valid);
                 
                 let code = match width {
@@ -360,9 +428,13 @@ impl Assembler {
                     SseOperandWidth::Double => Code::VEX_Vaddsd_xmm_xmm_xmmm64,
                 };
 
-                let dst_op1: Register = dst_op1.to_sse_register();
+                let dst: Register = dst.to_sse_register();
+                let op1: Register = op1.to_sse_register();
                 let op2: Register = op2.to_sse_register();
-                self.emit(Instruction::with2(code, dst_op1, op2)?)
+                self.emit(
+                    Instruction::with3(code, dst, op1, op2)?,
+                    None
+                )
             },
             MachineInst::FAddMemToReg { dst, op1, op2, width } => {
                 let code = match width {
@@ -372,9 +444,12 @@ impl Assembler {
 
                 let dst: Register = dst.as_preg(valid).to_sse_register();
                 let op1: Register = op1.as_preg(valid).to_sse_register();
-                let op2: Register = op2.as_preg(valid).to_sse_register();
+                let mem: MemoryOperand = op2.as_memory_operand(valid);
 
-                self.emit(Instruction::with3(code, dst, op1, op2)?)
+                self.emit(
+                    Instruction::with3(code, dst, op1, mem)?,
+                    op2.get_relocation()
+                )
             }
             MachineInst::Load { dst, op2, width } => {
                 let dst = dst.as_preg(valid);
@@ -388,7 +463,10 @@ impl Assembler {
 
                 let dst: Register = dst.to_register(width);
                 let src: MemoryOperand = op2.as_memory_operand(valid);
-                self.emit(Instruction::with2(code, dst, src)?)
+                self.emit(
+                    Instruction::with2(code, dst, src)?,
+                    op2.get_relocation()
+                )
             },
             MachineInst::LoadImm { dst, op2, width } => {
                 let dst = dst.as_preg(valid);
@@ -401,8 +479,12 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_register(width);
-                self.emit(Instruction::with2(code, dst, op2.0 as u64)?)
+                self.emit(
+                    Instruction::with2(code, dst, op2.0 as u64)?,
+                    None
+                )
             },
+            
             MachineInst::LoadFloat { dst, op2, width } => {
                 let dst = dst.as_preg(valid);
 
@@ -413,7 +495,10 @@ impl Assembler {
 
                 let dst: Register = dst.to_sse_register();
                 let src: MemoryOperand = op2.as_memory_operand(valid);
-                self.emit(Instruction::with2(code, dst, src)?)
+                self.emit(
+                    Instruction::with2(code, dst, src)?,
+                    op2.get_relocation()
+                )
             },
             MachineInst::StoreReg { op1, op2, width } => {
                 let op2 = op2.as_preg(valid);
@@ -427,7 +512,10 @@ impl Assembler {
 
                 let mem: MemoryOperand = op1.as_memory_operand(valid);
                 let op2: Register = op2.to_register(width);
-                self.emit(Instruction::with2(code, mem, op2)?)
+                self.emit(
+                    Instruction::with2(code, mem, op2)?,
+                    op1.get_relocation()
+                )
             },
             MachineInst::StoreImm { op1, op2, width } => {
                 let code = match width {
@@ -438,7 +526,10 @@ impl Assembler {
                 };
 
                 let mem: MemoryOperand = op1.as_memory_operand(valid);
-                self.emit(Instruction::with2(code, mem, op2.0 as i32)?)
+                self.emit(
+                    Instruction::with2(code, mem, op2.0 as i32)?,
+                    op1.get_relocation()
+                )
             },
             MachineInst::StoreFloat { op1, op2, width } => {
                 let src = op2.as_preg(valid);
@@ -450,7 +541,10 @@ impl Assembler {
 
                 let dst: MemoryOperand = op1.as_memory_operand(valid);
                 let src: Register = src.to_sse_register();
-                self.emit(Instruction::with2(code, dst, src)?)
+                self.emit(
+                    Instruction::with2(code, dst, src)?,
+                    op1.get_relocation()
+                )
             }
             MachineInst::Mov { dst, op2, width } => {
                 let dst = dst.as_preg(valid);
@@ -465,21 +559,10 @@ impl Assembler {
 
                 let dst: Register = dst.to_register(width);
                 let src: Register = op2.to_register(width);
-                self.emit(Instruction::with2(code, dst, src)?)
-            },
-            MachineInst::MovImm { dst, op2, width } => {
-                let dst = dst.as_preg(valid);
-
-                let code = match width {
-                    GprOperandWidth::Byte => Code::Mov_r8_imm8,
-                    GprOperandWidth::Word => Code::Mov_r16_imm16,
-                    GprOperandWidth::Dword => Code::Mov_r32_imm32,
-                    GprOperandWidth::Qword => Code::Mov_r64_imm64,
-                };
-
-                let dst: Register = dst.to_register(width);
-                let imm: u64 = op2.0 as u64;
-                self.emit(Instruction::with2(code, dst, imm)?)
+                self.emit(
+                    Instruction::with2(code, dst, src)?,
+                    None
+                )
             },
             MachineInst::Xchg { op1, op2, width } => {
                 let op1 = op1.as_preg(valid);
@@ -494,7 +577,10 @@ impl Assembler {
 
                 let op1: Register = op1.to_register(width);
                 let op2: Register = op2.to_register(width);
-                self.emit(Instruction::with2(code, op1, op2)?)
+                self.emit(
+                    Instruction::with2(code, op1, op2)?,
+                    None
+                )
             }
 
             MachineInst::ZeroExtend { dst, op2, dst_width, op2_width } => {
@@ -512,7 +598,10 @@ impl Assembler {
 
                 let dst: Register = dst.to_register(dst_width);
                 let op2: Register = op2.to_register(op2_width);
-                self.emit(Instruction::with2(code, dst, op2)?)
+                self.emit(
+                    Instruction::with2(code, dst, op2)?,
+                    None
+                )
             },
             MachineInst::SignExtend { dst, op2, dst_width, op2_width } => {
                 let dst = dst.as_preg(valid);
@@ -530,7 +619,10 @@ impl Assembler {
 
                 let dst: Register = dst.to_register(dst_width);
                 let op2: Register = op2.to_register(op2_width);
-                self.emit(Instruction::with2(code, dst, op2)?)
+                self.emit(
+                    Instruction::with2(code, dst, op2)?,
+                    None
+                )
             },
             MachineInst::Push { op1, width } => {
                 assert!(width != GprOperandWidth::Byte && width != GprOperandWidth::Dword);
@@ -543,7 +635,10 @@ impl Assembler {
                 };
 
                 let op1: Register = op1.to_register(width);
-                self.emit(Instruction::with1(code, op1)?)
+                self.emit(
+                    Instruction::with1(code, op1)?,
+                    None
+                )
             },
             MachineInst::PushImm { op1, width } => {
                 let code = match width {
@@ -552,7 +647,10 @@ impl Assembler {
                     GprOperandWidth::Dword | GprOperandWidth::Qword => Code::Pushq_imm32,
                 };
 
-                self.emit(Instruction::with1(code, op1.0 as i32)?)
+                self.emit(
+                    Instruction::with1(code, op1.0 as i32)?,
+                    None
+                )
             },
             MachineInst::Pop { dst, width } => {
                 assert!(width != GprOperandWidth::Byte && width != GprOperandWidth::Dword);
@@ -565,36 +663,35 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_register(width);
-                self.emit(Instruction::with1(code, dst)?)
+                self.emit(
+                    Instruction::with1(code, dst)?,
+                    None
+                )
             },
             MachineInst::Jump { target } => {
                 let target = block_labels[target];
-                self.emit(Instruction::with_branch(Code::Jmp_rel32_64, target.0)?)
+                self.emit(
+                    Instruction::with_branch(Code::Jmp_rel32_64, target.0)?,
+                    None,
+                )
             },
             MachineInst::Call { target } => {
-                // the target's final address isn't known yet (it may not have been assembled,
-                // and even if it has, we don't know its final address), so encode with a
-                // placeholder and record where the rel32 needs to be patched later.
-                let code_offset = self.current_offset as u64;
-                let len = self.encoder.encode(&Instruction::with_branch(Code::Call_rel32_64, 0)?, code_offset)?;
-                let offsets = self.encoder.get_constant_offsets();
-                self.relocs.push(MachineRelocation::FnReloc {
-                    code_offset: code_offset + offsets.immediate_offset() as u64,
-                    target,
-                });
-                self.current_offset += len;
-
-                Ok(())
+                self.emit(
+                    Instruction::with_branch(Code::Call_rel32_64, 0)?,
+                    Some(Relocation::Call(target))
+                )
             },
             MachineInst::CallIndirect { target } => {
                 let target = target.as_preg(valid);
-
-                // calls always go through the full-width register, regardless of the caller's declared width
                 let target: Register = target.to_register(GprOperandWidth::Qword);
-                self.emit(Instruction::with1(Code::Call_rm64, target)?)
+
+                self.emit(
+                    Instruction::with1(Code::Call_rm64, target)?,
+                    None
+                )
             },
             MachineInst::Ret => {
-                self.emit(Instruction::with(Code::Retnq))
+                self.emit(Instruction::with(Code::Retnq), None)
             },
             MachineInst::MulRegToReg { dst, op1, op2, width } => {
                 let op1 = Reg::tied_pregs(dst, op1, valid);
@@ -609,7 +706,10 @@ impl Assembler {
 
                 let op1: Register = op1.to_register(width);
                 let op2: Register = op2.to_register(width);
-                self.emit(Instruction::with2(code, op1, op2)?)
+                self.emit(
+                    Instruction::with2(code, op1, op2)?,
+                    None
+                )
             },
             MachineInst::MulMemToReg { dst, op1, op2, width } => {
                 let dst = Reg::tied_pregs(dst, op1, valid);
@@ -622,8 +722,11 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_register(width);
-                let op2: MemoryOperand = op2.as_memory_operand(valid);
-                self.emit(Instruction::with2(code, dst, op2)?)
+                let mem: MemoryOperand = op2.as_memory_operand(valid);
+                self.emit(
+                    Instruction::with2(code, dst, mem)?,
+                    op2.get_relocation()
+                )
             },
             MachineInst::MulRegWithImm { dst, op1, op2, width } => {
                 let dst = dst.as_preg(valid);
@@ -638,7 +741,10 @@ impl Assembler {
 
                 let dst: Register = dst.to_register(width);
                 let op1: Register = op1.to_register(width);
-                self.emit(Instruction::with3(code, dst, op1, op2.0 as i32)?)
+                self.emit(
+                    Instruction::with3(code, dst, op1, op2.0 as i32)?,
+                    None
+                )
             },
             MachineInst::MulMemWithImm { dst, op1, op2, width } => {
                 let dst = dst.as_preg(valid);
@@ -651,8 +757,11 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_register(width);
-                let op1: MemoryOperand = op1.as_memory_operand(valid);
-                self.emit(Instruction::with3(code, dst, op1, op2.0 as i32)?)
+                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                self.emit(
+                    Instruction::with3(code, dst, mem, op2.0 as i32)?,
+                    op1.get_relocation()
+                )
             },
             MachineInst::UDivByReg { dst_quo, dst_rem, op1, width } => {
                 let dst_quo = dst_quo.as_preg(valid);
@@ -669,7 +778,10 @@ impl Assembler {
                 };
 
                 let op1: Register = op1.to_register(width);
-                self.emit(Instruction::with1(code, op1)?)
+                self.emit(
+                    Instruction::with1(code, op1)?,
+                    None
+                )
             },
             MachineInst::UDivByMem { dst_quo, dst_rem, op1, width } => {
                 let dst_quo = dst_quo.as_preg(valid);
@@ -684,8 +796,11 @@ impl Assembler {
                     GprOperandWidth::Qword => Code::Div_rm64,
                 };
 
-                let op1: MemoryOperand = op1.as_memory_operand(valid);
-                self.emit(Instruction::with1(code, op1)?)
+                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                self.emit(
+                    Instruction::with1(code, mem)?,
+                    op1.get_relocation()
+                )
             },
             MachineInst::SDivByReg { dst_quo, dst_rem, op1, width } => {
                 let dst_quo = dst_quo.as_preg(valid);
@@ -702,7 +817,7 @@ impl Assembler {
                 };
 
                 let op1: Register = op1.to_register(width);
-                self.emit(Instruction::with1(code, op1)?)
+                self.emit(Instruction::with1(code, op1)?, None)
             },
             MachineInst::SDivByMem { dst_quo, dst_rem, op1, width } => {
                 let dst_quo = dst_quo.as_preg(valid);
@@ -717,8 +832,8 @@ impl Assembler {
                     GprOperandWidth::Qword => Code::Idiv_rm64,
                 };
 
-                let op1: MemoryOperand = op1.as_memory_operand(valid);
-                self.emit(Instruction::with1(code, op1)?)
+                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                self.emit(Instruction::with1(code, mem)?, op1.get_relocation())
             },
             MachineInst::PrepareDiv { width } => {
                 let code = match width {
@@ -728,7 +843,7 @@ impl Assembler {
                     GprOperandWidth::Qword => Code::Cqo,
                 };
 
-                self.emit(Instruction::with(code))
+                self.emit(Instruction::with(code), None)
             },
             MachineInst::AndRegToReg { dst, op1, op2, width } => {
                 let op1 = Reg::tied_pregs(dst, op1, valid);
@@ -743,7 +858,10 @@ impl Assembler {
 
                 let op1: Register = op1.to_register(width);
                 let op2: Register = op2.to_register(width);
-                self.emit(Instruction::with2(code, op1, op2)?)
+                self.emit(
+                    Instruction::with2(code, op1, op2)?,
+                    None
+                )
             },
             MachineInst::OrRegToReg { dst, op1, op2, width } => {
                 let op1 = Reg::tied_pregs(dst, op1, valid);
@@ -758,7 +876,10 @@ impl Assembler {
 
                 let op1: Register = op1.to_register(width);
                 let op2: Register = op2.to_register(width);
-                self.emit(Instruction::with2(code, op1, op2)?)
+                self.emit(
+                    Instruction::with2(code, op1, op2)?,
+                    None
+                )
             },
             MachineInst::XorRegToReg { dst, op1, op2, width } => {
                 let op1 = Reg::tied_pregs(dst, op1, valid);
@@ -773,7 +894,10 @@ impl Assembler {
 
                 let op1: Register = op1.to_register(width);
                 let op2: Register = op2.to_register(width);
-                self.emit(Instruction::with2(code, op1, op2)?)
+                self.emit(
+                    Instruction::with2(code, op1, op2)?,
+                    None
+                )
             },
             MachineInst::NotReg { dst, op1, width } => {
                 let dst = Reg::tied_pregs(dst, op1, valid);
@@ -786,7 +910,7 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_register(width);
-                self.emit(Instruction::with1(code, dst)?)
+                self.emit(Instruction::with1(code, dst)?, None)
             },
             MachineInst::TestRegWithImm { op1, op2, width } => {
                 let op1 = op1.as_preg(valid);
@@ -799,7 +923,7 @@ impl Assembler {
                 };
 
                 let op1: Register = op1.to_register(width);
-                self.emit(Instruction::with2(code, op1, op2.0 as i32)?)
+                self.emit(Instruction::with2(code, op1, op2.0 as i32)?, None)
             },
             MachineInst::CmpRegWithImm { op1, op2, width } => {
                 let op1 = op1.as_preg(valid);
@@ -812,7 +936,7 @@ impl Assembler {
                 };
 
                 let op1: Register = op1.to_register(width);
-                self.emit(Instruction::with2(code, op1, op2.0 as i32)?)
+                self.emit(Instruction::with2(code, op1, op2.0 as i32)?, None)
             },
             MachineInst::JmpWithCond { cond, target } => {
                 let target = block_labels[target];
@@ -832,7 +956,7 @@ impl Assembler {
                     Condition::G => Code::Jg_rel32_64,
                 };
 
-                self.emit(Instruction::with_branch(code, target.0)?)
+                self.emit(Instruction::with_branch(code, target.0)?, None)
             },
         }
     }
@@ -844,15 +968,13 @@ mod tests {
     use cake_util::IndexVec;
 
     use crate::{
-        codegen::x64_backend::assembler::{AssembleFunctionContext, Assembler, MachineLabel, valid::ValidForCodegenToken}, mir::{
-            GprOperandWidth, ImmediateOperand, MachineBlockRef, MachineInst, MemOperand,
-            MemOperandDisplacement, phys_regs::*
+        cir, codegen::x64_backend::assembler::{AssembleFunctionContext, Assembler, MachineLabel, valid::ValidForCodegenToken}, mir::{
+            GprOperandWidth, ImmediateOperand, MachineBlockRef, MachineFunctionRef, MachineInst, MemOperand, MemOperandDisplacement, phys_regs::*
         }
     };
 
-    // Basic smoke test for function encoding
-    #[test]
-    fn test_basic() {
+    /// Small test harness for function encoding
+    fn test_harness(machine_insts: Vec<MachineInst>, expected_encoding: &[u8]) {
         let mut assembler = Assembler {
             encoder: iced_x86::Encoder::try_new(64).unwrap(),
             current_offset: 0,
@@ -864,10 +986,20 @@ mod tests {
             labels: block_labels
         };
 
-        // SAFETY: every register below is physical, and every operand is used at the width
-        // it's declared with, so `ValidForCodegenToken`'s invariants hold.
         let valid = unsafe { ValidForCodegenToken::assume_valid() };
 
+        for inst in machine_insts {
+            assembler.assemble_inst(inst, &fn_ctx, valid).expect("failed to assemble instructions")
+        }
+
+        let bytes = assembler.encoder.take_buffer();
+        
+        assert_eq!(bytes, expected_encoding, "actual: {:#X?}\nexpected: {:#X?}\n", bytes, expected_encoding);
+    }
+
+    /// Basic smoke test for function encoding
+    #[test]
+    fn test_basic() {
         let insts = vec![
             MachineInst::Push {
                 op1: rbp,
@@ -906,19 +1038,37 @@ mod tests {
             },
             MachineInst::Ret
         ];
-
-        for inst in insts {
-            assembler.assemble_inst(inst, &fn_ctx, valid)
-                .expect("failed to assemble instructions")
-        }
-
-        let bytes = assembler.encoder.take_buffer();
+        
         let expected_bytes = vec![
             0x55, 0x48, 0x89, 0xE5, 0xC7, 0x85, 0xFC, 0x00, 0x00, 0x00, 0x02, 0x00,
             0x00, 0x00, 0x8B, 0x85, 0xFC, 0x00, 0x00, 0x00, 0x81, 0xC0, 0x02, 0x00,
             0x00, 0x00, 0x5D, 0xC3,
         ];
 
-        assert_eq!(bytes, expected_bytes);
+        test_harness(insts, &expected_bytes);
+    }
+
+    #[test]
+    fn test_reloc() {
+        let data_0 = cir::DataRef::new_for_test(0);
+        let func_0 = MachineFunctionRef::new_for_test(0);
+        
+        let insts = vec![
+            MachineInst::Lea { 
+                dst: rax,
+                op2: MemOperand::PcRelativeData { 
+                    target: data_0
+                }, 
+                width: GprOperandWidth::Qword
+            },
+            MachineInst::Call { target: func_0 }
+        ];
+
+        let expected_bytes: Vec<u8> = vec![
+            0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00,
+            0xE8, 0x00, 0x00, 0x00, 0x00
+        ];
+
+        test_harness(insts, &expected_bytes)
     }
 }

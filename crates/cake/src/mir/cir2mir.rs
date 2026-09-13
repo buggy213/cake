@@ -81,7 +81,7 @@ impl InstructionSelector {
                     Constant::f32(_) | Constant::f64(_) => unreachable!("fp handled above"),
                 };
 
-                let minst = MachineInst::MovImm {
+                let minst = MachineInst::LoadImm {
                     dst: Reg::VReg(output_vreg),
                     op2: imm,
                     width
