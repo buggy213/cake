@@ -125,13 +125,18 @@ impl PhysReg {
 
 #[derive(Clone, Copy)]
 pub(crate) struct VirtualReg {
-    id: u32,
     class: RegClass,
+    def: VRegDef,
+    uses: VRegUses,
 }
+
+
+
+make_type_idx!(VRegRef, VirtualReg);
 
 #[derive(Clone, Copy)]
 pub(crate) enum Reg {
-    VReg(VirtualReg),
+    VReg(VRegRef),
     PReg(PhysReg)
 }
 
@@ -534,8 +539,15 @@ pub(crate) enum MachineInst {
 
 make_type_idx!(MachineInstRef, MachineInst);
 
+#[derive(Clone)]
 struct MachineBlock {
     irefs: Vec<MachineInstRef>,
+}
+
+impl MachineBlock {
+    fn new() -> Self {
+        MachineBlock { irefs: vec![] }
+    }
 }
 
 make_type_idx!(MachineBlockRef, MachineBlock);
@@ -543,8 +555,7 @@ make_type_idx!(MachineBlockRef, MachineBlock);
 struct MachineFunctionDefinition {
     insts: IndexVec<MachineInstRef, MachineInst>,
 
-    // vreg_def: IndexVec<??, MachineInstRef>
-    // vreg_uses: IndexVec<??, MachineUseVec>
+    blocks: IndexVec<MachineBlockRef, MachineBlock>,
 }
 
 struct MachineFunction {
@@ -558,8 +569,14 @@ struct MachineModule {
     functions: IndexVec<MachineFunctionRef, MachineFunction>,
 
     // signatures and data can be imported directly from the CIR module
-    signatures: IndexVec<cir::SigRef, cir::Signature>,
+    signatures: IndexVec<cir::FuncRef, cir::Signature>,
     data: IndexVec<cir::DataRef, cir::Data>,
+}
+
+impl MachineModule {
+    pub(crate) fn add_data(&mut self, data: cir::Data) -> cir::DataRef {
+        cir::DataRef::from_push2(&mut self.data, data)
+    }
 }
 
 mod cir2mir;

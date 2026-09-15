@@ -122,6 +122,18 @@ impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
     }
 }
 
+impl<I: Idx, T> Default for IndexVec<I, T> {
+    fn default() -> Self {
+        Self { inner: Default::default(), _unused: Default::default() }
+    }
+}
+
+impl<I: Idx, T> Clone for IndexVec<I, T> where T: Clone {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone(), _unused: self._unused.clone() }
+    }
+}
+
 #[macro_export]
 macro_rules! index_vec {
     () => (

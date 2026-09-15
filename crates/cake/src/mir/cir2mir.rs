@@ -19,12 +19,11 @@
 //! and selecting uses before defs in a dataflow-like fashion. This is similar to
 //! LLVM's GlobalISel.
 
-use cake_util::IndexVec;
+use cake_util::{IndexVec, index_vec};
 use rustc_hash::FxHashMap;
 
 use crate::{
-    cir::{BlockRef, Constant, Function, FunctionDefinition, InstRef, Value, post_order}, 
-    mir::{GprOperandWidth, ImmediateOperand, MachineInst, MachineInstRef, Reg, VirtualReg}
+    cir::{self, BlockRef, Constant, Data, DataContents, Function, FunctionDefinition, InstRef, Value, post_order}, mir::{self, GprOperandWidth, ImmediateOperand, MachineBlock, MachineFunction, MachineFunctionDefinition, MachineInst, MachineInstRef, MachineModule, MemOperand, Reg, SseOperandWidth, VRegRef, VirtualReg}
 };
 
 // Whether a CIR instruction has already been selected
@@ -36,15 +35,56 @@ enum SelectionStatus {
     Selected
 }
 
-
+/// Handles instruction selection
 struct InstructionSelector {
+    cir_mod: cir::Module,
+    mir_mod: mir::MachineModule,
+
     // TODO: it might be more efficient to mirror the organization of values in CIR 
     // rather than using a hashmap
-    vreg_by_value: FxHashMap<Value, VirtualReg>
+    vreg_by_value: FxHashMap<Value, VRegRef>
 
 }
 
 impl InstructionSelector {
+    fn new(cir_mod: cir::Module) -> Self {
+        // prepare MIR module for instruction selection by copying over functions and basic blocks
+        // but leaving them unpopulated
+        let mut mir_mod = MachineModule {
+            functions: index_vec![],
+            signatures: cir_mod.signatures.clone(),
+            data: cir_mod.data.clone(),
+        };
+
+        for func in cir_mod.functions() {
+            let mir_func_def = if let Some(func_def) = &func.definition {
+                MachineFunctionDefinition {
+                    insts: index_vec![],
+                    blocks: index_vec![MachineBlock::new(); func_def.blocks.len()],
+                }.into()
+            } else { 
+                None 
+            };
+
+            let mir_func = MachineFunction {
+                name: func.name.clone(),
+                definition: mir_func_def
+            };
+
+            mir_mod.functions.push(mir_func);
+        }
+
+        Self {
+            cir_mod,
+            mir_mod,
+            vreg_by_value: FxHashMap::default()
+        }
+    }
+
+    fn finish(mut self) -> mir::MachineModule {
+        self.mir_mod
+    }
+
     fn select_add() {
         let x: Value = todo!();
         let y: Value = todo!();
@@ -64,7 +104,27 @@ impl InstructionSelector {
                 let output_value = Value::Inst(inst_ref);
                 let output_vreg = self.vreg_by_value[&output_value];
                 
-                // TODO: need to put constant into data then load it
+                let (data_contents, width): (Box<[u8]>, SseOperandWidth) = match val {
+                    Constant::f32(f) => 
+                        (Box::from(f.to_le_bytes().as_slice()), SseOperandWidth::Single),
+                    Constant::f64(d) => 
+                        (Box::from(d.to_le_bytes().as_slice()), SseOperandWidth::Double),
+                    _ => unreachable!()
+                };
+
+                let data = Data { 
+                    name: None, 
+                    read_only: true, 
+                    contents: DataContents::Defined(data_contents)
+                };
+
+                let data_ref = self.mir_mod.add_data(data);
+
+                let minst = MachineInst::LoadFloat { 
+                    dst: Reg::VReg(output_vreg),
+                    op2: MemOperand::PcRelativeData { target: data_ref }, 
+                    width 
+                };
             },
             Inst::Constant { val } => {
                 let output_value = Value::Inst(inst_ref);
@@ -89,7 +149,17 @@ impl InstructionSelector {
 
             }
             Inst::Add { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let output_vreg = self.vreg_by_value[&output_value];
 
+                let a_vreg = self.vreg_by_value.get(a).unwrap_or_else(f)
+
+                let minst = MachineInst::AddRegToReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: (), 
+                    op2: (), 
+                    width: () 
+                };
             },
             Inst::Sub { a, b } => todo!(),
             Inst::Mul { a, b } => todo!(),
@@ -131,8 +201,7 @@ impl InstructionSelector {
         }
     }
 
-
-    fn select_block(function: &FunctionDefinition, block_ref: BlockRef) {
+    fn select_block(&mut self, function: &FunctionDefinition, block_ref: BlockRef) {
         let block = &function.blocks[block_ref];
 
         for iref in block.inst_refs.borrow().iter().rev() {
@@ -140,11 +209,12 @@ impl InstructionSelector {
         }
     }
 
-    fn select_function(function: &FunctionDefinition) {
-    let post_order_traversal = post_order::post_order(function);
-    for bref in post_order_traversal {
-        
+    fn select_function(&mut self, function: &FunctionDefinition) {
+        let post_order_traversal = post_order::post_order(function);
+
+        for bref in post_order_traversal {
+            
+        }
     }
-}
 
 }

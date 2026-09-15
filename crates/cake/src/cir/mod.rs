@@ -7,21 +7,21 @@ use crate::cir::intrinsics::Intrinsic;
 
 #[derive(Debug)]
 pub(crate) struct Module {
-    functions: IndexVec<FuncRef, Function>,
-    signatures: IndexVec<FuncRef, Signature>,
-    data: IndexVec<DataRef, Data>,
+    pub(crate) functions: IndexVec<FuncRef, Function>,
+    pub(crate) signatures: IndexVec<FuncRef, Signature>,
+    pub(crate) data: IndexVec<DataRef, Data>,
 }
 
 make_type_idx!(DataRef, Data);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Data {
     pub(crate) name: Option<String>,
     pub(crate) read_only: bool,
     pub(crate) contents: DataContents
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum DataContents {
     /// Data is defined as having some specific contents
     Defined(Box<[u8]>),
