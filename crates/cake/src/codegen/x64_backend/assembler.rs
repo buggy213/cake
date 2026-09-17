@@ -564,6 +564,19 @@ impl Assembler {
                     None
                 )
             },
+            MachineInst::Cmov { dst, op2, cond, width } => {
+                let dst = dst.as_preg(valid);
+                let op2 = op2.as_preg(valid);
+
+                let code = cmov_opcode(cond, width);
+
+                let dst: Register = dst.to_register(width);
+                let src: Register = op2.to_register(width);
+                self.emit(
+                    Instruction::with2(code, dst, src)?,
+                    None
+                )
+            }
             MachineInst::Xchg { op1, op2, width } => {
                 let op1 = op1.as_preg(valid);
                 let op2 = op2.as_preg(valid);
@@ -959,6 +972,51 @@ impl Assembler {
                 self.emit(Instruction::with_branch(code, target.0)?, None)
             },
         }
+    }
+}
+
+fn cmov_opcode(cond: Condition, width: GprOperandWidth) -> iced_x86::Code {
+    use Condition::*;
+    use GprOperandWidth::*;
+    use iced_x86::Code::*;
+    match (cond, width) {
+        (_, GprOperandWidth::Byte) => panic!("cmov with byte operands not encodable"),
+        (O, Word) => Cmovo_r16_rm16,
+        (O, Dword) => Cmovo_r32_rm32,
+        (O, Qword) => Cmovo_r64_rm64,
+        (No, Word) => Cmovno_r16_rm16,
+        (No, Dword) => Cmovno_r32_rm32,
+        (No, Qword) => Cmovno_r64_rm64,
+        (Z, Word) => Cmove_r16_rm16,
+        (Z, Dword) => Cmove_r32_rm32,
+        (Z, Qword) => Cmove_r64_rm64,
+        (Nz, Word) => Cmovne_r16_rm16,
+        (Nz, Dword) => Cmovne_r32_rm32,
+        (Nz, Qword) => Cmovne_r64_rm64,
+        (B, Word) => Cmovb_r16_rm16,
+        (B, Dword) => Cmovb_r32_rm32,
+        (B, Qword) => Cmovb_r64_rm64,
+        (Ae, Word) => Cmovae_r16_rm16,
+        (Ae, Dword) => Cmovae_r32_rm32,
+        (Ae, Qword) => Cmovae_r64_rm64,
+        (Be, Word) => Cmovbe_r16_rm16,
+        (Be, Dword) => Cmovbe_r32_rm32,
+        (Be, Qword) => Cmovbe_r64_rm64,
+        (A, Word) => Cmova_r16_rm16,
+        (A, Dword) => Cmova_r32_rm32,
+        (A, Qword) => Cmova_r64_rm64,
+        (L, Word) => Cmovl_r16_rm16,
+        (L, Dword) => Cmovl_r32_rm32,
+        (L, Qword) => Cmovl_r64_rm64,
+        (Ge, Word) => Cmovge_r16_rm16,
+        (Ge, Dword) => Cmovge_r32_rm32,
+        (Ge, Qword) => Cmovge_r64_rm64,
+        (Le, Word) => Cmovle_r16_rm16,
+        (Le, Dword) => Cmovle_r32_rm32,
+        (Le, Qword) => Cmovle_r64_rm64,
+        (G, Word) => Cmovg_r16_rm16,
+        (G, Dword) => Cmovg_r32_rm32,
+        (G, Qword) => Cmovg_r64_rm64,
     }
 }
 

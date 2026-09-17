@@ -131,6 +131,16 @@ pub(crate) struct VRegUse {
     coord: MachineInstOperandCoord,
 }
 
+impl MachineInstOperandCoord {
+    fn direct(idx: u32) -> Self {
+        Self { kind: 0, idx }
+    }
+
+    fn indirect(kind: u32, idx: u32) -> Self {
+        Self { kind, idx }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct VirtualReg {
     class: RegClass,
@@ -380,6 +390,14 @@ pub(crate) enum MachineInst {
         op2: Reg,
         width: GprOperandWidth
     },
+    // cmov(cc) %dst, %op2
+    Cmov {
+        dst: Reg,
+        op2: Reg,
+        cond: Condition,
+        width: GprOperandWidth
+    },
+    // xchg %op1, %op2
     Xchg {
         op1: Reg,
         op2: Reg,

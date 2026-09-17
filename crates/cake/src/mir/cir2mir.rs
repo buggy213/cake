@@ -23,7 +23,7 @@ use cake_util::{IndexSlice, IndexVec, index_vec};
 use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 use crate::{
-    cir::{self, BlockRef, Constant, Data, DataContents, Function, FunctionDefinition, InstRef, Value, post_order}, mir::{self, GprOperandWidth, ImmediateOperand, MachineBlock, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstRef, MachineModule, MemOperand, Reg, RegClass, SseOperandWidth, VRegRef, VRegUse, VirtualReg}
+    cir::{self, BlockRef, Constant, Data, DataContents, Function, FunctionDefinition, InstRef, Value, post_order}, mir::{self, GprOperandWidth, ImmediateOperand, MachineBlock, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstOperandCoord, MachineInstRef, MachineModule, MemOperand, Reg, RegClass, SseOperandWidth, VRegDef, VRegDefCoord, VRegRef, VRegUse, VirtualReg}
 };
 
 // Whether a CIR instruction has already been selected
@@ -79,6 +79,21 @@ impl InstSelVReg {
         match self {
             InstSelVReg::Undefined { .. } => panic!("vreg is not defined"),
             InstSelVReg::Defined(virtual_reg) => virtual_reg
+        }
+    }
+
+    fn define(&mut self, def: VRegDef) {
+        match self {
+            InstSelVReg::Undefined { class, uses } => {
+                let defined_vreg = VirtualReg {
+                    class: *class,
+                    def,
+                    uses: std::mem::take(uses),
+                };
+
+                *self = InstSelVReg::Defined(defined_vreg);
+            }
+            InstSelVReg::Defined(_) => panic!("vreg is already defined")
         }
     }
 }
@@ -170,15 +185,47 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
         let y: Value = todo!();
     }
 
+    // Allocates a new virtual register and returns its index
     fn allocate_vreg(&mut self, class: RegClass) -> VRegRef {
         let undefined_vreg = InstSelVReg::Undefined { class, uses: smallvec![] };
         self.vregs.push(undefined_vreg)
     }
 
-    // Uses an operand: allocates a vreg (if one has not already been allocated)
-    // and adds a use to that vreg
-    fn use_operand(&mut self, val: Value, reg_class: RegClass) -> VRegRef {
-        todo!();
+    // Allocates an operand if it has not already been allocated a slot
+    // If it has, then just return the already-allocated operand
+    fn allocate_operand(&mut self, class: RegClass, val: Value) -> VRegRef {
+        use std::collections::hash_map::Entry;
+        let entry = self.vreg_by_value.entry(val);
+        match entry {
+            Entry::Occupied(occupied_entry) => {
+                *occupied_entry.get()
+            },
+            Entry::Vacant(vacant_entry) => {
+                let undefined_vreg = InstSelVReg::Undefined { class, uses: smallvec![] };
+                let undefined_vreg_ref = self.vregs.push(undefined_vreg);
+                *vacant_entry.insert(undefined_vreg_ref)
+            },
+        }
+    }
+
+    // Uses an operand: adds the val->vreg mapping and adds a use to that vreg
+    fn use_operand(
+        &mut self, 
+        val: Value, 
+        vreg: VRegRef, 
+        minst_ref: MachineInstRef, 
+        coord: MachineInstOperandCoord
+    ) {
+        self.vreg_by_value.insert(val, vreg);
+        let use_ = VRegUse {
+            inst: minst_ref,
+            coord,
+        };
+        self.vregs[vreg].add_use(use_);
+    }
+
+    fn define_vreg(&mut self, def: VRegDef, vreg: VRegRef) {
+        self.vregs[vreg].define(def)
     }
 
     // When selecting an instruction, we check multiple patterns (in decreasing order of complexity, hence maximal munch)
@@ -189,6 +236,9 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
         let inst = &function.insts[inst_ref];
 
         use crate::cir::Inst;
+
+        use mir::MachineInstOperandCoord as OpCoord;
+        use mir::VRegDefCoord as DefCoord;
         
         match inst {
             Inst::Constant { val } if val.ty().is_fp() => {
@@ -219,7 +269,11 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     width 
                 };
 
-                Some(self.insts.push(minst))
+                let minst_ref = self.insts.push(minst);
+
+                self.define_vreg(VRegDef::Inst(minst_ref, VRegDefCoord(0)), output_vreg);
+                
+                Some(minst_ref)
             },
             Inst::Constant { val } => {
                 let output_value = Value::Inst(inst_ref);
@@ -252,11 +306,8 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     return None
                 };
 
-                let a_vreg = self.vreg_by_value.get(a).copied()
-                    .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
-
-                let b_vreg = self.vreg_by_value.get(b).copied()
-                    .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
+                let a_vreg = self.allocate_operand(RegClass::Gpr, *a);
+                let b_vreg = self.allocate_operand(RegClass::Gpr, *b);
 
                 let width = function.type_of_value(output_value).to_gpr_width();
                 let minst = MachineInst::AddRegToReg { 
@@ -266,7 +317,13 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     width
                 };
 
-                Some(self.insts.push(minst))
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, VRegDefCoord(0)), output_vreg);
+
+                Some(minst_ref)
             },
             Inst::Sub { a, b } => todo!(),
             Inst::Mul { a, b } => todo!(),
@@ -292,8 +349,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     return None
                 };
 
-                let addr_vreg = self.vreg_by_value.get(addr).copied()
-                    .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
+                let addr_vreg = self.allocate_operand(RegClass::Gpr, *addr);
 
                 let mem = MemOperand::BasePlusDisp { 
                     base: Reg::VReg(addr_vreg), 
@@ -307,14 +363,16 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     width
                 };
 
-                Some(self.insts.push(minst))
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*addr, addr_vreg, minst_ref, OpCoord::direct(0));
+                self.define_vreg(VRegDef::Inst(minst_ref, VRegDefCoord(0)), output_vreg);
+
+                Some(minst_ref)
             },
             Inst::Store { addr, val } => {
-                let addr_vreg = self.vreg_by_value.get(addr).copied()
-                    .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
-
-                let val_vreg = self.vreg_by_value.get(val).copied()
-                    .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
+                let addr_vreg = self.allocate_operand(RegClass::Gpr, *addr);
+                let val_vreg = self.allocate_operand(RegClass::Gpr, *val);
 
                 let mem = MemOperand::BasePlusDisp { 
                     base: Reg::VReg(addr_vreg),
@@ -328,7 +386,12 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     width
                 };
 
-                Some(self.insts.push(minst))
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*addr, addr_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*val, val_vreg, minst_ref, OpCoord::direct(1));
+
+                Some(minst_ref)
             }
             Inst::StackAddr { slot } => todo!(),
             Inst::Zext { v } => todo!(),
@@ -336,9 +399,24 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
             Inst::Truncate { v } => todo!(),
             Inst::FpCast { v } => todo!(),
             Inst::PtrAdd { ptr, offset } => todo!(),
-            Inst::PtrToInt { v } => todo!(),
+            Inst::PtrToInt { v } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return None
+                };
+                
+                // we need to "redirect" the output_vreg which has been allocated for this inst
+                // into v_vreg since PtrToInt is really a no-op
+
+                // the vreg that was allocated for this inst still gets defined. even though it
+                // is garbage, it is unreferenced, so it should be ok
+
+                None
+            },
             Inst::IntToPtr { v } => todo!(),
-            Inst::Select { cond, x, y } => todo!(),
+            Inst::Select { cond, x, y } => {
+                todo!()
+            },
             Inst::BranchIf { cond, con, con_args, alt, alt_args } => todo!(),
             Inst::Return { values } => todo!(),
             Inst::Jump { target, arguments } => todo!(),
@@ -352,9 +430,9 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
 
     fn select_block(&mut self, function: &FunctionDefinition, block_ref: BlockRef) {
         let block = &function.blocks[block_ref];
-
+        let mblock_irefs: Vec<MachineInstRef> = Vec::with_capacity(block.inst_refs.borrow().len());
         for iref in block.inst_refs.borrow().iter().rev() {
-
+            
         }
     }
 
@@ -365,7 +443,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
 
         let post_order_traversal = post_order::post_order(func);
         for bref in post_order_traversal {
-            
+            self.select_block(func, bref);
         }
 
         let func_ref = MachineFunctionRef::from_func_ref(func_ref);
