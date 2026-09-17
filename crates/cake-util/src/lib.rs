@@ -75,6 +75,12 @@ macro_rules! make_type_idx {
             }
         }
 
+        impl From<usize> for $type_idx_name {
+            fn from(value: usize) -> Self {
+                $type_idx_name(value as u32)
+            }
+        }
+
         impl std::ops::Index<$type_idx_name> for [$type_name] {
             type Output = $type_name;
 

@@ -16,8 +16,9 @@
 //!   that the three-address instruction encodings are available
 
 use cake_util::{IndexVec, make_type_idx};
+use smallvec::SmallVec;
 
-use crate::cir::{self, Type};
+use crate::cir;
 
 #[allow(non_camel_case_types, reason = "x86 convention")]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -55,25 +56,6 @@ pub(crate) enum PhysReg {
     xmm13,
     xmm14,
     xmm15,
-
-    /* 
-    ymm0,
-    ymm1,
-    ymm2,
-    ymm3,
-    ymm4,
-    ymm5,
-    ymm6,
-    ymm7,
-    ymm8,
-    ymm9,
-    ymm10,
-    ymm11,
-    ymm12,
-    ymm13,
-    ymm14,
-    ymm15
-    */
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,14 +105,38 @@ impl PhysReg {
     }
 }
 
+/// Identifies a single operand within a MachineInst; only SSA values for now.
+/// References to StackSlot, Function, Data are not considered.
 #[derive(Clone, Copy)]
+pub(crate) struct MachineInstOperandCoord {
+    kind: u32,
+    idx: u32,
+}
+
+/// For BlockParam's, this is the index of the block param
+/// For Inst, this is always zero for instructions that only have a single output,
+/// and the index of the output for instructions with >1 output.
+#[derive(Clone, Copy)]
+pub(crate) struct VRegDefCoord(u32);
+
+#[derive(Clone, Copy)]
+pub(crate) enum VRegDef {
+    BlockParam(MachineBlockRef, VRegDefCoord),
+    Inst(MachineInstRef, VRegDefCoord),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct VRegUse {
+    inst: MachineInstRef,
+    coord: MachineInstOperandCoord,
+}
+
+#[derive(Clone)]
 pub(crate) struct VirtualReg {
     class: RegClass,
     def: VRegDef,
-    uses: VRegUses,
+    uses: SmallVec<[VRegUse; 3]>
 }
-
-
 
 make_type_idx!(VRegRef, VirtualReg);
 
@@ -222,8 +228,8 @@ pub(crate) enum MemOperand {
     }
 }
 
-/// The width of the operand is tracked once, on the `MachineInst` (or, for `MovImm`/`LoadImm`,
-/// implied by the instruction always taking a full-width immediate) - not duplicated here.
+/// The width of the operand is tracked once, on the `MachineInst`, and thus we throw away the width info
+/// on CIR constants.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ImmediateOperand(pub(crate) i64);
 
@@ -270,8 +276,11 @@ pub(crate) enum Condition {
     G
 }
 
-/// MachineInst are the opcodes of MIR, and correspond directly to a single x86 opcode 
-/// and addressing mode selection
+/// MachineInst are the opcodes of MIR, and correspond directly to a 
+/// single x86_64 opcode and addressing mode selection to simplify final assembly
+/// emission. MachineInst's remain in three-address SSA form until register allocation, 
+/// using virtual registers and block parameters; it is the register allocator's job
+/// to perform out-of-SSA and two-address legalization for x86_64. 
 pub(crate) enum MachineInst {
     // lea %dst, [%op2]
     Lea {
@@ -554,6 +563,7 @@ make_type_idx!(MachineBlockRef, MachineBlock);
 
 struct MachineFunctionDefinition {
     insts: IndexVec<MachineInstRef, MachineInst>,
+    vregs: IndexVec<VRegRef, VirtualReg>,
 
     blocks: IndexVec<MachineBlockRef, MachineBlock>,
 }

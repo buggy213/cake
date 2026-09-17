@@ -3,7 +3,7 @@ use std::{fmt::Debug, hash::Hash, marker::PhantomData, ops::{Deref, DerefMut, In
 use smallvec::{Array, SmallVec};
 
 /// Idx is implemented by newtyped index types
-pub trait Idx : Clone + Copy + Hash + PartialEq + Eq + PartialOrd + Ord + Debug + Into<usize> {}
+pub trait Idx : Clone + Copy + Hash + PartialEq + Eq + PartialOrd + Ord + Debug + Into<usize> + From<usize> {}
 
 pub struct IndexVec<I: Idx, T> {
     inner: Vec<T>,
@@ -30,8 +30,10 @@ impl<I: Idx, T> IndexVec<I, T> {
         self.inner.iter_mut()
     }
 
-    pub fn push(&mut self, value: T) {
+    pub fn push(&mut self, value: T) -> I {
+        let idx = I::from(self.inner.len());
         self.inner.push(value);
+        idx
     }
 
     pub fn push_mut(&mut self, value: T) -> &mut T {
