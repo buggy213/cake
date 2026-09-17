@@ -19,7 +19,7 @@
 //! and selecting uses before defs in a dataflow-like fashion. This is similar to
 //! LLVM's GlobalISel.
 
-use cake_util::{IndexVec, index_vec};
+use cake_util::{IndexSlice, IndexVec, index_vec};
 use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 use crate::{
@@ -43,9 +43,12 @@ struct InstructionSelector<'cir_mod> {
     
     // while selecting instructions, the "inputs" to a rule may correspond to 
     // the outputs of instructions which have not been selected yet. we use a helper
-    // type to manage and fill in the insts defining virtual registers, whose capacity
-    // is reused across selection of different functions
+    // type to manage and fill in the insts defining virtual registers
     vregs: IndexVec<VRegRef, InstSelVReg>,
+    insts: IndexVec<MachineInstRef, MachineInst>,
+
+    // marks which CIR insts have been covered by instruction selection already
+    used_insts: IndexVec<cir::InstRef, bool>,
 
     // TODO: it might be more efficient to mirror the organization of values in CIR 
     // rather than using a hashmap
@@ -62,6 +65,24 @@ enum InstSelVReg {
     Defined(VirtualReg)
 }
 
+impl InstSelVReg {
+    fn add_use(&mut self, use_: VRegUse) {
+        match self {
+            InstSelVReg::Undefined { class, uses } => 
+                uses.push(use_),
+            InstSelVReg::Defined(virtual_reg) =>
+                virtual_reg.uses.push(use_)
+        }
+    }
+
+    fn as_defined_vreg(self) -> VirtualReg {
+        match self {
+            InstSelVReg::Undefined { .. } => panic!("vreg is not defined"),
+            InstSelVReg::Defined(virtual_reg) => virtual_reg
+        }
+    }
+}
+
 impl cir::Type {
     fn to_gpr_width(self) -> GprOperandWidth {
         match self {
@@ -73,6 +94,31 @@ impl cir::Type {
             cir::Type::f32 => panic!("CIR f32 does not correspond to any GPR operand width"),
             cir::Type::f64 => panic!("CIR f64 does not correspond to any GPR operand width"),
         }
+    }
+
+    fn to_sse_width(self) -> SseOperandWidth {
+        match self {
+            cir::Type::f32 => SseOperandWidth::Single,
+            cir::Type::f64 => SseOperandWidth::Double,
+            _ => panic!("CIR integral types do not correspond to SSE operand widths")
+        }
+    }
+
+    fn to_register_class(self) -> RegClass {
+        if self.is_fp() {
+            RegClass::Sse
+        }
+        else {
+            RegClass::Gpr
+        }
+    }
+}
+
+impl MachineFunctionRef {
+    /// Cast a CIR FuncRef into a MachineFunctionRef
+    /// This is safe because the two are in 1-1 correspondence with eachother by construction
+    fn from_func_ref(fref: cir::FuncRef) -> Self {
+        Self(fref.get_inner() as u32)
     }
 }
 
@@ -109,6 +155,8 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
             cir_mod,
             mir_mod,
             vregs: index_vec![],
+            insts: index_vec![],
+            used_insts: index_vec![],
             vreg_by_value: FxHashMap::default()
         }
     }
@@ -127,19 +175,27 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
         self.vregs.push(undefined_vreg)
     }
 
+    // Uses an operand: allocates a vreg (if one has not already been allocated)
+    // and adds a use to that vreg
+    fn use_operand(&mut self, val: Value, reg_class: RegClass) -> VRegRef {
+        todo!();
+    }
+
     // When selecting an instruction, we check multiple patterns (in decreasing order of complexity, hence maximal munch)
     // until one matches. Once it is matched, we need to allocate MIR virtual registers, record the mapping of input CIR operands
     // of the rule to the appropriate MIR virtual regs, look up the mapping CIR outputs of the rule, and finally emit
     // the MIR instructions that make up the rule. 
-    fn select_inst(&mut self, function: &FunctionDefinition, inst_ref: InstRef) {
+    fn select_inst(&mut self, function: &FunctionDefinition, inst_ref: InstRef) -> Option<MachineInstRef> {
         let inst = &function.insts[inst_ref];
 
         use crate::cir::Inst;
-
+        
         match inst {
             Inst::Constant { val } if val.ty().is_fp() => {
                 let output_value = Value::Inst(inst_ref);
-                let output_vreg = self.vreg_by_value[&output_value];
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return None
+                };
                 
                 let (data_contents, width): (Box<[u8]>, SseOperandWidth) = match val {
                     Constant::f32(f) => 
@@ -162,10 +218,14 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     op2: MemOperand::PcRelativeData { target: data_ref }, 
                     width 
                 };
+
+                Some(self.insts.push(minst))
             },
             Inst::Constant { val } => {
                 let output_value = Value::Inst(inst_ref);
-                let output_vreg = self.vreg_by_value[&output_value];
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return None
+                };
 
                 let imm = ImmediateOperand::try_from(*val)
                     .expect("fp should be handled above");
@@ -184,10 +244,13 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     width
                 };
 
+                Some(self.insts.push(minst))
             }
             Inst::Add { a, b } => {
                 let output_value = Value::Inst(inst_ref);
-                let output_vreg = self.vreg_by_value[&output_value];
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return None
+                };
 
                 let a_vreg = self.vreg_by_value.get(a).copied()
                     .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
@@ -195,12 +258,15 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 let b_vreg = self.vreg_by_value.get(b).copied()
                     .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
 
+                let width = function.type_of_value(output_value).to_gpr_width();
                 let minst = MachineInst::AddRegToReg { 
                     dst: Reg::VReg(output_vreg), 
                     op1: Reg::VReg(a_vreg), 
                     op2: Reg::VReg(b_vreg), 
-                    width: function.inst_types[inst_ref][0].to_gpr_width()
+                    width
                 };
+
+                Some(self.insts.push(minst))
             },
             Inst::Sub { a, b } => todo!(),
             Inst::Mul { a, b } => todo!(),
@@ -220,8 +286,50 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
             Inst::Fcmp { mode, a, b } => todo!(),
             Inst::IntToFp { v } => todo!(),
             Inst::FpToInt { v } => todo!(),
-            Inst::Load { addr } => todo!(),
-            Inst::Store { addr, val } => todo!(),
+            Inst::Load { addr } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return None
+                };
+
+                let addr_vreg = self.vreg_by_value.get(addr).copied()
+                    .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
+
+                let mem = MemOperand::BasePlusDisp { 
+                    base: Reg::VReg(addr_vreg), 
+                    disp: mir::MemOperandDisplacement::Zero 
+                };
+
+                let width = function.type_of_value(output_value).to_gpr_width();
+                let minst = MachineInst::Load { 
+                    dst: Reg::VReg(output_vreg), 
+                    op2: mem,
+                    width
+                };
+
+                Some(self.insts.push(minst))
+            },
+            Inst::Store { addr, val } => {
+                let addr_vreg = self.vreg_by_value.get(addr).copied()
+                    .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
+
+                let val_vreg = self.vreg_by_value.get(val).copied()
+                    .unwrap_or_else(|| self.allocate_vreg(RegClass::Gpr));
+
+                let mem = MemOperand::BasePlusDisp { 
+                    base: Reg::VReg(addr_vreg),
+                    disp: mir::MemOperandDisplacement::Zero
+                };
+
+                let width = function.type_of_value(*val).to_gpr_width();
+                let minst = MachineInst::StoreReg { 
+                    op1: mem, 
+                    op2: Reg::VReg(val_vreg),
+                    width
+                };
+
+                Some(self.insts.push(minst))
+            }
             Inst::StackAddr { slot } => todo!(),
             Inst::Zext { v } => todo!(),
             Inst::Sext { v } => todo!(),
@@ -250,16 +358,34 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
         }
     }
 
-    fn select_function(&mut self, function: &FunctionDefinition, ) {
-        let post_order_traversal = post_order::post_order(function);
+    fn select_function(&mut self, func_ref: cir::FuncRef) {
+        let Some(func) = &self.cir_mod.functions[func_ref].definition else {
+            return
+        };
 
+        let post_order_traversal = post_order::post_order(func);
         for bref in post_order_traversal {
             
         }
+
+        let func_ref = MachineFunctionRef::from_func_ref(func_ref);
+        let Some(mfunc) = &mut self.mir_mod.functions[func_ref].definition else {
+            panic!("machine functions and CIR functions should be in 1-1 correspondence")
+        };
+
+        mfunc.insts = std::mem::take(&mut self.insts);
+        let vregs = std::mem::take(&mut self.vregs);
+        mfunc.vregs = vregs.into_iter()
+            .map(|v| v.as_defined_vreg())
+            .collect();
+
     }
 
-    fn select_module(&mut self) {
-
+    /// The main entry point into instruction selection
+    pub(crate) fn select_module(&mut self) {
+        for func_ref in cir::FuncRef::iter(&self.cir_mod.functions) {
+            self.select_function(func_ref);
+        }
     }
 
 }

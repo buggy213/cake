@@ -45,6 +45,10 @@ impl<I: Idx, T> IndexVec<I, T> {
         self.inner.clear();
     }
 
+    pub fn reserve(&mut self, additional: usize) {
+        self.inner.reserve(additional);
+    }
+
     /// Helper function for the `index_vec!` macro
     pub fn from_vec(vec: Vec<T>) -> Self {
         Self { inner: vec, _unused: PhantomData }
@@ -121,6 +125,22 @@ impl<'a, I: Idx, T> IntoIterator for &'a mut IndexVec<I, T> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
+    }
+}
+
+impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
+    type Item = T;
+
+    type IntoIter = <Vec<T> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
+    }
+}
+
+impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
+    fn from_iter<Iter: IntoIterator<Item = T>>(iter: Iter) -> Self {
+        Self { inner: iter.into_iter().collect(), _unused: Default::default() }
     }
 }
 

@@ -304,6 +304,18 @@ impl FunctionDefinition {
 
         BlockRef(idx as u32)
     }
+
+    /// Returns the type of a given value
+    pub(crate) fn type_of_value(&self, val: Value) -> Type {
+        match val {
+            Value::Inst(inst_ref) => 
+                self.inst_types[inst_ref][0],
+            Value::BlockArgument(block_ref, block_arg_ref) => 
+                self.blocks[block_ref].block_arg_types[block_arg_ref],
+            Value::TupleElement(inst_ref, idx) => 
+                self.inst_types[inst_ref][idx as usize]
+        }
+    }
 }
 
 make_type_idx!(StackSlotRef, StackSlot);
@@ -390,7 +402,7 @@ pub(crate) struct BlockBuilder<'block> {
 }
 
 impl<'block> BlockBuilder<'block> {
-    pub(crate) fn type_of(&mut self, val: Value) -> Type { 
+    pub(crate) fn type_of(&self, val: Value) -> Type { 
         match val {
             Value::Inst(inst_ref) => {
                 self.inst_types[inst_ref][0]

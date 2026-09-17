@@ -1,4 +1,4 @@
-use std::{mem::MaybeUninit, ops::Range};
+use std::{assert_matches, mem::MaybeUninit, ops::Range};
 
 use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
@@ -959,7 +959,7 @@ fn lower_lvalue(
             let location = lower_lvalue(ast, *accessee, func_builder, stack_frame, lower_fn_ctx);
             let accessee_type = ast.exprs[*accessee].expr_type();
 
-            assert!(matches!(accessee_type, CType::StructureTypeRef { .. } | CType::UnionTypeRef { .. }));
+            assert_matches!(accessee_type, CType::StructureTypeRef { .. } | CType::UnionTypeRef { .. });
             let offset = match accessee_type.as_struct() {
                 Some(struct_ref) => ast.layouts.get_struct_member_offset(struct_ref, *member),
                 None => 0 // must be union
@@ -972,7 +972,7 @@ fn lower_lvalue(
             let location = lower_expr(ast, *accessee, func_builder, stack_frame, lower_fn_ctx);
             let accessee_type = ast.exprs[*accessee].expr_type().as_pointee().unwrap();
 
-            assert!(matches!(accessee_type, CType::StructureTypeRef { .. } | CType::UnionTypeRef { .. }));
+            assert_matches!(accessee_type, CType::StructureTypeRef { .. } | CType::UnionTypeRef { .. });
             let offset = match accessee_type.as_struct() {
                 Some(struct_ref) => ast.layouts.get_struct_member_offset(struct_ref, *member),
                 None => 0 // must be union
