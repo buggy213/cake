@@ -103,6 +103,43 @@ impl PhysReg {
 
         RegClass::GprNoSp
     }
+
+    pub(crate) fn mnemonic(self) -> &'static str {
+        match self {
+            PhysReg::rax => "rax",
+            PhysReg::rbx => "rbx",
+            PhysReg::rcx => "rcx",
+            PhysReg::rdx => "rdx",
+            PhysReg::rsi => "rsi",
+            PhysReg::rdi => "rdi",
+            PhysReg::rbp => "rbp",
+            PhysReg::rsp => "rsp",
+            PhysReg::r8 => "r8",
+            PhysReg::r9 => "r9",
+            PhysReg::r10 => "r10",
+            PhysReg::r11 => "r11",
+            PhysReg::r12 => "r12",
+            PhysReg::r13 => "r13",
+            PhysReg::r14 => "r14",
+            PhysReg::r15 => "r15",
+            PhysReg::xmm0 => "xmm0",
+            PhysReg::xmm1 => "xmm1",
+            PhysReg::xmm2 => "xmm2",
+            PhysReg::xmm3 => "xmm3",
+            PhysReg::xmm4 => "xmm4",
+            PhysReg::xmm5 => "xmm5",
+            PhysReg::xmm6 => "xmm6",
+            PhysReg::xmm7 => "xmm7",
+            PhysReg::xmm8 => "xmm8",
+            PhysReg::xmm9 => "xmm9",
+            PhysReg::xmm10 => "xmm10",
+            PhysReg::xmm11 => "xmm11",
+            PhysReg::xmm12 => "xmm12",
+            PhysReg::xmm13 => "xmm13",
+            PhysReg::xmm14 => "xmm14",
+            PhysReg::xmm15 => "xmm15",
+        }
+    }
 }
 
 /// Identifies a single operand within a MachineInst; only SSA values for now.
@@ -238,8 +275,8 @@ pub(crate) enum MemOperand {
     }
 }
 
-/// The width of the operand is tracked once, on the `MachineInst`, and thus we throw away the width info
-/// on CIR constants.
+/// The width of the operand is tracked in one place, on the `MachineInst`,
+/// and thus we throw away the width info on CIR constants.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ImmediateOperand(pub(crate) i64);
 
@@ -609,6 +646,148 @@ struct MachineModule {
 impl MachineModule {
     pub(crate) fn add_data(&mut self, data: cir::Data) -> cir::DataRef {
         cir::DataRef::from_push2(&mut self.data, data)
+    }
+}
+
+// `impl Display` for MIR
+impl std::fmt::Display for PhysReg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.mnemonic())
+    }
+}
+
+impl std::fmt::Display for Reg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Reg::VReg(vreg_ref) => write!(f, "v{}", vreg_ref.0),
+            Reg::PReg(phys_reg) => write!(f, "{phys_reg}"),
+        }
+    }
+}
+
+/// Helper enum for displaying operand width of MachineInst's
+enum DisplayOperandWidth {
+    GprOperandWidth(GprOperandWidth),
+    SseOperandWidth(SseOperandWidth),
+}
+
+impl From<GprOperandWidth> for DisplayOperandWidth {
+    fn from(value: GprOperandWidth) -> Self {
+        Self::GprOperandWidth(value)
+    }
+}
+
+impl From<SseOperandWidth> for DisplayOperandWidth {
+    fn from(value: SseOperandWidth) -> Self {
+        Self::SseOperandWidth(value)
+    }
+}
+
+impl MachineInst {
+    fn mnemonic(&self) -> &'static str {
+        match self {
+            MachineInst::Lea { .. } => "Lea",
+            MachineInst::AddRegToReg { .. } => "AddRegToReg",
+            MachineInst::AddMemToReg { .. } => "AddMemToReg",
+            MachineInst::AddRegToMem { .. } => "AddRegToMem",
+            MachineInst::AddImmToReg { .. } => "AddImmToReg",
+            MachineInst::AddImmToMem { .. } => "AddImmToMem",
+            MachineInst::FAddRegToReg { .. } => "FAddRegToReg",
+            MachineInst::FAddMemToReg { .. } => "FAddMemToReg",
+            MachineInst::Load { .. } => "Load",
+            MachineInst::LoadImm { .. } => "LoadImm",
+            MachineInst::LoadFloat { .. } => "LoadFloat",
+            MachineInst::StoreReg { .. } => "StoreReg",
+            MachineInst::StoreImm { .. } => "StoreImm",
+            MachineInst::StoreFloat { .. } => "StoreFloat",
+            MachineInst::Mov { .. } => "Mov",
+            MachineInst::Cmov { .. } => "Cmov",
+            MachineInst::Xchg { .. } => "Xchg",
+            MachineInst::ZeroExtend { .. } => "ZeroExtend",
+            MachineInst::SignExtend { .. } => "SignExtend",
+            MachineInst::Push { .. } => "Push",
+            MachineInst::PushImm { .. } => "PushImm",
+            MachineInst::Pop { .. } => "Pop",
+            MachineInst::Jump { .. } => "Jump",
+            MachineInst::Call { .. } => "Call",
+            MachineInst::CallIndirect { .. } => "CallIndirect",
+            MachineInst::Ret => "Ret",
+            MachineInst::MulRegToReg { .. } => "MulRegToReg",
+            MachineInst::MulMemToReg { .. } => "MulMemToReg",
+            MachineInst::MulRegWithImm { .. } => "MulRegWithImm",
+            MachineInst::MulMemWithImm { .. } => "MulMemWithImm",
+            MachineInst::UDivByReg { .. } => "UDivByReg",
+            MachineInst::UDivByMem { .. } => "UDivByMem",
+            MachineInst::SDivByReg { .. } => "SDivByReg",
+            MachineInst::SDivByMem { .. } => "SDivByMem",
+            MachineInst::PrepareDiv { .. } => "PrepareDiv",
+            MachineInst::AndRegToReg { .. } => "AndRegToReg",
+            MachineInst::OrRegToReg { .. } => "OrRegToReg",
+            MachineInst::XorRegToReg { .. } => "XorRegToReg",
+            MachineInst::NotReg { .. } => "NotReg",
+            MachineInst::TestRegWithImm { .. } => "TestRegWithImm",
+            MachineInst::CmpRegWithImm { .. } => "CmpRegWithImm",
+            MachineInst::JmpWithCond { .. } => "JmpWithCond",
+        }
+    }
+
+    fn operand_width(&self) -> Option<DisplayOperandWidth> {
+        match self {
+            MachineInst::Lea { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::AddRegToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::AddMemToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::AddRegToMem { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::AddImmToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::AddImmToMem { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::FAddRegToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::FAddMemToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::Load { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::LoadImm { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::LoadFloat { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::StoreReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::StoreImm { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::StoreFloat { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::Mov { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::Cmov { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::Xchg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::ZeroExtend { .. } => None,
+            MachineInst::SignExtend { .. } => None,
+            MachineInst::Push { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::PushImm { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::Pop { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::Jump { .. } => None,
+            MachineInst::Call { .. } => None,
+            MachineInst::CallIndirect { .. } => None,
+            MachineInst::Ret => None,
+            MachineInst::MulRegToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::MulMemToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::MulRegWithImm { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::MulMemWithImm { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::UDivByReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::UDivByMem { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::SDivByReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::SDivByMem { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::PrepareDiv { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::AndRegToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::OrRegToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::XorRegToReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::NotReg { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::TestRegWithImm { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::CmpRegWithImm { width, .. } => Some(DisplayOperandWidth::from(*width)),
+            MachineInst::JmpWithCond { .. } => None,
+        }
+    }
+}
+
+impl std::fmt::Display for MachineInst {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!();
+    }
+}
+
+impl std::fmt::Display for MachineModule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
     }
 }
 
