@@ -25,6 +25,7 @@ struct ParserTestHarness<'text> {
     state: ParserState,
     dummy_state: ParserState,
 }
+
 fn text_test_harness<'text>(text: &'text str) -> ParserTestHarness<'text> {
     let shared_string_pool = Rc::new(RefCell::new(StringPool::new()));
     let toks = RawCTokenStream::new(

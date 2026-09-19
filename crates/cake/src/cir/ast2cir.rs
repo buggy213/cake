@@ -1153,4 +1153,31 @@ pub(crate) mod test {
 
         print!("{module}"); 
     }
+
+    pub(crate) fn conditional_module() -> Module {
+        let code = r#"
+        int main() {
+            int x = 4;
+            int y;
+            if (x == 2) {
+                y = 17;
+            }
+            else {
+                y = 3;
+            }
+
+            return y;
+        }
+        "#;
+
+        let input = ResolveHarnessInput { code };
+        let resolved = resolve_harness(input);
+        cir::ast2cir::lower_ast(resolved)
+    }
+
+    #[test]
+    fn test_conditional() {
+        let module = conditional_module();
+        print!("{module}")
+    }
 }

@@ -1,16 +1,12 @@
-int puts(const char *str);
-char *strcpy(char *dest, const char *src);
-
-int main(int argc, char *argv[]) {
-    char buf[64];
-    strcpy(buf, "argc=4? x");
-    
-    if (argc == 4) {
-        buf[8] = 'y';
+int main() {
+    int x = 4;
+    int y;
+    if (x == 2) {
+        y = 17;
     }
     else {
-        buf[8] = 'n';
+        y = 3;
     }
-    puts(buf);
-    return 0;
+
+    return y;
 }

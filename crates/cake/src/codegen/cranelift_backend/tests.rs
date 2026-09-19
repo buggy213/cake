@@ -162,12 +162,13 @@ make_test!(compile_variables);
 make_test!(compile_function_call);
 make_test!(compile_string_literal);
 make_test!(array);
+make_test!(conditional);
+make_test!(complicated_conditional);
 make_test!(
-    conditional,
+    complicated_conditional2,
     (&[], "", "argc=4? n\n", 0),
     (&["x", "x", "x"], "", "argc=4? y\n", 0)
 );
-make_test!(complicated_conditional);
 make_test!(while);
 make_test!(
     calculator,
