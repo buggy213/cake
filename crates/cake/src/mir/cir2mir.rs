@@ -543,6 +543,6 @@ mod test {
         isel.select_module();
         let mir_mod = isel.finish();
 
-        dbg!(mir_mod);
+        print!("{mir_mod}")
     }
 }
