@@ -216,8 +216,8 @@ impl MemOperand {
 }
 
 /// Describes what a relocatable rel32/disp32 field refers to
-#[derive(Debug, Clone, Copy)]
-enum Relocation {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Relocation {
     /// A `call rel32` whose target function's address is not known yet
     Call(MachineFunctionRef),
     /// A RIP-relative memory operand referencing a function's address
@@ -239,6 +239,7 @@ impl MemOperand {
 }
 
 /// A `Relocation` at a particular offset that will be patched by the linker
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AssembledRelocation {
     code_offset: u64,
     reloc: Relocation
@@ -1026,13 +1027,17 @@ mod tests {
     use cake_util::IndexVec;
 
     use crate::{
-        cir, codegen::x64_backend::assembler::{AssembleFunctionContext, Assembler, MachineLabel, valid::ValidForCodegenToken}, mir::{
+        cir, 
+        codegen::x64_backend::assembler::{
+            AssembleFunctionContext, AssembledRelocation, Assembler, MachineLabel, Relocation, valid::ValidForCodegenToken
+        }, 
+        mir::{
             GprOperandWidth, ImmediateOperand, MachineBlockRef, MachineFunctionRef, MachineInst, MemOperand, MemOperandDisplacement, phys_regs::*
         }
     };
 
     /// Small test harness for function encoding
-    fn test_harness(machine_insts: Vec<MachineInst>, expected_encoding: &[u8]) {
+    fn test_harness(machine_insts: Vec<MachineInst>, expected_encoding: &[u8]) -> Assembler {
         let mut assembler = Assembler {
             encoder: iced_x86::Encoder::try_new(64).unwrap(),
             current_offset: 0,
@@ -1052,7 +1057,9 @@ mod tests {
 
         let bytes = assembler.encoder.take_buffer();
         
-        assert_eq!(bytes, expected_encoding, "actual: {:#X?}\nexpected: {:#X?}\n", bytes, expected_encoding);
+        assert_eq!(&bytes, expected_encoding, "actual: {:#X?}\nexpected: {:#X?}\n", bytes, expected_encoding);
+
+        assembler
     }
 
     /// Basic smoke test for function encoding
@@ -1127,6 +1134,13 @@ mod tests {
             0xE8, 0x00, 0x00, 0x00, 0x00
         ];
 
-        test_harness(insts, &expected_bytes)
+        let assembler = test_harness(insts, &expected_bytes);
+
+        let expected_relocs: Vec<AssembledRelocation> = vec![
+            AssembledRelocation { code_offset: 3, reloc: Relocation::DataReloc(data_0) },
+            AssembledRelocation { code_offset: 8, reloc: Relocation::Call(func_0) }
+        ];
+
+        assert_eq!(assembler.relocs, expected_relocs);
     }
 }
