@@ -1269,7 +1269,7 @@ pub(crate) mod resolve_ast_tests {
         let resolve_result = resolve_ast(parse_result, state, toks.string_pool).expect("resolve unsuccessful");
 
         // compare
-        dbg!(&resolve_result);
+        // dbg!(&resolve_result);
 
         resolve_result
     }

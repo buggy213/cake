@@ -1342,6 +1342,7 @@ impl Inst {
         let arity = match self {
             Inst::BranchIf { .. } => 2,
             Inst::Jump { .. } => 1,
+            Inst::Return { .. } => 0,
             _ => unreachable!()
         };
 

@@ -23,7 +23,7 @@ use cake_util::{IndexSlice, IndexVec, index_vec};
 use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 use crate::{
-    cir::{self, BlockRef, Constant, Data, DataContents, Function, FunctionDefinition, InstRef, Value, post_order}, mir::{self, GprOperandWidth, ImmediateOperand, MachineBlock, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstOperandCoord, MachineInstRef, MachineModule, MemOperand, Reg, RegClass, SseOperandWidth, VRegDef, VRegDefCoord, VRegRef, VRegUse, VirtualReg}
+    cir::{self, BlockRef, Constant, Data, DataContents, Function, FunctionDefinition, InstRef, Value, post_order}, mir::{self, GprOperandWidth, ImmediateOperand, MachineBlock, MachineBlockRef, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstOperandCoord, MachineInstRef, MachineModule, MemOperand, PhysReg, Reg, RegClass, SseOperandWidth, VRegDef, VRegDefCoord, VRegRef, VRegUse, VirtualReg, phys_regs}
 };
 
 // Whether a CIR instruction has already been selected
@@ -137,6 +137,14 @@ impl MachineFunctionRef {
     }
 }
 
+impl MachineBlockRef {
+    /// Cast a CIR BlockRef into a MachineBlockRef
+    /// This is safe because the two are in 1-1 correspondence with eachother by construction
+    fn from_block_ref(bref: cir::BlockRef) -> Self {
+        Self(bref.get_inner() as u32)
+    }
+}
+
 impl<'cir_mod> InstructionSelector<'cir_mod> {
     fn new(cir_mod: &'cir_mod cir::Module) -> InstructionSelector<'cir_mod> {
         // prepare MIR module for instruction selection by copying over functions and basic blocks
@@ -193,7 +201,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
 
     // Allocates an operand if it has not already been allocated a slot
     // If it has, then just return the already-allocated operand
-    fn allocate_operand(&mut self, class: RegClass, val: Value) -> VRegRef {
+    fn operand_vreg(&mut self, class: RegClass, val: Value) -> VRegRef {
         use std::collections::hash_map::Entry;
         let entry = self.vreg_by_value.entry(val);
         match entry {
@@ -231,8 +239,13 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
     // When selecting an instruction, we check multiple patterns (in decreasing order of complexity, hence maximal munch)
     // until one matches. Once it is matched, we need to allocate MIR virtual registers, record the mapping of input CIR operands
     // of the rule to the appropriate MIR virtual regs, look up the mapping CIR outputs of the rule, and finally emit
-    // the MIR instructions that make up the rule. 
-    fn select_inst(&mut self, function: &FunctionDefinition, inst_ref: InstRef) -> Option<MachineInstRef> {
+    // the MIR instruction(s) that make up the rule. 
+    fn select_inst(
+        &mut self, 
+        selected_insts: &mut Vec<MachineInstRef>,
+        function: &FunctionDefinition, 
+        inst_ref: InstRef
+    ) {
         let inst = &function.insts[inst_ref];
 
         use crate::cir::Inst;
@@ -244,7 +257,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
             Inst::Constant { val } if val.ty().is_fp() => {
                 let output_value = Value::Inst(inst_ref);
                 let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
-                    return None
+                    return;
                 };
                 
                 let (data_contents, width): (Box<[u8]>, SseOperandWidth) = match val {
@@ -271,14 +284,14 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
 
                 let minst_ref = self.insts.push(minst);
 
-                self.define_vreg(VRegDef::Inst(minst_ref, VRegDefCoord(0)), output_vreg);
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
                 
-                Some(minst_ref)
+                selected_insts.push(minst_ref);
             },
             Inst::Constant { val } => {
                 let output_value = Value::Inst(inst_ref);
                 let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
-                    return None
+                    return
                 };
 
                 let imm = ImmediateOperand::try_from(*val)
@@ -298,16 +311,20 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     width
                 };
 
-                Some(self.insts.push(minst))
+                let minst_ref = self.insts.push(minst);
+
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
             }
             Inst::Add { a, b } => {
                 let output_value = Value::Inst(inst_ref);
                 let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
-                    return None
+                    return
                 };
 
-                let a_vreg = self.allocate_operand(RegClass::Gpr, *a);
-                let b_vreg = self.allocate_operand(RegClass::Gpr, *b);
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
 
                 let width = function.type_of_value(output_value).to_gpr_width();
                 let minst = MachineInst::AddRegToReg { 
@@ -321,9 +338,9 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
 
                 self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
                 self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
-                self.define_vreg(VRegDef::Inst(minst_ref, VRegDefCoord(0)), output_vreg);
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
 
-                Some(minst_ref)
+                selected_insts.push(minst_ref);
             },
             Inst::Sub { a, b } => todo!(),
             Inst::Mul { a, b } => todo!(),
@@ -346,10 +363,10 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
             Inst::Load { addr } => {
                 let output_value = Value::Inst(inst_ref);
                 let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
-                    return None
+                    return
                 };
 
-                let addr_vreg = self.allocate_operand(RegClass::Gpr, *addr);
+                let addr_vreg = self.operand_vreg(RegClass::Gpr, *addr);
 
                 let mem = MemOperand::BasePlusDisp { 
                     base: Reg::VReg(addr_vreg), 
@@ -366,13 +383,13 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 let minst_ref = self.insts.push(minst);
 
                 self.use_operand(*addr, addr_vreg, minst_ref, OpCoord::direct(0));
-                self.define_vreg(VRegDef::Inst(minst_ref, VRegDefCoord(0)), output_vreg);
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
 
-                Some(minst_ref)
+                selected_insts.push(minst_ref);
             },
             Inst::Store { addr, val } => {
-                let addr_vreg = self.allocate_operand(RegClass::Gpr, *addr);
-                let val_vreg = self.allocate_operand(RegClass::Gpr, *val);
+                let addr_vreg = self.operand_vreg(RegClass::Gpr, *addr);
+                let val_vreg = self.operand_vreg(RegClass::Gpr, *val);
 
                 let mem = MemOperand::BasePlusDisp { 
                     base: Reg::VReg(addr_vreg),
@@ -391,7 +408,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 self.use_operand(*addr, addr_vreg, minst_ref, OpCoord::direct(0));
                 self.use_operand(*val, val_vreg, minst_ref, OpCoord::direct(1));
 
-                Some(minst_ref)
+                selected_insts.push(minst_ref);
             }
             Inst::StackAddr { slot } => todo!(),
             Inst::Zext { v } => todo!(),
@@ -402,7 +419,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
             Inst::PtrToInt { v } => {
                 let output_value = Value::Inst(inst_ref);
                 let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
-                    return None
+                    return
                 };
                 
                 // we need to "redirect" the output_vreg which has been allocated for this inst
@@ -410,15 +427,46 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
 
                 // the vreg that was allocated for this inst still gets defined. even though it
                 // is garbage, it is unreferenced, so it should be ok
-
-                None
             },
             Inst::IntToPtr { v } => todo!(),
             Inst::Select { cond, x, y } => {
                 todo!()
             },
             Inst::BranchIf { cond, con, con_args, alt, alt_args } => todo!(),
-            Inst::Return { values } => todo!(),
+            Inst::Return { values } => {
+                // TODO: ABI handling code should probably be separated out somehow
+                match function.value_vecs[*values].len() {
+                    0 => {
+                        let minst = MachineInst::Ret;
+                        let minst_ref = self.insts.push(minst);
+                        selected_insts.push(minst_ref);
+                    },
+                    1 => {
+                        let retval = function.value_vecs[*values][0];
+                        let retval_ty = function.type_of_value(retval);
+                        
+                        assert!(!retval_ty.is_fp(), "fp not supported yet");
+                        let retval_vreg = self.operand_vreg(RegClass::Gpr, retval);
+
+                        let mov_to_rax = MachineInst::Mov { 
+                            dst: phys_regs::rax, 
+                            op2: Reg::VReg(retval_vreg),
+                            width: retval_ty.to_gpr_width() 
+                        };
+
+                        let mov_to_rax_ref = self.insts.push(mov_to_rax);
+
+                        let minst = MachineInst::Ret;
+                        let minst_ref = self.insts.push(minst);
+
+                        self.use_operand(retval, retval_vreg, mov_to_rax_ref, MachineInstOperandCoord::direct(0));
+
+                        selected_insts.push(mov_to_rax_ref);
+                        selected_insts.push(minst_ref);
+                    },
+                    _ => todo!("multiple returns")
+                }
+            },
             Inst::Jump { target, arguments } => todo!(),
             Inst::Call { func, arguments } => todo!(),
             Inst::CallIndirect { callee_sig, func_ptr, arguments } => todo!(),
@@ -428,29 +476,43 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
         }
     }
 
-    fn select_block(&mut self, function: &FunctionDefinition, block_ref: BlockRef) {
+    fn select_block(&mut self, function: &FunctionDefinition, block_ref: BlockRef) -> Vec<MachineInstRef> {
         let block = &function.blocks[block_ref];
-        let mblock_irefs: Vec<MachineInstRef> = Vec::with_capacity(block.inst_refs.borrow().len());
-        for iref in block.inst_refs.borrow().iter().rev() {
-            
+        
+        // For efficiency reasons, we build up the block in reverse, then flip it at the end
+        let mut mblock_irefs: Vec<MachineInstRef> = Vec::with_capacity(block.inst_refs.borrow().len());
+        let mut minst_irefs: Vec<MachineInstRef> = Vec::with_capacity(8);
+        for &iref in block.inst_refs.borrow().iter().rev() {
+            self.select_inst(&mut minst_irefs, function, iref);
+            mblock_irefs.extend(minst_irefs.iter().rev());
+            minst_irefs.clear();
         }
+
+        mblock_irefs.reverse();
+        mblock_irefs
     }
 
     fn select_function(&mut self, func_ref: cir::FuncRef) {
+        let mfunc_ref = MachineFunctionRef::from_func_ref(func_ref);
         let Some(func) = &self.cir_mod.functions[func_ref].definition else {
             return
         };
 
-        let post_order_traversal = post_order::post_order(func);
-        for bref in post_order_traversal {
-            self.select_block(func, bref);
+        // small helper to circumvent borrowck
+        fn get_mfunc_def<'isel>(mir: &'isel mut MachineModule, mfunc_ref: MachineFunctionRef) 
+            -> &'isel mut MachineFunctionDefinition {
+            mir.functions[mfunc_ref].definition.as_mut().unwrap()
         }
 
-        let func_ref = MachineFunctionRef::from_func_ref(func_ref);
-        let Some(mfunc) = &mut self.mir_mod.functions[func_ref].definition else {
-            panic!("machine functions and CIR functions should be in 1-1 correspondence")
-        };
+        let post_order_traversal = post_order::post_order(func);
+        for bref in post_order_traversal {
+            let mblock_irefs = self.select_block(func, bref);
+            let mfunc = get_mfunc_def(&mut self.mir_mod, mfunc_ref);
+            let mbref = MachineBlockRef::from_block_ref(bref);
+            mfunc.blocks[mbref].irefs = mblock_irefs;
+        }
 
+        let mfunc = get_mfunc_def(&mut self.mir_mod, mfunc_ref);
         mfunc.insts = std::mem::take(&mut self.insts);
         let vregs = std::mem::take(&mut self.vregs);
         mfunc.vregs = vregs.into_iter()
@@ -466,4 +528,21 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
         }
     }
 
+}
+
+#[cfg(test)]
+mod test {
+    use crate::mir::cir2mir::InstructionSelector;
+
+    #[test]
+    fn test_basic() {
+        use crate::cir::ast2cir::test::basic_module;
+        let module = basic_module();
+        println!("{module}");
+        let mut isel = InstructionSelector::new(&module);
+        isel.select_module();
+        let mir_mod = isel.finish();
+
+        dbg!(mir_mod);
+    }
 }

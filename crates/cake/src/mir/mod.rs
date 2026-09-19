@@ -73,7 +73,7 @@ pub(crate) enum SseOperandWidth {
 }
 
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RegClass {
     // all gprs
     Gpr,
@@ -107,7 +107,7 @@ impl PhysReg {
 
 /// Identifies a single operand within a MachineInst; only SSA values for now.
 /// References to StackSlot, Function, Data are not considered.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct MachineInstOperandCoord {
     kind: u32,
     idx: u32,
@@ -116,16 +116,16 @@ pub(crate) struct MachineInstOperandCoord {
 /// For BlockParam's, this is the index of the block param
 /// For Inst, this is always zero for instructions that only have a single output,
 /// and the index of the output for instructions with >1 output.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct VRegDefCoord(u32);
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum VRegDef {
     BlockParam(MachineBlockRef, VRegDefCoord),
     Inst(MachineInstRef, VRegDefCoord),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct VRegUse {
     inst: MachineInstRef,
     coord: MachineInstOperandCoord,
@@ -141,7 +141,7 @@ impl MachineInstOperandCoord {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct VirtualReg {
     class: RegClass,
     def: VRegDef,
@@ -150,7 +150,7 @@ pub(crate) struct VirtualReg {
 
 make_type_idx!(VRegRef, VirtualReg);
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Reg {
     VReg(VRegRef),
     PReg(PhysReg)
@@ -177,7 +177,7 @@ pub(crate) mod phys_regs {
     );
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum MemOperandDisplacement {
     Disp32(u32),
     Disp8(u8),
@@ -194,7 +194,7 @@ impl MemOperandDisplacement {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum MemOperandScale {
     One,
     Two,
@@ -213,7 +213,7 @@ impl MemOperandScale {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum MemOperand {
     PcRelativeFn {
         target: MachineFunctionRef
@@ -264,6 +264,7 @@ impl TryFrom<cir::Constant> for ImmediateOperand {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Condition {
     // overflow
     O,
@@ -291,6 +292,7 @@ pub(crate) enum Condition {
 /// emission. MachineInst's remain in three-address SSA form until register allocation, 
 /// using virtual registers and block parameters; it is the register allocator's job
 /// to perform out-of-SSA and two-address legalization for x86_64. 
+#[derive(Debug)]
 pub(crate) enum MachineInst {
     // lea %dst, [%op2]
     Lea {
@@ -566,7 +568,7 @@ pub(crate) enum MachineInst {
 
 make_type_idx!(MachineInstRef, MachineInst);
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct MachineBlock {
     irefs: Vec<MachineInstRef>,
 }
@@ -579,6 +581,7 @@ impl MachineBlock {
 
 make_type_idx!(MachineBlockRef, MachineBlock);
 
+#[derive(Debug)]
 struct MachineFunctionDefinition {
     insts: IndexVec<MachineInstRef, MachineInst>,
     vregs: IndexVec<VRegRef, VirtualReg>,
@@ -586,6 +589,7 @@ struct MachineFunctionDefinition {
     blocks: IndexVec<MachineBlockRef, MachineBlock>,
 }
 
+#[derive(Debug)]
 struct MachineFunction {
     name: String,
     definition: Option<MachineFunctionDefinition>,
@@ -593,6 +597,7 @@ struct MachineFunction {
 
 make_type_idx!(MachineFunctionRef, MachineFunction);
 
+#[derive(Debug)]
 struct MachineModule {
     functions: IndexVec<MachineFunctionRef, MachineFunction>,
 

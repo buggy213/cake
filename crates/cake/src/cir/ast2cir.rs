@@ -986,14 +986,13 @@ fn lower_lvalue(
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use crate::{
-        cir,
+        cir::{self, Module}, 
         semantics::resolver::resolve_ast_tests::{ResolveHarnessInput, resolve_harness},
     };
 
-    #[test]
-    fn test_basic() {
+    pub(crate) fn basic_module() -> Module {
         let code = r#"
         int main() {
             return 5 + 3;
@@ -1002,9 +1001,13 @@ mod test {
 
         let input = ResolveHarnessInput { code };
         let resolved = resolve_harness(input);
-        let module = cir::ast2cir::lower_ast(resolved);
+        cir::ast2cir::lower_ast(resolved)
+    }
 
-        dbg!(module);
+    #[test]
+    fn test_basic() {
+        let module = basic_module();
+        println!("{module}");
     }
 
     #[test]
