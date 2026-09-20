@@ -148,7 +148,7 @@ impl MachineBlockRef {
 impl<'cir_mod> InstructionSelector<'cir_mod> {
     fn new(cir_mod: &'cir_mod cir::Module) -> InstructionSelector<'cir_mod> {
         // prepare MIR module for instruction selection by copying over functions and basic blocks
-        // but leaving them unpopulated
+        // but leaving them unpopulated. also copies over stack slots
         let mut mir_mod = MachineModule {
             functions: index_vec![],
             signatures: cir_mod.signatures.clone(),
@@ -161,6 +161,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     insts: index_vec![],
                     vregs: index_vec![],
                     blocks: index_vec![MachineBlock::new(); func_def.blocks.len()],
+                    stack_slots: func_def.stack_slots.clone()
                 }.into()
             } else { 
                 None 
@@ -368,10 +369,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
 
                 let addr_vreg = self.operand_vreg(RegClass::Gpr, *addr);
 
-                let mem = MemOperand::BasePlusDisp { 
-                    base: Reg::VReg(addr_vreg), 
-                    disp: mir::MemOperandDisplacement::Zero 
-                };
+                let mem = MemOperand::base(addr_vreg);
 
                 let width = function.type_of_value(output_value).to_gpr_width();
                 let minst = MachineInst::Load { 
@@ -391,10 +389,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 let addr_vreg = self.operand_vreg(RegClass::Gpr, *addr);
                 let val_vreg = self.operand_vreg(RegClass::Gpr, *val);
 
-                let mem = MemOperand::BasePlusDisp { 
-                    base: Reg::VReg(addr_vreg),
-                    disp: mir::MemOperandDisplacement::Zero
-                };
+                let mem = MemOperand::base(addr_vreg);
 
                 let width = function.type_of_value(*val).to_gpr_width();
                 let minst = MachineInst::StoreReg { 
@@ -544,5 +539,18 @@ mod test {
         let mir_mod = isel.finish();
 
         print!("{mir_mod}")
+    }
+
+    #[test]
+    fn test_conditional() {
+        use crate::cir::ast2cir::test::conditional_module;
+        let module = conditional_module();
+        println!("{module}");
+
+        let mut isel = InstructionSelector::new(&module);
+        isel.select_module();
+        let mir_mod = isel.finish();
+
+        print!("{mir_mod}");
     }
 }

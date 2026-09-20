@@ -1,14 +1,12 @@
 use std::assert_matches;
-use cake_util::{IndexSlice, IndexVec};
+use cake_util::{IndexVec, index_vec};
 use iced_x86::{
     IcedError, Instruction, MemoryOperand, Register
 };
 
 use crate::{
-    cir,
-    mir::{
-        Condition, GprOperandWidth, MachineBlockRef, MachineFunctionRef, MachineInst, MemOperand,
-        MemOperandDisplacement, PhysReg, Reg, SseOperandWidth
+    cir::{self, StackSlotRef}, mir::{
+        Condition, GprOperandWidth, MachineBlockRef, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MemOperand, MemOperandDisplacement, PhysReg, Reg, SseOperandWidth
     }
 };
 
@@ -169,12 +167,26 @@ impl PhysReg {
 }
 
 impl MemOperand {
-    fn as_memory_operand(self, valid: ValidForCodegenToken) -> MemoryOperand {
+    fn as_memory_operand(&self, fn_ctx: &AssembleFunctionContext, valid: ValidForCodegenToken) -> MemoryOperand {
         let displ_size_from_displacement = |w: MemOperandDisplacement| match w {
             MemOperandDisplacement::Disp32(_) => 4,
             MemOperandDisplacement::Disp8(_) => 1,
             MemOperandDisplacement::Zero => 0
         };
+
+        use crate::mir::StackOrReg;
+        // turn StackOrReg -> base register (rsp for stack) + offset (stack offset for stack)
+        fn destructure_stack_or_reg(fn_ctx: &AssembleFunctionContext, stack_or_reg: StackOrReg, valid: ValidForCodegenToken) -> (PhysReg, u32) {
+            match stack_or_reg {
+                StackOrReg::Stack(stack_slot_ref) => {
+                    let stack_offset = fn_ctx.stack[stack_slot_ref];
+                    (PhysReg::rsp, stack_offset)
+                },
+                StackOrReg::Reg(reg) => {
+                    (reg.as_preg(valid), 0)
+                }
+            }
+        }
 
         match self {
             MemOperand::PcRelativeFn { target: _ } => {
@@ -184,24 +196,25 @@ impl MemOperand {
                 MemoryOperand::with_base_displ_size(Register::RIP, 0, 4)
             }
             MemOperand::Full { base, index, scale, disp } => {
-                let base = base.as_preg(valid);
+                let (base_reg, base_offset) = destructure_stack_or_reg(fn_ctx, *base, valid);
+
                 let index = index.as_preg(valid);
 
                 // memory operand base/index registers are always full-width
-                let base: Register = base.to_register(GprOperandWidth::Qword);
+                let base: Register = base_reg.to_register(GprOperandWidth::Qword);
                 let index: Register = index.to_register(GprOperandWidth::Qword);
                 let scale: u32 = scale.as_u32();
-                let displ_size = displ_size_from_displacement(disp);
-                let disp: u32 = disp.as_u32();
+                let displ_size = displ_size_from_displacement(*disp);
+                let disp: u32 = disp.as_u32() + base_offset;
 
                 MemoryOperand::with_base_index_scale_displ_size(base, index, scale, disp as i64, displ_size)
             },
             MemOperand::BasePlusDisp { base, disp } => {
-                let base = base.as_preg(valid);
+                let (base_reg, base_offset) = destructure_stack_or_reg(fn_ctx, *base, valid);
 
-                let base: Register = base.to_register(GprOperandWidth::Qword);
-                let displ_size = displ_size_from_displacement(disp);
-                let disp = disp.as_u32();
+                let base: Register = base_reg.to_register(GprOperandWidth::Qword);
+                let displ_size = displ_size_from_displacement(*disp);
+                let disp = disp.as_u32() + base_offset;
 
                 MemoryOperand::with_base_displ_size(base, disp as i64, displ_size)
             },
@@ -240,28 +253,57 @@ impl MemOperand {
 
 /// A `Relocation` at a particular offset that will be patched by the linker
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AssembledRelocation {
+pub(crate) struct AssembledRelocation {
     code_offset: u64,
     reloc: Relocation
 }
 
 #[derive(Clone, Copy)]
-struct MachineLabel(u64);
+pub(crate) struct MachineLabel(u64);
 
-struct Assembler {
+pub(crate) struct Assembler {
     encoder: iced_x86::Encoder,
     current_offset: usize,
     relocs: Vec<AssembledRelocation>,
 }
 
-/// Per-function context for assembling
-struct AssembleFunctionContext {
+/// Per-function context for assembling. 
+pub(crate) struct AssembleFunctionContext {
     labels: IndexVec<MachineBlockRef, MachineLabel>,
+
+    // negative offsets from the top of the stack frame
+    stack: IndexVec<StackSlotRef, u32>,
+
+    // total stack frame size, guaranteed to be a multiple of 16
+    stack_usage: u32,
 }
 
 impl AssembleFunctionContext {
-    fn reset(&mut self) {
-        self.labels.clear();
+    // Computes stack layout for a function and returns a new `AssembleFunctionContext`
+    fn new(mfunc: &MachineFunctionDefinition) -> Self {
+        // stack arranged such that values requiring the largest alignment
+        // live at higher addresses
+        let mut computed_stack: IndexVec<StackSlotRef, u32> = index_vec![0u32; mfunc.stack_slots.len()];
+        let mut stack_slot_by_align: Vec<StackSlotRef> = StackSlotRef::iter(&mfunc.stack_slots).collect();
+        stack_slot_by_align.sort_by(|&a, &b| {
+            Ord::cmp(&mfunc.stack_slots[a].align, &mfunc.stack_slots[b].align).reverse()
+        });
+
+        let mut current_stack = 0u32;
+        for stack_slot_ref in stack_slot_by_align {
+            let stack_slot = mfunc.stack_slots[stack_slot_ref];
+            current_stack += stack_slot.size;
+            current_stack = current_stack.next_multiple_of(stack_slot.align);
+            computed_stack[stack_slot_ref] = current_stack;
+        }
+
+        current_stack = current_stack.next_multiple_of(16);
+
+        Self {
+            labels: index_vec![],
+            stack: computed_stack,
+            stack_usage: current_stack
+        }
     }
 }
 
@@ -307,8 +349,7 @@ impl Assembler {
     /// Assembles a single MIR instruction into `self`.
     ///
     /// `block_labels` must contain the resolved byte offset (within the function) for every
-    /// `MachineBlockRef` that may be targeted by a jump; it is the caller's responsibility to
-    /// compute those offsets (e.g. via a prior sizing pass) before calling this.
+    /// `MachineBlockRef` that may be targeted by a jump
     fn assemble_inst(
         &mut self,
         mir_inst: MachineInst,
@@ -331,7 +372,7 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_register(width);
-                let mem: MemoryOperand = op2.as_memory_operand(valid);
+                let mem: MemoryOperand = op2.as_memory_operand(fn_ctx, valid);
                 self.emit(
                     Instruction::with2(code, dst, mem)?,
                     op2.get_relocation()
@@ -366,7 +407,7 @@ impl Assembler {
                 };
 
                 let dst_op1: Register = dst_op1.to_register(width);
-                let addend: MemoryOperand = op2.as_memory_operand(valid);
+                let addend: MemoryOperand = op2.as_memory_operand(fn_ctx, valid);
                 self.emit(
                     Instruction::with2(code, dst_op1, addend)?,
                     op2.get_relocation()
@@ -382,7 +423,7 @@ impl Assembler {
                     GprOperandWidth::Qword => Code::Add_rm64_r64,
                 };
 
-                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                let mem: MemoryOperand = op1.as_memory_operand(fn_ctx, valid);
                 let addend: Register = op2.to_register(width);
                 self.emit(
                     Instruction::with2(code, mem, addend)?,
@@ -413,7 +454,7 @@ impl Assembler {
                     GprOperandWidth::Qword => Code::Add_rm64_imm32,
                 };
 
-                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                let mem: MemoryOperand = op1.as_memory_operand(fn_ctx, valid);
                 self.emit(
                     Instruction::with2(code, mem, op2.0 as i32)?,
                     op1.get_relocation()
@@ -445,7 +486,7 @@ impl Assembler {
 
                 let dst: Register = dst.as_preg(valid).to_sse_register();
                 let op1: Register = op1.as_preg(valid).to_sse_register();
-                let mem: MemoryOperand = op2.as_memory_operand(valid);
+                let mem: MemoryOperand = op2.as_memory_operand(fn_ctx, valid);
 
                 self.emit(
                     Instruction::with3(code, dst, op1, mem)?,
@@ -463,7 +504,7 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_register(width);
-                let src: MemoryOperand = op2.as_memory_operand(valid);
+                let src: MemoryOperand = op2.as_memory_operand(fn_ctx, valid);
                 self.emit(
                     Instruction::with2(code, dst, src)?,
                     op2.get_relocation()
@@ -495,7 +536,7 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_sse_register();
-                let src: MemoryOperand = op2.as_memory_operand(valid);
+                let src: MemoryOperand = op2.as_memory_operand(fn_ctx, valid);
                 self.emit(
                     Instruction::with2(code, dst, src)?,
                     op2.get_relocation()
@@ -511,7 +552,7 @@ impl Assembler {
                     GprOperandWidth::Qword => Code::Mov_rm64_r64,
                 };
 
-                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                let mem: MemoryOperand = op1.as_memory_operand(fn_ctx, valid);
                 let op2: Register = op2.to_register(width);
                 self.emit(
                     Instruction::with2(code, mem, op2)?,
@@ -526,7 +567,7 @@ impl Assembler {
                     GprOperandWidth::Qword => Code::Mov_rm64_imm32,
                 };
 
-                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                let mem: MemoryOperand = op1.as_memory_operand(fn_ctx, valid);
                 self.emit(
                     Instruction::with2(code, mem, op2.0 as i32)?,
                     op1.get_relocation()
@@ -540,7 +581,7 @@ impl Assembler {
                     SseOperandWidth::Double => Code::VEX_Vmovsd_m64_xmm,
                 };
 
-                let dst: MemoryOperand = op1.as_memory_operand(valid);
+                let dst: MemoryOperand = op1.as_memory_operand(fn_ctx, valid);
                 let src: Register = src.to_sse_register();
                 self.emit(
                     Instruction::with2(code, dst, src)?,
@@ -736,7 +777,7 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_register(width);
-                let mem: MemoryOperand = op2.as_memory_operand(valid);
+                let mem: MemoryOperand = op2.as_memory_operand(fn_ctx, valid);
                 self.emit(
                     Instruction::with2(code, dst, mem)?,
                     op2.get_relocation()
@@ -771,7 +812,7 @@ impl Assembler {
                 };
 
                 let dst: Register = dst.to_register(width);
-                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                let mem: MemoryOperand = op1.as_memory_operand(fn_ctx, valid);
                 self.emit(
                     Instruction::with3(code, dst, mem, op2.0 as i32)?,
                     op1.get_relocation()
@@ -810,7 +851,7 @@ impl Assembler {
                     GprOperandWidth::Qword => Code::Div_rm64,
                 };
 
-                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                let mem: MemoryOperand = op1.as_memory_operand(fn_ctx, valid);
                 self.emit(
                     Instruction::with1(code, mem)?,
                     op1.get_relocation()
@@ -846,7 +887,7 @@ impl Assembler {
                     GprOperandWidth::Qword => Code::Idiv_rm64,
                 };
 
-                let mem: MemoryOperand = op1.as_memory_operand(valid);
+                let mem: MemoryOperand = op1.as_memory_operand(fn_ctx, valid);
                 self.emit(Instruction::with1(code, mem)?, op1.get_relocation())
             },
             MachineInst::PrepareDiv { width } => {
@@ -1024,7 +1065,7 @@ fn cmov_opcode(cond: Condition, width: GprOperandWidth) -> iced_x86::Code {
 
 #[cfg(test)]
 mod tests {
-    use cake_util::IndexVec;
+    use cake_util::{IndexVec, index_vec};
 
     use crate::{
         cir, 
@@ -1046,6 +1087,8 @@ mod tests {
         
         let block_labels: IndexVec<MachineBlockRef, MachineLabel> = IndexVec::new();
         let fn_ctx = AssembleFunctionContext {
+            stack: index_vec![],
+            stack_usage: 0,
             labels: block_labels
         };
 
@@ -1076,19 +1119,13 @@ mod tests {
                 width: GprOperandWidth::Qword,
             },
             MachineInst::StoreImm {
-                op1: MemOperand::BasePlusDisp {
-                    base: rbp,
-                    disp: MemOperandDisplacement::Disp8((-4i8) as u8),
-                },
+                op1: MemOperand::base_disp(rbp, MemOperandDisplacement::Disp8((-4i8) as u8)),
                 op2: ImmediateOperand(2),
                 width: GprOperandWidth::Dword,
             },
             MachineInst::Load {
                 dst: rax,
-                op2: MemOperand::BasePlusDisp {
-                    base: rbp,
-                    disp: MemOperandDisplacement::Disp8((-4i8) as u8),
-                },
+                op2: MemOperand::base_disp(rbp, MemOperandDisplacement::Disp8((-4i8) as u8)),
                 width: GprOperandWidth::Dword,
             },
             MachineInst::AddImmToReg {

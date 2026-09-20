@@ -193,6 +193,18 @@ pub(crate) enum Reg {
     PReg(PhysReg)
 }
 
+impl From<VRegRef> for Reg {
+    fn from(value: VRegRef) -> Self {
+        Self::VReg(value)
+    }
+}
+
+impl From<PhysReg> for Reg {
+    fn from(value: PhysReg) -> Self {
+        Self::PReg(value)
+    }
+}
+
 /// Shorthands for constructing Reg::PReg in tests
 pub(crate) mod phys_regs {
     use crate::mir::{PhysReg, Reg};
@@ -251,6 +263,12 @@ impl MemOperandScale {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) enum StackOrReg {
+    Stack(cir::StackSlotRef),
+    Reg(Reg),
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum MemOperand {
     PcRelativeFn {
         target: MachineFunctionRef
@@ -261,17 +279,36 @@ pub(crate) enum MemOperand {
     // index is not allowed to be physical register rsp or r12, 
     // this is enforced by register allocator
     Full {
-        base: Reg,
+        base: StackOrReg,
         index: Reg,
         scale: MemOperandScale,
         disp: MemOperandDisplacement,
     },
     BasePlusDisp {
-        base: Reg,
+        base: StackOrReg,
         disp: MemOperandDisplacement,
     },
     AbsoluteDisp {
         disp: MemOperandDisplacement,
+    },
+}
+
+// helpers to construct MemOperand
+impl MemOperand {
+    pub(crate) fn func(func_ref: MachineFunctionRef) -> Self {
+        MemOperand::PcRelativeFn { target: func_ref }
+    }
+
+    pub(crate) fn data(data_ref: cir::DataRef) -> Self {
+        MemOperand::PcRelativeData { target: data_ref }
+    }
+
+    pub(crate) fn base(reg: impl Into<Reg>) -> Self {
+        MemOperand::BasePlusDisp { base: StackOrReg::Reg(reg.into()), disp: MemOperandDisplacement::Zero }
+    }
+
+    pub(crate) fn base_disp(reg: impl Into<Reg>, disp: MemOperandDisplacement) -> Self {
+        MemOperand::BasePlusDisp { base: StackOrReg::Reg(reg.into()), disp }
     }
 }
 
@@ -619,11 +656,13 @@ impl MachineBlock {
 make_type_idx!(MachineBlockRef, MachineBlock);
 
 #[derive(Debug)]
-struct MachineFunctionDefinition {
-    insts: IndexVec<MachineInstRef, MachineInst>,
-    vregs: IndexVec<VRegRef, VirtualReg>,
+pub(crate) struct MachineFunctionDefinition {
+    pub(crate) insts: IndexVec<MachineInstRef, MachineInst>,
+    pub(crate) vregs: IndexVec<VRegRef, VirtualReg>,
 
-    blocks: IndexVec<MachineBlockRef, MachineBlock>,
+    pub(crate) blocks: IndexVec<MachineBlockRef, MachineBlock>,
+
+    pub(crate) stack_slots: IndexVec<cir::StackSlotRef, cir::StackSlot>
 }
 
 #[derive(Debug)]
@@ -708,6 +747,17 @@ impl std::fmt::Display for MemOperandDisplacement {
             MemOperandDisplacement::Disp32(v) => write!(f, "{v}"),
             MemOperandDisplacement::Disp8(v) => write!(f, "{v}"),
             MemOperandDisplacement::Zero => write!(f, "zero")
+        }
+    }
+}
+
+impl std::fmt::Display for StackOrReg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StackOrReg::Stack(stack_slot_ref) => 
+                write!(f, "&ss{}", stack_slot_ref.get_inner()),
+            StackOrReg::Reg(reg) => 
+                write!(f, "{reg}"),
         }
     }
 }
