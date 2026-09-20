@@ -71,7 +71,8 @@ impl Module {
             inst_block: index_vec![],
             blocks: index_vec![entry_block],
             external_signatures: index_vec![],
-            stack_slots: index_vec![]
+            stack_slots: index_vec![],
+            stack_slot_uses: index_vec![],
         });
 
         FunctionBuilder {
@@ -234,6 +235,7 @@ pub(crate) struct Use {
 }
 
 type UseVec = SmallVec<[Use; 4]>;
+type StackSlotUseVec = SmallVec<[InstRef; 4]>;
 
 #[derive(Debug)]
 pub(crate) struct FunctionDefinition {
@@ -246,6 +248,7 @@ pub(crate) struct FunctionDefinition {
     pub(crate) blocks: IndexVec<BlockRef, Block>,
 
     pub(crate) stack_slots: IndexVec<StackSlotRef, StackSlot>,
+    pub(crate) stack_slot_uses: IndexVec<StackSlotRef, StackSlotUseVec>,
     pub(crate) external_signatures: IndexVec<SigRef, Signature>,
 }
 
@@ -337,13 +340,14 @@ pub(crate) struct FunctionBuilder<'func> {
 impl<'func> FunctionBuilder<'func> {
     pub(crate) fn add_block(&mut self) -> BlockRef {
         let block = Block::new();
-        BlockRef::from_push2(&mut self.func.blocks, block)
+        self.func.blocks.push(block)
     }
 
     pub(crate) fn add_stack_slot(&mut self, size: u32, align: u32) -> StackSlotRef {
         let slot = StackSlot { size, align };
 
-        StackSlotRef::from_push2(&mut self.func.stack_slots, slot)
+        self.func.stack_slot_uses.push(smallvec![]);
+        self.func.stack_slots.push(slot)
     }
 
     pub(crate) fn set_block(&mut self, block: BlockRef) {
@@ -370,6 +374,8 @@ impl<'func> FunctionBuilder<'func> {
 
             sigs: &self.func.external_signatures,
             module_sigs: self.module_sigs,
+
+            stack_slot_uses: &mut self.func.stack_slot_uses,
         }
     }
 
@@ -398,7 +404,9 @@ pub(crate) struct BlockBuilder<'block> {
     value_vecs: &'block mut IndexVec<ValueVecRef, ValueVec>,
     
     sigs: &'block IndexVec<SigRef, Signature>,
-    module_sigs: &'block IndexSlice<FuncRef, [Signature]>
+    module_sigs: &'block IndexSlice<FuncRef, [Signature]>,
+
+    stack_slot_uses: &'block mut IndexVec<StackSlotRef, StackSlotUseVec>,
 }
 
 impl<'block> BlockBuilder<'block> {
@@ -428,6 +436,10 @@ impl<'block> BlockBuilder<'block> {
                 self.inst_uses[inst_ref].push(use_);
             },
         }
+    }
+
+    fn add_stack_use(&mut self, slot: StackSlotRef, use_: InstRef) {
+        self.stack_slot_uses[slot].push(use_)
     }
 
     fn add_inst(
@@ -506,7 +518,9 @@ impl<'block> BlockBuilder<'block> {
 
     pub(crate) fn stack_addr(&mut self, slot: StackSlotRef) -> Value {
         let stack_addr = Inst::StackAddr { slot };
-        Value::Inst(self.add_inst(stack_addr, smallvec![Type::ptr]))
+        let iref = self.add_inst(stack_addr, smallvec![Type::ptr]);
+        self.add_stack_use(slot, iref);
+        Value::Inst(iref)
     }
 
     fn type_conversion(&mut self, val: Value, to: Type, op: fn(Value) -> Inst) -> Value {
@@ -1632,6 +1646,7 @@ pub(crate) mod verifier;
 // Optimization passes
 pub(crate) mod dce;
 pub(crate) mod compact;
+pub(crate) mod mem2reg;
 
 // Analysis passes
 pub(crate) mod post_order;
