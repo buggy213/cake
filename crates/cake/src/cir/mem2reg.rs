@@ -75,16 +75,17 @@ fn mem2reg_slot(
     // and whether this node along the current path pushed something onto the value stack.
     // this allows us to simulate a recursive traversal without actually using recursion
     let mut fingers: SmallVec<[(u32, u32, bool); 16]> = SmallVec::new();
-    for bref in dom_tree.dfs_order(func) {
+    for bref in dom_tree.preorder_traversal(func) {
         let mut did_push = false;
 
         if needs_phi.contains(&bref) {
             let block_arg_ref = func.blocks[bref].push_block_arg(slot_ty);
             value_stack.push(Value::BlockArgument(bref, block_arg_ref));
+            did_push = true;
         }
 
-        let num_insts = func.blocks[bref].inst_refs.borrow().len();
-        for iref_idx in 0..num_insts {
+        let mut iref_idx = 0;
+        while iref_idx < func.blocks[bref].inst_refs.borrow().len() {
             let &iref = func.blocks[bref].inst_refs.borrow().index(iref_idx);
 
             let accesses_stack = accesses_stack(func, iref, ss_ref);
@@ -108,29 +109,27 @@ fn mem2reg_slot(
                         value_stack.push(val);
                         did_push = true;
                     }
+
+                    func.remove_inst(iref);
                 },
-                StackAccess::Neither => (),
+                StackAccess::Neither => iref_idx += 1,
             }
         };
 
-        let top = *value_stack.last().expect("uninitialized variable used");
-        for succ in func.blocks[bref].successors(&func.insts) {
-            if needs_phi.contains(&succ) {
-                let terminator_ref = func.blocks[bref].terminator_ref();
-                let terminator = func.insts[terminator_ref];
-                for out_edge in terminator.edges() {
-                    if out_edge.target == succ {
-                        let arg_vec = out_edge.args;
-                        func.value_vecs[arg_vec].push(top);
-                    }
-                }
+        let terminator_ref = func.blocks[bref].terminator_ref();
+        let terminator = func.insts[terminator_ref];
+        for edge in terminator.edges() {
+            if needs_phi.contains(&edge.target) {
+                let top = *value_stack.last().expect("uninitialized variable used");
+                let arg_vec = edge.args;
+                func.value_vecs[arg_vec].push(top);
             }
         }
 
         let num_children = dom_tree.num_children(bref);
         if num_children > 0 {
             fingers.push((num_children as u32, 0, did_push));
-            return
+            continue
         }
         
         if did_push {
@@ -296,9 +295,31 @@ fn accesses_stack(func: &FunctionDefinition, inst_ref: InstRef, ss_ref: StackSlo
 
 #[cfg(test)]
 mod test {
+    use crate::cir::{ast2cir, mem2reg::mem2reg};
+
+    /// `conditional_module` is the diamond case: `x` is stored once in the entry block and never
+    /// re-stored, so it should promote with no block args at all. `y` is stored on both arms of
+    /// the `if` and loaded at the join, so it should promote to a single block arg on the join
+    /// block, with `17` and `3` threaded onto the two incoming edges.
     #[test]
-    fn test_basic() {
-        
+    fn test_conditional() {
+        let mut module = ast2cir::test::conditional_module();
+
+        println!("======== before mem2reg ========");
+        print!("{module}");
+
+        for func in module.functions.iter_mut() {
+            let Some(defn) = func.definition.as_mut() else {
+                continue;
+            };
+
+            mem2reg(defn);
+        }
+
+        println!("======== after mem2reg ========");
+        print!("{module}");
+
+        dbg!(&module);
     }
 }
 

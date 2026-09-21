@@ -373,7 +373,7 @@ impl FunctionDefinition {
 
     /// Standard RAUW operation
     pub(crate) fn replace_all_uses_with(&mut self, old_val: Value, new_val: Value) {
-
+        todo!("rauw")
     }
 }
 

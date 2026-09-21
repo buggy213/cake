@@ -21,7 +21,7 @@ pub(crate) struct DominanceTree {
 }
 
 impl DominanceTree {
-    pub(crate) fn dfs_order(&self, func: &FunctionDefinition) -> impl Iterator<Item = BlockRef> + use<> {
+    pub(crate) fn preorder_traversal(&self, func: &FunctionDefinition) -> impl Iterator<Item = BlockRef> + use<> {
         let mut stack: Vec<BlockRef> = vec![func.entry_block()];
         let mut result: Vec<BlockRef> = vec![];
 
@@ -34,7 +34,7 @@ impl DominanceTree {
             }
         }
 
-        result.into_iter().rev()
+        result.into_iter()
     }
 
     pub(crate) fn num_children(&self, block_ref: BlockRef) -> usize {
