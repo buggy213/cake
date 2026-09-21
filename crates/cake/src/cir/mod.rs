@@ -299,6 +299,19 @@ impl FunctionDefinition {
         use_vec.push(use_);
     }
 
+    /// Returns remaining number of uses.
+    fn remove_stack_use(&mut self, ss_ref: StackSlotRef, inst_ref: InstRef) -> usize {
+        let use_vec = &mut self.stack_slot_uses[ss_ref];
+        let delete_idx = use_vec.iter().position(|&x| x == inst_ref).expect("failed to remove use");
+        use_vec.swap_remove(delete_idx);
+        use_vec.len()
+    }
+
+    fn add_stack_use(&mut self, ss_ref: StackSlotRef, inst_ref: InstRef) {
+        let use_vec = &mut self.stack_slot_uses[ss_ref];
+        use_vec.push(inst_ref);
+    }
+
     /// Returns a BlockRef to the entry block (for now, this is always just index 0 by construction)
     pub(crate) fn entry_block(&self) -> BlockRef {
         let Some((idx, _)) = self.blocks.iter().enumerate().find(|(_, b)| b.is_entry) else {
@@ -317,6 +330,38 @@ impl FunctionDefinition {
                 self.blocks[block_ref].block_arg_types[block_arg_ref],
             Value::TupleElement(inst_ref, idx) => 
                 self.inst_types[inst_ref][idx as usize]
+        }
+    }
+
+    // Removes an instruction from a function by erasing it from the basic block it is in,
+    // and removing it from use-def chains
+    pub(crate) fn remove_inst(&mut self, inst_ref: InstRef) {
+        let Some(block) = self.inst_block[inst_ref] else {
+            panic!("removing already deleted instruction")
+        };
+
+        assert!(self.inst_uses[inst_ref].is_empty(), "removing instruction with remaining uses");
+        
+        let block_irefs = self.blocks[block].inst_refs.get_mut();
+        block_irefs.retain(|&iref| iref != inst_ref);
+
+        let inst = self.insts[inst_ref];
+        let mut operands_to_remove: SmallVec<[(Value, Use); 10]> = smallvec![];
+        for operand_coord in inst.operand_coord_iter(&self.value_vecs) {
+            let operand_val = inst.get_operand(&self.value_vecs, operand_coord);
+            let operand_use = Use {
+                user: inst_ref,
+                operand_coord,
+            };
+            operands_to_remove.push((operand_val, operand_use));
+        }
+
+        for (operand, use_) in operands_to_remove {
+            self.remove_use(operand, use_);
+        }
+
+        if let Inst::StackAddr { slot } = inst {
+            self.remove_stack_use(slot, inst_ref);
         }
     }
 }
@@ -1112,7 +1157,7 @@ impl Inst {
         kind: u32
     ) -> u32 {
         match self {
-            Inst::Constant { val } => todo!(),
+            Inst::Constant { val } => 0,
             Inst::Add { a, b } => 2,
             Inst::Sub { a, b } => 2,
             Inst::Mul { a, b } => 2,
@@ -1134,7 +1179,7 @@ impl Inst {
             Inst::FpToInt { v } => 1,
             Inst::Load { addr } => 1,
             Inst::Store { addr, val } => 2,
-            Inst::StackAddr { slot } => todo!(),
+            Inst::StackAddr { slot } => 0,
             Inst::Zext { v } => 1,
             Inst::Sext { v } => 1,
             Inst::Truncate { v } => 1,
@@ -1161,9 +1206,10 @@ impl Inst {
                     _ => 0,
                 }
             },
-            Inst::FuncAddr { func } => todo!(),
-            Inst::DataAddr { data } => todo!(),
-            Inst::Intrinsic { intrinsic, arguments } => value_vecs[*arguments].len() as u32,
+            Inst::FuncAddr { func } => 0,
+            Inst::DataAddr { data } => 0,
+            Inst::Intrinsic { intrinsic, arguments } => 
+                value_vecs[*arguments].len() as u32,
         }
     }
 
@@ -1650,7 +1696,7 @@ pub(crate) mod mem2reg;
 
 // Analysis passes
 pub(crate) mod post_order;
-pub(crate) mod dom_tree;
+pub(crate) mod dom_info;
 
 #[cfg(test)]
 mod test {

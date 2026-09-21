@@ -4,7 +4,7 @@
 //! This pass preserves CFG (i.e. it doesn't remove blocks with no side effects), and it won't catch 
 //! referential cycles in the IR (e.g. a counter incrementing in a loop)
 
-use crate::cir::{BlockArgRef, BlockRef, FunctionDefinition, InstRef, OperandCoord, Use, Value};
+use crate::cir::{BlockArgRef, BlockRef, FunctionDefinition, Inst, InstRef, OperandCoord, Use, Value};
 
 fn eliminate_dead_code(func: &mut FunctionDefinition) {
     // 1. mark all obviously dead instructions, putting them onto a worklist
@@ -45,6 +45,14 @@ fn eliminate_dead_code(func: &mut FunctionDefinition) {
         while !inst_worklist.is_empty() {
             let dead_inst_ref = inst_worklist.pop().unwrap();
             let dead_inst = func.insts[dead_inst_ref];
+
+            // special cases: StackAddr, FuncAddr, DataAddr
+            match dead_inst {
+                Inst::StackAddr { slot } => {
+                    func.remove_stack_use(slot, dead_inst_ref);
+                }
+                _ => ()
+            }
 
             func.inst_block[dead_inst_ref] = None;
 

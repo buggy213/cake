@@ -44,3 +44,12 @@ pub(crate) fn post_order(function: &FunctionDefinition) -> impl Iterator<Item = 
         visited: index_vec![0; function.blocks.len()]
     }
 }
+
+pub(crate) fn reverse_post_order(function: &FunctionDefinition) -> impl Iterator<Item = BlockRef> {
+    let post_order = post_order(function);
+    let mut reversed = Vec::with_capacity(function.blocks.len());
+    reversed.extend(post_order);
+    reversed.reverse();
+
+    reversed.into_iter()
+}
