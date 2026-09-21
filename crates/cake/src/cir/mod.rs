@@ -227,6 +227,12 @@ pub(crate) struct OperandCoord {
     idx: u32,
 }
 
+impl OperandCoord {
+    pub(crate) fn direct(idx: u32) -> Self {
+        Self { kind: 0, idx }
+    }
+}
+
 /// A use of an SSA value
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Use {
@@ -363,6 +369,11 @@ impl FunctionDefinition {
         if let Inst::StackAddr { slot } = inst {
             self.remove_stack_use(slot, inst_ref);
         }
+    }
+
+    /// Standard RAUW operation
+    pub(crate) fn replace_all_uses_with(&mut self, old_val: Value, new_val: Value) {
+
     }
 }
 
@@ -808,20 +819,30 @@ impl Block {
         }
     }
 
-    fn push_block_arg(&mut self, ty: Type) -> BlockArgRef {
-        let arg_ref = BlockArgRef::from_push3(&mut self.block_arg_types, ty);
+    /// Adds a block argument
+    pub(crate) fn push_block_arg(&mut self, ty: Type) -> BlockArgRef {
+        let arg_ref = self.block_arg_types.push(ty);
         self.block_arg_uses.push(smallvec![]);
         self.block_arg_order.push(arg_ref);
         arg_ref
     }
 
+    /// Returns the InstRef corresponding to the terminator instruction
+    pub(crate) fn terminator_ref(&self) -> InstRef {
+        let &terminator_ref = self.inst_refs.borrow().last().unwrap();
+        terminator_ref
+    }
+    
+
     /// Returns the successors of this basic block; panics if last instruction does not exist
     /// or is not a terminator
     pub(crate) fn successors(&self, insts: &IndexSlice<InstRef, [Inst]>) -> impl Iterator<Item = BlockRef> {
-        let &terminator_ref = self.inst_refs.borrow().last().unwrap();
+        let terminator_ref = self.terminator_ref();
 
         insts[terminator_ref].edges().map(|e| e.target)
     }
+
+
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

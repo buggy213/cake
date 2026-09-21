@@ -49,6 +49,10 @@ impl<I: Idx, T> IndexVec<I, T> {
         self.inner.reserve(additional);
     }
 
+    pub fn contains(&self, x: &T) -> bool where T: PartialEq {
+        self.inner.contains(x)
+    }
+
     /// Helper function for the `index_vec!` macro
     pub fn from_vec(vec: Vec<T>) -> Self {
         Self { inner: vec, _unused: PhantomData }
@@ -197,8 +201,14 @@ impl<I: Idx, A: Array> SmallIndexVec<I, A> {
         self.inner.iter_mut()
     }
 
-    pub fn push(&mut self, value: A::Item) {
+    pub fn push(&mut self, value: A::Item) -> I {
+        let idx = I::from(self.inner.len());
         self.inner.push(value);
+        idx
+    }
+
+    pub fn contains(&self, x: &A::Item) -> bool where A::Item : PartialEq {
+        self.inner.contains(x)
     }
 
     pub fn from_smallvec(inner: SmallVec<A>) -> Self {
@@ -209,6 +219,12 @@ impl<I: Idx, A: Array> SmallIndexVec<I, A> {
 impl<I: Idx, A: Array> Default for SmallIndexVec<I, A> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<I: Idx, A: Array> Clone for SmallIndexVec<I, A> where A::Item : Clone {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone(), _unused: self._unused.clone() }
     }
 }
 

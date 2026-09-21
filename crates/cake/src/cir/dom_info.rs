@@ -5,7 +5,9 @@
 //! 
 //! TODO: switch to Lengauer-Tarjan?
 
-use cake_util::{IndexSlice, IndexVec, index_vec};
+use cake_util::{IndexSlice, IndexVec, SmallIndexVec, index_vec};
+use rustc_hash::FxHashSet;
+use smallvec::SmallVec;
 
 use crate::cir::{BlockRef, FunctionDefinition, post_order};
 
@@ -13,11 +15,63 @@ use crate::cir::{BlockRef, FunctionDefinition, post_order};
 /// of nodes not in the reverse postorder traversal (i.e. not reachable from entry block)
 /// are also chosen to be the entry block
 #[derive(Debug)]
-struct DominanceTree {
-    immediate_dominators: IndexVec<BlockRef, BlockRef>,
+pub(crate) struct DominanceTree {
+    immediate_dominator: IndexVec<BlockRef, BlockRef>,
+    children: IndexVec<BlockRef, SmallVec<[BlockRef; 8]>>,
 }
 
-fn dom_tree(func: &FunctionDefinition) -> DominanceTree {
+impl DominanceTree {
+    pub(crate) fn dfs_order(&self, func: &FunctionDefinition) -> impl Iterator<Item = BlockRef> + use<> {
+        let mut stack: Vec<BlockRef> = vec![func.entry_block()];
+        let mut result: Vec<BlockRef> = vec![];
+
+        while !stack.is_empty() {
+            let top = stack.pop().unwrap();
+            result.push(top);
+
+            for &child in &self.children[top] {
+                stack.push(child);
+            }
+        }
+
+        result.into_iter().rev()
+    }
+
+    pub(crate) fn num_children(&self, block_ref: BlockRef) -> usize {
+        self.children[block_ref].len()
+    }
+}
+
+/// Dominance frontiers. Allows queries of the form `query(i, j) = is j in i's dominance frontier`
+/// Internally implemented as adjacency list like structure
+pub(crate) struct DominanceFrontiers {
+    inner: IndexVec<BlockRef, SmallVec<[BlockRef; 8]>>,
+}
+
+impl DominanceFrontiers {
+    fn new(num_blocks: usize) -> Self {
+        Self { inner: index_vec![SmallVec::new(); num_blocks] }
+    }
+
+    pub(crate) fn query(&self, i: BlockRef, j: BlockRef) -> bool {
+        self.inner[i].contains(&j)
+    }
+
+    pub(crate) fn frontier(&self, i: BlockRef) -> impl Iterator<Item = BlockRef> {
+        self.inner[i].iter().copied()
+    }
+
+    pub(crate) fn insert(&mut self, i: BlockRef, j: BlockRef) -> bool {
+        if self.inner[i].contains(&j) {
+            return false;
+        }
+
+        self.inner[i].push(j);
+        true
+    }
+}
+
+pub(crate) fn dom_tree(func: &FunctionDefinition) -> DominanceTree {
     let entry = func.entry_block();
     let num_blocks = func.blocks.len();
 
@@ -49,13 +103,44 @@ fn dom_tree(func: &FunctionDefinition) -> DominanceTree {
         }
     }
 
-    let idoms = doms.into_iter()
+    let idoms: IndexVec<BlockRef, BlockRef> = doms.into_iter()
         .map(|d| d.unwrap_or(func.entry_block()))
         .collect();
 
-    DominanceTree { 
-        immediate_dominators: idoms
+    let mut children: IndexVec<BlockRef, SmallVec<[BlockRef; 8]>> = index_vec![SmallVec::new(); num_blocks];
+    for &block in &rpo {
+        if block == func.entry_block() {
+            continue
+        }
+
+        let parent = idoms[block];
+        children[parent].push(block);
     }
+
+    DominanceTree { 
+        immediate_dominator: idoms,
+        children
+    }
+}
+
+pub(crate) fn dom_frontiers(func: &FunctionDefinition, dom_tree: &DominanceTree) -> DominanceFrontiers {
+    let mut dom_frontier = DominanceFrontiers::new(func.blocks.len());
+    
+    for (bref, block) in BlockRef::enumerate2(&func.blocks) {
+        if block.preds.len() < 2 {
+            continue;
+        }
+
+        for &pred in &block.preds {
+            let mut runner = pred.pred_ref;
+            while runner != dom_tree.immediate_dominator[bref] {
+                dom_frontier.insert(runner, bref);
+                runner = dom_tree.immediate_dominator[runner];
+            }
+        }
+    }
+
+    dom_frontier
 }
 
 fn intersect_dom(
