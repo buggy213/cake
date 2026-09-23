@@ -295,12 +295,8 @@ fn accesses_stack(func: &FunctionDefinition, inst_ref: InstRef, ss_ref: StackSlo
 
 #[cfg(test)]
 mod test {
-    use crate::cir::{ast2cir, mem2reg::mem2reg};
+    use crate::cir::{ast2cir, dce, mem2reg::mem2reg};
 
-    /// `conditional_module` is the diamond case: `x` is stored once in the entry block and never
-    /// re-stored, so it should promote with no block args at all. `y` is stored on both arms of
-    /// the `if` and loaded at the join, so it should promote to a single block arg on the join
-    /// block, with `17` and `3` threaded onto the two incoming edges.
     #[test]
     fn test_conditional() {
         let mut module = ast2cir::test::conditional_module();
@@ -318,8 +314,6 @@ mod test {
 
         println!("======== after mem2reg ========");
         print!("{module}");
-
-        dbg!(&module);
     }
 }
 

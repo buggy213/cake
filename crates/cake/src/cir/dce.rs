@@ -6,7 +6,7 @@
 
 use crate::cir::{BlockArgRef, BlockRef, FunctionDefinition, Inst, InstRef, OperandCoord, Use, Value};
 
-fn eliminate_dead_code(func: &mut FunctionDefinition) {
+pub(crate) fn eliminate_dead_code(func: &mut FunctionDefinition) {
     // 1. mark all obviously dead instructions, putting them onto a worklist
     //    do the same for block arguments as well
     let mut inst_worklist: Vec<InstRef> = Vec::with_capacity(64);

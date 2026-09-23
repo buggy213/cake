@@ -373,7 +373,15 @@ impl FunctionDefinition {
 
     /// Standard RAUW operation
     pub(crate) fn replace_all_uses_with(&mut self, old_val: Value, new_val: Value) {
-        todo!("rauw")
+        let old_val_uses = std::mem::take(self.uses_mut(old_val));
+        
+        for &use_ in &old_val_uses {
+            let user = &mut self.insts[use_.user];
+            let operand_use = user.get_operand_mut(&mut self.value_vecs, use_.operand_coord);
+            *operand_use = new_val;
+        }
+
+        self.uses_mut(new_val).extend_from_slice(&old_val_uses);
     }
 }
 
@@ -1287,7 +1295,8 @@ impl Inst {
             num_idxs,
         }
     }
-
+    
+    /// Get Value operand of instruction
     pub(crate) fn get_operand(
         &self, 
         value_vecs: &IndexSlice<ValueVecRef, [ValueVec]>, 
@@ -1382,12 +1391,114 @@ impl Inst {
                 if coord.kind == 1 && coord.idx < value_vecs[*arguments].len() as u32 => { return value_vecs[*arguments][coord.idx as usize] },
             Inst::Intrinsic { intrinsic, arguments }
                 if coord.kind == 0 && coord.idx < value_vecs[*arguments].len() as u32 => { return value_vecs[*arguments][coord.idx as usize]},
-            _ => todo!()
+            _ => ()
         }
 
         panic!("get_operand failed (bad OperandCoord?)");
     }
     
+    /// Get mutable reference to Value operand of instruction
+    /// This function should be modified in tandem with `get_operand`
+    pub(crate) fn get_operand_mut<'operand>(
+        &'operand mut self,
+        value_vecs: &'operand mut IndexSlice<ValueVecRef, [ValueVec]>,
+        coord: OperandCoord
+    ) -> &'operand mut Value {
+        macro_rules! operand_arm {
+            // Nullary instruction - panics
+            ($self:expr, $variant:path) => {
+                match $self {
+                    $variant { .. } => panic!("get_operand called on nullary instruction"),
+                    _ => ()
+                }
+            };
+
+            // Unary instruction
+            ($self:expr, $variant:path, $x:ident, $coord:expr) => {
+                match $self {
+                    $variant { $x } if $coord.kind == 0 && $coord.idx == 0 => return $x,
+                    _ => ()
+                }
+            };
+
+            // Binary instruction
+            ($self:expr, $variant:path, $x:ident, $y:ident, $coord:expr) => {
+                match $self {
+                    $variant { $x, .. } if $coord.kind == 0 && $coord.idx == 0 => return $x,
+                    $variant { $y, .. } if $coord.kind == 0 && $coord.idx == 1 => return $y,
+                    _ => ()
+                }
+            };
+
+            // Ternary instruction
+            ($self:expr, $variant:path, $x:ident, $y:ident, $z:ident, $coord:expr) => {
+                match $self {
+                    $variant { $x, .. } if $coord.kind == 0 && $coord.idx == 0 => return $x,
+                    $variant { $y, .. } if $coord.kind == 0 && $coord.idx == 1 => return $y,
+                    $variant { $z, .. } if $coord.kind == 0 && $coord.idx == 2 => return $z,
+                    _ => ()
+                }
+            }
+        }
+
+        operand_arm!(self, Inst::Constant);
+        operand_arm!(self, Inst::Add, a, b, coord);
+        operand_arm!(self, Inst::Sub, a, b, coord);
+        operand_arm!(self, Inst::Mul, a, b, coord);
+        operand_arm!(self, Inst::Div, a, b, coord);
+        operand_arm!(self, Inst::Modulo, a, b, coord);
+        operand_arm!(self, Inst::And, a, b, coord);
+        operand_arm!(self, Inst::Or, a, b, coord);
+        operand_arm!(self, Inst::Xor, a, b, coord); 
+        operand_arm!(self, Inst::Shl, a, b, coord); 
+        operand_arm!(self, Inst::Ashr, a, b, coord);   
+        operand_arm!(self, Inst::Lshr, a, b, coord);   
+        operand_arm!(self, Inst::Icmp, a, b, coord);   
+        operand_arm!(self, Inst::Fadd, a, b, coord);   
+        operand_arm!(self, Inst::Fsub, a, b, coord);   
+        operand_arm!(self, Inst::Fmul, a, b, coord);   
+        operand_arm!(self, Inst::Fdiv, a, b, coord);
+        operand_arm!(self, Inst::Fcmp, a, b, coord);
+        operand_arm!(self, Inst::IntToFp, v, coord);
+        operand_arm!(self, Inst::FpToInt, v, coord);
+        operand_arm!(self, Inst::Load, addr, coord);
+        operand_arm!(self, Inst::Store, addr, val, coord);
+        operand_arm!(self, Inst::StackAddr);
+        operand_arm!(self, Inst::Zext, v, coord);
+        operand_arm!(self, Inst::Sext, v, coord);
+        operand_arm!(self, Inst::Truncate, v, coord);
+        operand_arm!(self, Inst::FpCast, v, coord);
+        operand_arm!(self, Inst::PtrAdd, ptr, offset, coord);
+        operand_arm!(self, Inst::PtrToInt, v, coord);
+        operand_arm!(self, Inst::IntToFp, v, coord);
+        operand_arm!(self, Inst::Select, cond, x, y, coord);
+        operand_arm!(self, Inst::FuncAddr);
+        operand_arm!(self, Inst::DataAddr);
+
+        match self {
+            Inst::BranchIf { cond, .. } if coord.kind == 0 && coord.idx == 0 => { return cond },
+            Inst::BranchIf { con_args, .. } 
+                if coord.kind == 1 && coord.idx < value_vecs[*con_args].len() as u32 => { return &mut value_vecs[*con_args][coord.idx as usize] },
+            Inst::BranchIf { alt_args, .. } 
+                if coord.kind == 2 && coord.idx < value_vecs[*alt_args].len() as u32 => { return &mut value_vecs[*alt_args][coord.idx as usize] },
+            Inst::Return { values } 
+                if coord.kind == 0 && coord.idx < value_vecs[*values].len() as u32 => { return &mut value_vecs[*values][coord.idx as usize] },
+            Inst::Jump { target, arguments } 
+                if coord.kind == 0 && coord.idx < value_vecs[*arguments].len() as u32 => { return &mut value_vecs[*arguments][coord.idx as usize] },
+            Inst::Call { func, arguments } 
+                if coord.kind == 0 && coord.idx < value_vecs[*arguments].len() as u32 => { return &mut value_vecs[*arguments][coord.idx as usize] },
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } 
+                if coord.kind == 0 && coord.idx == 0 => { return func_ptr },
+            Inst::CallIndirect { callee_sig, func_ptr, arguments } 
+                if coord.kind == 1 && coord.idx < value_vecs[*arguments].len() as u32 => { return &mut value_vecs[*arguments][coord.idx as usize] },
+            Inst::Intrinsic { intrinsic, arguments }
+                if coord.kind == 0 && coord.idx < value_vecs[*arguments].len() as u32 => { return &mut value_vecs[*arguments][coord.idx as usize]},
+            _ => ()
+        }
+
+        panic!("get_operand failed (bad OperandCoord?)");
+    }
+
     /// Returns info about a single CFG edge leaving this (terminator) instruction: its
     /// target block, the `ValueVecRef` of arguments passed along it, and the `OperandCoord`
     /// kind of those arguments.
