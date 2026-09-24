@@ -139,6 +139,7 @@ dependencies = [
  "iced-x86",
  "paste",
  "petgraph",
+ "regalloc2 0.15.2",
  "rustc-hash",
  "smallvec",
  "thiserror",
@@ -307,7 +308,7 @@ dependencies = [
  "gimli",
  "hashbrown 0.15.3",
  "log",
- "regalloc2",
+ "regalloc2 0.12.2",
  "rustc-hash",
  "serde",
  "smallvec",
@@ -618,6 +619,20 @@ dependencies = [
  "allocator-api2",
  "bumpalo",
  "hashbrown 0.15.3",
+ "log",
+ "rustc-hash",
+ "smallvec",
+]
+
+[[package]]
+name = "regalloc2"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "757712e8e61590d6d4f5d563483755538b5aa13467837a3b41cd9832509a7f85"
+dependencies = [
+ "allocator-api2",
+ "bumpalo",
+ "hashbrown 0.17.1",
  "log",
  "rustc-hash",
  "smallvec",

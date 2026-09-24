@@ -219,8 +219,7 @@ pub(crate) struct Function {
     pub(crate) definition: Option<FunctionDefinition> 
 }
 
-/// An index into the operands of an `Inst`. SSA values only; References to StackSlot, Function, and Data
-/// are not considered as operands (for now)
+/// An index into the operands of an `Inst`
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct OperandCoord {
     kind: u32,
@@ -240,8 +239,19 @@ pub(crate) struct Use {
     operand_coord: OperandCoord,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StackSlotUse(InstRef);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FuncUse(Use);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DataUse(InstRef);
+
 type UseVec = SmallVec<[Use; 4]>;
-type StackSlotUseVec = SmallVec<[InstRef; 4]>;
+type StackSlotUseVec = SmallVec<[StackSlotUse; 16]>;
+type FuncUseVec = SmallVec<[FuncUse; 16]>;
+type DataUseVec = SmallVec<[DataUse; 16]>;
 
 #[derive(Debug)]
 pub(crate) struct FunctionDefinition {
@@ -308,14 +318,15 @@ impl FunctionDefinition {
     /// Returns remaining number of uses.
     fn remove_stack_use(&mut self, ss_ref: StackSlotRef, inst_ref: InstRef) -> usize {
         let use_vec = &mut self.stack_slot_uses[ss_ref];
-        let delete_idx = use_vec.iter().position(|&x| x == inst_ref).expect("failed to remove use");
+        let delete_idx = use_vec.iter().position(|&x| x.0 == inst_ref)
+            .expect("failed to remove use");
         use_vec.swap_remove(delete_idx);
         use_vec.len()
     }
 
     fn add_stack_use(&mut self, ss_ref: StackSlotRef, inst_ref: InstRef) {
         let use_vec = &mut self.stack_slot_uses[ss_ref];
-        use_vec.push(inst_ref);
+        use_vec.push(StackSlotUse(inst_ref));
     }
 
     /// Returns a BlockRef to the entry block (for now, this is always just index 0 by construction)
@@ -502,8 +513,9 @@ impl<'block> BlockBuilder<'block> {
         }
     }
 
-    fn add_stack_use(&mut self, slot: StackSlotRef, use_: InstRef) {
-        self.stack_slot_uses[slot].push(use_)
+    fn add_stack_use(&mut self, slot: StackSlotRef, stack_addr: InstRef) {
+        let stack_use = StackSlotUse(stack_addr);
+        self.stack_slot_uses[slot].push(stack_use)
     }
 
     fn add_inst(

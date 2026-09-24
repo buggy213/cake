@@ -20,7 +20,7 @@ use cake_util::{IndexVec, index_vec};
 use rustc_hash::FxHashSet;
 use smallvec::{SmallVec, smallvec};
 
-use crate::cir::{BlockRef, FunctionDefinition, Inst, InstRef, Module, OperandCoord, StackSlotRef, Type, Value, dom_info::{self, DominanceFrontiers, DominanceTree}};
+use crate::cir::{BlockRef, FunctionDefinition, Inst, InstRef, Module, OperandCoord, StackSlotRef, StackSlotUse, Type, Value, dom_info::{self, DominanceFrontiers, DominanceTree}};
 
 pub(crate) fn mem2reg(func: &mut FunctionDefinition) {
     let dom_tree = dom_info::dom_tree(func);
@@ -177,7 +177,7 @@ fn is_slot_promotable(func: &FunctionDefinition, ss_ref: StackSlotRef) -> SlotAn
     let mut liveness_worklist: SmallVec<[BlockRef; 32]> = smallvec![];
 
     // note that the only users of stack slot are StackAddr instructions
-    for &ss_use in &func.stack_slot_uses[ss_ref] {
+    for &StackSlotUse(ss_use) in &func.stack_slot_uses[ss_ref] {
         let ss_use_vec = &func.inst_uses[ss_use];
         for &use_ in ss_use_vec {
             let ss_user = func.insts[use_.user];

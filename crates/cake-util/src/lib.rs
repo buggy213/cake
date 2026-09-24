@@ -21,7 +21,6 @@ impl Mul for RangeUInt {
 #[macro_export]
 macro_rules! make_type_idx {
     ($type_idx_name:tt, $type_name:tt) => {
-        // TODO: consider newtyping Vec and adding push which returns type_idx
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub(crate) struct $type_idx_name(u32);
 
@@ -65,6 +64,10 @@ macro_rules! make_type_idx {
 
             #[cfg(test)]
             pub(crate) fn new_for_test(id: u32) -> Self {
+                Self(id)
+            }
+
+            pub(crate) unsafe fn assume_valid(id: u32) -> Self {
                 Self(id)
             }
         }
