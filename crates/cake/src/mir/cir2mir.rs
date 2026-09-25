@@ -19,11 +19,11 @@
 //! and selecting uses before defs in a dataflow-like fashion. This is similar to
 //! LLVM's GlobalISel.
 
-use cake_util::{IndexSlice, IndexVec, index_vec};
+use cake_util::{IndexVec, index_vec};
 use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 use crate::{
-    cir::{self, BlockRef, Constant, Data, DataContents, Function, FunctionDefinition, InstRef, Value, post_order}, mir::{self, GprOperandWidth, ImmediateOperand, MachineBlock, MachineBlockRef, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstOperandCoord, MachineInstRef, MachineModule, MemOperand, PhysReg, Reg, RegClass, SseOperandWidth, VRegDef, VRegDefCoord, VRegRef, VRegUse, VirtualReg, phys_regs}
+    cir::{self, BlockRef, Constant, Data, DataContents, FunctionDefinition, InstRef, Value, post_order}, mir::{self, GprOperandWidth, ImmediateOperand, MachineBlock, MachineBlockRef, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstOperandCoord, MachineInstRef, MachineModule, MemOperand, Reg, RegClass, SseOperandWidth, VRegDef, VRegRef, VRegUse, VRegVec, VRegVecRef, VirtualReg, phys_regs}
 };
 
 // Whether a CIR instruction has already been selected
@@ -45,6 +45,7 @@ struct InstructionSelector<'cir_mod> {
     // the outputs of instructions which have not been selected yet. we use a helper
     // type to manage and fill in the insts defining virtual registers
     vregs: IndexVec<VRegRef, InstSelVReg>,
+    vreg_vecs: IndexVec<VRegVecRef, VRegVec>,
     insts: IndexVec<MachineInstRef, MachineInst>,
 
     // marks which CIR insts have been covered by instruction selection already
@@ -160,6 +161,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 MachineFunctionDefinition {
                     insts: index_vec![],
                     vregs: index_vec![],
+                    vreg_vecs: index_vec![],
                     blocks: index_vec![MachineBlock::new(); func_def.blocks.len()],
                     stack_slots: func_def.stack_slots.clone()
                 }.into()
@@ -179,6 +181,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
             cir_mod,
             mir_mod,
             vregs: index_vec![],
+            vreg_vecs: index_vec![],
             insts: index_vec![],
             used_insts: index_vec![],
             vreg_by_value: FxHashMap::default()
@@ -493,6 +496,12 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
             return
         };
 
+        // populate block arguments
+        self.vreg_by_value.clear();
+        for (bref, block) in BlockRef::enumerate2(&func.blocks) {
+            
+        }
+
         // small helper to circumvent borrowck
         fn get_mfunc_def<'isel>(mir: &'isel mut MachineModule, mfunc_ref: MachineFunctionRef) 
             -> &'isel mut MachineFunctionDefinition {
@@ -539,6 +548,11 @@ mod test {
         let mir_mod = isel.finish();
 
         print!("{mir_mod}")
+    }
+
+    #[test]
+    fn test_conditional_handwritten() {
+        
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! - AVX is available (pretty much every x86-64 CPU made in the last 15 years supports it), so
 //!   that the three-address instruction encodings are available
 
-use cake_util::{IndexVec, make_type_idx};
+use cake_util::{IndexSlice, IndexVec, make_type_idx};
 use smallvec::SmallVec;
 
 use crate::cir;
@@ -186,6 +186,10 @@ pub(crate) struct VirtualReg {
 }
 
 make_type_idx!(VRegRef, VirtualReg);
+
+pub(crate) type VRegVec = SmallVec<[VRegRef; 5]>;
+make_type_idx!(VRegVecRef, VRegVec);
+
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Reg {
@@ -361,13 +365,37 @@ pub(crate) enum Condition {
     G
 }
 
-/// MachineInst are the opcodes of MIR, and correspond directly to a 
+/// MachineInst are the opcodes of MIR, and (mostly) correspond directly to a 
 /// single x86_64 opcode and addressing mode selection to simplify final assembly
 /// emission. MachineInst's remain in three-address SSA form until register allocation, 
 /// using virtual registers and block parameters; it is the register allocator's job
 /// to perform out-of-SSA and two-address legalization for x86_64. 
 #[derive(Debug)]
 pub(crate) enum MachineInst {
+    // These variants are used for register allocation, since they directly encode the values
+    // which are live across control flow
+    // They must be lowered away before final codegen
+    JmpWithParams {
+        target: MachineBlockRef,
+        params: VRegVecRef,
+    },
+    JmpWithCondAndParams {
+        cond: Condition,
+        target: MachineBlockRef,
+        params: VRegVecRef
+    },
+    CallWithParams {
+        target: MachineFunctionRef,
+        params: VRegVecRef
+    },
+    CallIndirectWithParams {
+        target: VRegRef,
+        params: VRegVecRef,
+    },
+    RetWithParams {
+        params: VRegVecRef,
+    },
+
     // lea %dst, [%op2]
     Lea {
         dst: Reg,
@@ -645,11 +673,15 @@ make_type_idx!(MachineInstRef, MachineInst);
 #[derive(Debug, Clone)]
 struct MachineBlock {
     irefs: Vec<MachineInstRef>,
+    block_params: Vec<VRegRef>,
 }
 
 impl MachineBlock {
     fn new() -> Self {
-        MachineBlock { irefs: vec![] }
+        MachineBlock { 
+            irefs: vec![],
+            block_params: vec![],
+        }
     }
 }
 
@@ -659,6 +691,7 @@ make_type_idx!(MachineBlockRef, MachineBlock);
 pub(crate) struct MachineFunctionDefinition {
     pub(crate) insts: IndexVec<MachineInstRef, MachineInst>,
     pub(crate) vregs: IndexVec<VRegRef, VirtualReg>,
+    pub(crate) vreg_vecs: IndexVec<VRegVecRef, VRegVec>,
 
     pub(crate) blocks: IndexVec<MachineBlockRef, MachineBlock>,
 
@@ -695,13 +728,66 @@ impl std::fmt::Display for PhysReg {
     }
 }
 
+impl std::fmt::Display for VRegRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "v{}", self.0)
+    }
+}
+
 impl std::fmt::Display for Reg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Reg::VReg(vreg_ref) => write!(f, "v{}", vreg_ref.0),
+            Reg::VReg(vreg_ref) => write!(f, "{vreg_ref}"),
             Reg::PReg(phys_reg) => write!(f, "{phys_reg}"),
         }
     }
+}
+
+impl std::fmt::Display for MachineBlockRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "b{}", self.0)
+    }
+}
+
+impl std::fmt::Display for MachineFunctionRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "f{}", self.0)
+    }
+}
+
+impl std::fmt::Display for Condition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mnemonic = match self {
+            Condition::O => "o",
+            Condition::No => "no",
+            Condition::Z => "z",
+            Condition::Nz => "nz",
+            Condition::B => "b",
+            Condition::Ae => "ae",
+            Condition::Be => "be",
+            Condition::A => "a",
+            Condition::L => "l",
+            Condition::Ge => "ge",
+            Condition::Le => "le",
+            Condition::G => "g",
+        };
+
+        write!(f, "{mnemonic}")
+    }
+}
+
+fn display_vec<T: std::fmt::Display>(
+    v: &[T],
+    f: &mut std::fmt::Formatter<'_>
+) -> std::fmt::Result {
+    write!(f, "(")?;
+    for (i, val) in v.iter().enumerate() {
+        write!(f, "{}", val)?;
+        if i != v.len() - 1 {
+            write!(f, ", ")?;
+        }
+    }
+    write!(f, ")")
 }
 
 impl std::fmt::Display for ImmediateOperand {
@@ -782,6 +868,11 @@ impl std::fmt::Display for MemOperand {
 impl MachineInst {
     fn mnemonic(&self) -> &'static str {
         match self {
+            MachineInst::JmpWithParams { .. } => "JmpWithParams",
+            MachineInst::JmpWithCondAndParams { .. } => "JmpWithCondAndParams",
+            MachineInst::CallWithParams { .. } => "CallWithParams",
+            MachineInst::CallIndirectWithParams { .. } => "CallIndirectWithParams",
+            MachineInst::RetWithParams { .. } => "RetWithParams",
             MachineInst::Lea { .. } => "Lea",
             MachineInst::AddRegToReg { .. } => "AddRegToReg",
             MachineInst::AddMemToReg { .. } => "AddMemToReg",
@@ -828,10 +919,36 @@ impl MachineInst {
     }
 }
 
-impl std::fmt::Display for MachineInst {
+struct DisplayMachineInst<'a>(&'a MachineInst, &'a IndexSlice<VRegVecRef, [VRegVec]>);
+impl std::fmt::Display for DisplayMachineInst<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let m = self.mnemonic();
-        match self {
+        let DisplayMachineInst(inst, vreg_vecs) = self;
+        let m = inst.mnemonic();
+        match inst {
+            MachineInst::JmpWithParams { target, params } => {
+                write!(f, "{m} {target}(")?;
+                display_vec(&self.1[*params], f)?;
+                write!(f, ")")
+            }
+            MachineInst::JmpWithCondAndParams { cond, target, params } => {
+                write!(f, "{m}.{cond} {target}(")?;
+                display_vec(&self.1[*params], f)?;
+                write!(f, ")")
+            },
+            MachineInst::CallWithParams { target, params } => {
+                write!(f, "{m} {target}(")?;
+                display_vec(&self.1[*params], f)?;
+                write!(f, ")")
+            },
+            MachineInst::CallIndirectWithParams { target, params } => {
+                write!(f, "{m} {target}(")?;
+                display_vec(&self.1[*params], f)?;
+                write!(f, ")")
+            },
+            MachineInst::RetWithParams { params } => {
+                write!(f, "{m} ")?;
+                display_vec(&self.1[*params], f)
+            }
             MachineInst::Lea { dst, op2, width } => 
                 write!(f, "{m} {width} {dst}, {op2}"),
             MachineInst::AddRegToReg { dst, op1, op2, width } => 
@@ -889,8 +1006,9 @@ impl std::fmt::Display for MachineFunctionDefinition {
             
             for &iref in &block.irefs {
                 let minst = &self.insts[iref];
+                let display_minst = DisplayMachineInst(minst, &self.vreg_vecs);
                 write!(f, "    ")?;
-                write!(f, "{minst}")?;
+                write!(f, "{display_minst}")?;
                 writeln!(f)?;
             }
         }

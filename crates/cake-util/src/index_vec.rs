@@ -53,6 +53,10 @@ impl<I: Idx, T> IndexVec<I, T> {
         self.inner.contains(x)
     }
 
+    pub fn resize(&mut self, new_len: usize, value: T) where T: Clone {
+        self.inner.resize(new_len, value);
+    }
+
     /// Helper function for the `index_vec!` macro
     pub fn from_vec(vec: Vec<T>) -> Self {
         Self { inner: vec, _unused: PhantomData }

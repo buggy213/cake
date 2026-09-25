@@ -190,8 +190,8 @@ impl Constant {
     }
 }
 
-type TypeVec = SmallVec<[Type; 4]>;
-type ValueVec = SmallVec<[Value; 8]>;
+pub(crate) type TypeVec = SmallVec<[Type; 4]>;
+pub(crate) type ValueVec = SmallVec<[Value; 8]>;
 
 make_type_idx!(ValueVecRef, ValueVec);
 
@@ -809,8 +809,8 @@ make_type_idx!(BlockRef, Block);
 #[derive(Debug, Clone, Copy)]
 
 pub(crate) struct BlockPredecessor {
-    pred_ref: BlockRef,
-    edge_idx: u32,
+    pub(crate) pred_ref: BlockRef,
+    pub(crate) edge_idx: u32,
 }
 
 make_type_idx!(BlockArgRef, Type);
@@ -1269,6 +1269,7 @@ impl Inst {
         }
     }
 
+    /// Iterator over all OperandCoords for this inst
     pub(crate) fn operand_coord_iter<'inst, 'vvec>(
         &'inst self, 
         value_vecs: &'vvec IndexSlice<ValueVecRef, [ValueVec]>
@@ -1321,6 +1322,15 @@ impl Inst {
             current_idx: 0,
             num_idxs,
         }
+    }
+
+    /// Iterator over all Value operands of this instruction
+    pub(crate) fn operand_iter<'inst, 'vvec>(
+        &'inst self,
+        value_vecs: &'vvec IndexSlice<ValueVecRef, [ValueVec]>
+    ) -> impl Iterator<Item = Value> + use<'inst, 'vvec> {
+        let operand_coord_iter = self.operand_coord_iter(value_vecs);
+        operand_coord_iter.map(|c| self.get_operand(value_vecs, c))
     }
     
     /// Get Value operand of instruction

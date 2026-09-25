@@ -361,6 +361,11 @@ impl Assembler {
         let block_labels = fn_ctx.labels.as_ref();
 
         match mir_inst {
+            MachineInst::JmpWithParams { .. }
+            | MachineInst::JmpWithCondAndParams { .. }
+            | MachineInst::CallWithParams { .. }
+            | MachineInst::CallIndirectWithParams { .. }
+            | MachineInst::RetWithParams { .. } => unreachable!("not valid for codegen"),
             MachineInst::Lea { dst, op2, width } => {
                 let dst = dst.as_preg(valid);
 
