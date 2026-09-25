@@ -1,9 +1,8 @@
-use cake_util::{Idx, IndexSlice, IndexVec, index_vec, make_type_idx};
+use cake_util::{Idx, IndexSlice, IndexVec, index_vec};
 use regalloc2;
-use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use crate::{cir::{self, FunctionDefinition}, mir};
+use crate::{cir, mir};
 
 impl From<mir::MachineBlockRef> for regalloc2::Block {
     fn from(value: mir::MachineBlockRef) -> Self {
@@ -40,7 +39,7 @@ impl From<mir::RegClass> for regalloc2::RegClass {
 
 /// Constructs the necessary data structures for regalloc2 to perform register allocation.
 struct RegAllocAdapter<'func> {
-    func: &'func FunctionDefinition,
+    func: &'func mir::MachineFunctionDefinition,
     ctx: RegAllocAdapterContext,
 }
 
@@ -49,30 +48,20 @@ struct RegAllocAdapterContext {
     insns: Vec<mir::MachineInstRef>,
     block_insns: IndexVec<mir::MachineBlockRef, regalloc2::InstRange>,
 
-    // VReg space is allocated as follows
-    // 0..|insts|: every inst gets one VReg slot by default, even if it is not used
-    // 0..|block_params(b0)|: block 0's block params
-    // 0..|block_params(b1)|: block 1's block params
-    // ...
-    // Finally, the remainder (multi-valued CIR insts) are allocated and 
-    // indexed using a sparse hash map
-    inst_vregs: Vec<regalloc2::VReg>,
-    sparse_vregs: FxHashMap<cir::Value, regalloc2::VReg>,
-
     inst_operands_flat: Vec<regalloc2::Operand>,
-    inst_operands: IndexVec<cir::InstRef, (u32, u32)>,
+    inst_operands: IndexVec<mir::MachineInstRef, (u32, u32)>,
     
-    block_succs_flat: Vec<cir::BlockRef>,
-    block_succs: IndexVec<cir::BlockRef, (u32, u32)>,
+    block_succs_flat: Vec<mir::MachineBlockRef>,
+    block_succs: IndexVec<mir::MachineBlockRef, (u32, u32)>,
     
-    block_preds_flat: Vec<cir::BlockRef>,
-    block_preds: IndexVec<cir::BlockRef, (u32, u32)>,
+    block_preds_flat: Vec<mir::MachineBlockRef>,
+    block_preds: IndexVec<mir::MachineBlockRef, (u32, u32)>,
 
     block_params_flat: Vec<regalloc2::VReg>,
-    block_params: IndexVec<cir::BlockRef, (u32, u32)>,
+    block_params: IndexVec<mir::MachineBlockRef, (u32, u32)>,
 
     branch_params_flat: Vec<regalloc2::VReg>,
-    branch_params: IndexVec<cir::BlockRef, [(u32, u32); 4]>,
+    branch_params: IndexVec<mir::MachineBlockRef, [(u32, u32); 4]>,
 }
 
 impl<'func> RegAllocAdapter<'func> {
@@ -80,10 +69,10 @@ impl<'func> RegAllocAdapter<'func> {
     /// which all follow the same indexing scheme
     fn index_by_block<'a, T>(
         block: regalloc2::Block,
-        range_vec: &IndexSlice<cir::BlockRef, [(u32, u32)]>,
+        range_vec: &IndexSlice<mir::MachineBlockRef, [(u32, u32)]>,
         flat_vec: &'a [T],
     ) -> &'a [T] {
-        let block_ref: cir::BlockRef = block.into();
+        let block_ref: mir::MachineBlockRef = block.into();
         let range = range_vec[block_ref];
         let (start, end) = (range.0 as usize, range.1 as usize);
         &flat_vec[start..end]
@@ -91,11 +80,11 @@ impl<'func> RegAllocAdapter<'func> {
 
     fn index_by_inst<'a, T>(
         inst: regalloc2::Inst,
-        insns: &[cir::InstRef],
-        range_vec: &IndexSlice<cir::InstRef, [(u32, u32)]>,
+        insns: &[mir::MachineInstRef],
+        range_vec: &IndexSlice<mir::MachineInstRef, [(u32, u32)]>,
         flat_vec: &'a [T]
     ) -> &'a [T] {
-        let inst_ref: cir::InstRef = insns[inst.0 as usize];
+        let inst_ref: mir::MachineInstRef = insns[inst.0 as usize];
         let range = range_vec[inst_ref];
         let (start, end) = (range.0 as usize, range.1 as usize);
         &flat_vec[start..end]
@@ -107,8 +96,6 @@ impl RegAllocAdapterContext {
         Self {
             insns: vec![],
             block_insns: index_vec![],
-            inst_vregs: vec![],
-            sparse_vregs: FxHashMap::default(),
             inst_operands_flat: vec![],
             inst_operands: index_vec![],
             block_succs_flat: vec![],
@@ -125,8 +112,6 @@ impl RegAllocAdapterContext {
     fn clear(&mut self) {
         self.insns.clear();
         self.block_insns.clear();
-        self.inst_vregs.clear();
-        self.sparse_vregs.clear();
         self.inst_operands_flat.clear();
         self.inst_operands.clear();
         self.block_succs_flat.clear();
@@ -139,51 +124,8 @@ impl RegAllocAdapterContext {
         self.branch_params.clear();
     }
 
-    fn vreg_from_value(&self, value: cir::Value) -> regalloc2::VReg {
-        match value {
-            cir::Value::Inst(inst_ref) => 
-                self.inst_vregs[inst_ref.get_inner()],
-            cir::Value::BlockArgument(block_ref, block_arg_ref) => {
-                let block_param_range = self.block_params[block_ref];
-                let idx = block_param_range.0 as usize + block_arg_ref.get_inner();
-                self.block_params_flat[idx]
-            },
-            cir::Value::TupleElement(inst_ref, _) => 
-                self.sparse_vregs[&value]
-        }
-    }
-
-    fn populate(&mut self, func: &FunctionDefinition) {
-        let mut current_vreg = 0;
-        let total_block_params: usize = func.blocks.iter().map(|b| b.block_arg_order.len()).sum();
-        let sparse_vreg_start: usize = func.insts.len() + total_block_params;
-        let mut current_sparse_vreg = sparse_vreg_start;
-        for (iref, inst_types) in cir::InstRef::enumerate2(&func.inst_types) {
-            if let Some(&inst_type) = inst_types.first() {
-                self.inst_vregs.push(
-                    regalloc2::VReg::new(iref.get_inner(), inst_type.into())
-                )
-            }
-            else {
-                self.inst_vregs.push(
-                    regalloc2::VReg::new(iref.get_inner(), regalloc2::RegClass::Int)
-                )
-            }
-
-            if inst_types.len() >= 2 {
-                for i in 1..inst_types.len() {
-                    let ty = inst_types[i];
-                    let sparse_vreg = regalloc2::VReg::new(current_sparse_vreg, ty.into());
-                    let key = cir::Value::TupleElement(iref, i as u32);
-                    self.sparse_vregs.insert(key, sparse_vreg);
-
-                    current_sparse_vreg += 1;
-                }
-            }
-        }
-        current_vreg += func.insts.len();
-
-        for (bref, block) in cir::BlockRef::enumerate2(&func.blocks) {
+    fn populate(&mut self, func: &mir::MachineFunctionDefinition) {
+        for (bref, block) in mir::MachineBlockRef::enumerate2(&func.blocks) {
             let block_succs = block.successors(&func.insts);
             Self::extend_range(
                 bref, 
@@ -192,7 +134,7 @@ impl RegAllocAdapterContext {
                 &mut self.block_succs_flat
             );
 
-            let block_preds = block.preds.iter().map(|p| p.pred_ref);
+            let block_preds = block.preds.iter().copied();
             Self::extend_range(
                 bref,
                 block_preds,
@@ -200,10 +142,9 @@ impl RegAllocAdapterContext {
                 &mut self.block_preds_flat
             );
 
-            let block_param_vregs = (0..block.block_arg_order.len()).map(|idx| {
-                let block_arg_ref = block.block_arg_order[idx];
-                let ty = block.block_arg_types[block_arg_ref];
-                regalloc2::VReg::new(current_vreg, ty.into())
+            let block_param_vregs = block.block_params.iter().map(|&vreg_ref| {
+                let vreg = &func.vregs[vreg_ref];
+                regalloc2::VReg::new(vreg_ref.get_inner(), vreg.class.into())
             });
             Self::extend_range(
                 bref,
@@ -211,9 +152,8 @@ impl RegAllocAdapterContext {
                 &mut self.block_params,
                 &mut self.block_params_flat,
             );
-            current_vreg += block.block_arg_order.len();
 
-            let block_insts = block.inst_refs.borrow();
+            let block_insts = &block.inst_refs;
             let start = self.insns.len();
             self.insns.extend_from_slice(block_insts.as_slice());
             let end = self.insns.len();
@@ -222,28 +162,22 @@ impl RegAllocAdapterContext {
                 regalloc2::Inst(end as u32)
             );
             self.block_insns.push(inst_range);
-        }
 
-        for (bref, block) in cir::BlockRef::enumerate2(&func.blocks) {
             let terminator_ref = block.terminator_ref();
-            let terminator_inst = func.insts[terminator_ref];
-            let mut edge_idx = 0;
-            for edge in terminator_inst.edges() {
+            let terminator_inst = &func.insts[terminator_ref];
+            for edge_idx in 0..terminator_inst.num_edges() {
                 assert!(edge_idx < 4);
-                let branch_param_values = &func.value_vecs[edge.args];
-                let branch_param_vregs: SmallVec<[regalloc2::VReg; 8]> = 
-                    branch_param_values.iter().map(|&v| self.vreg_from_value(v)).collect();
+                let vreg_vec_ref = terminator_inst.edge_params(edge_idx as u32);
+                let branch_param_vregs = func.vreg_vecs[vreg_vec_ref].iter().map(|&vreg_ref| {
+                    let vreg = &func.vregs[vreg_ref];
+                    regalloc2::VReg::new(vreg_ref.get_inner(), vreg.class.into())
+                });
 
                 let start = self.branch_params_flat.len() as u32;
                 self.branch_params_flat.extend(branch_param_vregs);
                 let end = self.branch_params_flat.len() as u32;
                 self.branch_params[bref][edge_idx] = (start, end);
-                edge_idx += 1;
             }
-        }
-
-        for (iref, &inst) in cir::InstRef::enumerate2(&func.insts) {
-            
         }
     }
 
@@ -284,7 +218,7 @@ impl<'func> regalloc2::Function for RegAllocAdapter<'func> {
     }
 
     fn block_insns(&self, block: regalloc2::Block) -> regalloc2::InstRange {
-        let block_ref: cir::BlockRef = block.into();
+        let block_ref: mir::MachineBlockRef = block.into();
         self.ctx.block_insns[block_ref]
     }
 
@@ -294,7 +228,7 @@ impl<'func> regalloc2::Function for RegAllocAdapter<'func> {
             &self.ctx.block_succs, 
             &self.ctx.block_succs_flat
         );
-        cir::BlockRef::convert_slice(succs)
+        mir::MachineBlockRef::convert_slice(succs)
     }
 
     fn block_preds(&self, block: regalloc2::Block) -> &[regalloc2::Block] {
@@ -303,7 +237,7 @@ impl<'func> regalloc2::Function for RegAllocAdapter<'func> {
             &self.ctx.block_preds, 
             &self.ctx.block_preds_flat
         );
-        cir::BlockRef::convert_slice(preds)
+        mir::MachineBlockRef::convert_slice(preds)
     }
 
     fn block_params(&self, block: regalloc2::Block) -> &[regalloc2::VReg] {
@@ -316,14 +250,17 @@ impl<'func> regalloc2::Function for RegAllocAdapter<'func> {
 
     fn is_ret(&self, insn: regalloc2::Inst) -> bool {
         let inst_ref = self.ctx.insns[insn.0 as usize];
-        let inst = self.func.insts[inst_ref];
-        matches!(inst, cir::Inst::Return { .. })
+        let inst = &self.func.insts[inst_ref];
+        matches!(inst, mir::MachineInst::RetWithParams { .. })
     }
 
     fn is_branch(&self, insn: regalloc2::Inst) -> bool {
         let inst_ref = self.ctx.insns[insn.0 as usize];
-        let inst = self.func.insts[inst_ref];
-        matches!(inst, cir::Inst::BranchIf { .. } | cir::Inst::Jump { .. })
+        let inst = &self.func.insts[inst_ref];
+        matches!(
+            inst, 
+            mir::MachineInst::JmpWithParams { .. } | mir::MachineInst::JmpWithCondAndParams { .. }
+        )
     }
 
     fn branch_blockparams(
@@ -332,7 +269,7 @@ impl<'func> regalloc2::Function for RegAllocAdapter<'func> {
         insn: regalloc2::Inst, 
         succ_idx: usize
     ) -> &[regalloc2::VReg] {
-        let block_ref: cir::BlockRef = block.into();
+        let block_ref: mir::MachineBlockRef = block.into();
         let block_terminator = self.func.blocks[block_ref].terminator_ref();
         let inst_ref = self.ctx.insns[insn.0 as usize];
         if block_terminator != inst_ref {
@@ -359,13 +296,12 @@ impl<'func> regalloc2::Function for RegAllocAdapter<'func> {
     }
 
     fn num_vregs(&self) -> usize {
-        self.ctx.inst_vregs  .len() + 
-        self.ctx.block_params.len() + 
-        self.ctx.sparse_vregs.len()
+        self.func.vregs.len()
     }
 
+    // idk what this function is meant for...
     fn spillslot_size(&self, regclass: regalloc2::RegClass) -> usize {
-        todo!()
+        1
     }
 }
 

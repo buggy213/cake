@@ -180,9 +180,9 @@ impl MachineInstOperandCoord {
 
 #[derive(Debug, Clone)]
 pub(crate) struct VirtualReg {
-    class: RegClass,
-    def: VRegDef,
-    uses: SmallVec<[VRegUse; 3]>
+    pub(crate) class: RegClass,
+    pub(crate) def: VRegDef,
+    pub(crate) uses: SmallVec<[VRegUse; 3]>
 }
 
 make_type_idx!(VRegRef, VirtualReg);
@@ -365,6 +365,25 @@ pub(crate) enum Condition {
     G
 }
 
+impl Condition {
+    pub(crate) fn invert(self) -> Condition {
+        match self {
+            Condition::O => Condition::No,
+            Condition::No => Condition::O,
+            Condition::Z => Condition::Nz,
+            Condition::Nz => Condition::Z,
+            Condition::B => Condition::Ae,
+            Condition::Ae => Condition::B,
+            Condition::Be => Condition::A,
+            Condition::A => Condition::Be,
+            Condition::L => Condition::Ge,
+            Condition::Ge => Condition::L,
+            Condition::Le => Condition::G,
+            Condition::G => Condition::Le,
+        }
+    }
+}
+
 /// MachineInst are the opcodes of MIR, and (mostly) correspond directly to a 
 /// single x86_64 opcode and addressing mode selection to simplify final assembly
 /// emission. MachineInst's remain in three-address SSA form until register allocation, 
@@ -382,7 +401,9 @@ pub(crate) enum MachineInst {
     JmpWithCondAndParams {
         cond: Condition,
         target: MachineBlockRef,
-        params: VRegVecRef
+        fallthrough: MachineBlockRef,
+        target_params: VRegVecRef,
+        fallthrough_params: VRegVecRef,
     },
     CallWithParams {
         target: MachineFunctionRef,
@@ -544,7 +565,7 @@ pub(crate) enum MachineInst {
     },
 
     // this will always be encoded as `jmp rel32` (RIP-relative addressing) due to mcmodel assumption
-    Jump {
+    Jmp {
         target: MachineBlockRef
     },
 
@@ -650,37 +671,109 @@ pub(crate) enum MachineInst {
     },
 
     // test %op1, %op2
-    TestRegWithImm {
+    TestRegWithReg {
         op1: Reg,
-        op2: ImmediateOperand,
+        op2: Reg,
         width: GprOperandWidth,
     },
     // cmp %op1, %op2
-    CmpRegWithImm {
+    CmpRegWithReg {
         op1: Reg,
-        op2: ImmediateOperand,
+        op2: Reg,
         width: GprOperandWidth,
+    },
+    // setcc %dst
+    SetReg {
+        dst: Reg,
+        cond: Condition,
     },
 
     JmpWithCond {
         cond: Condition,
         target: MachineBlockRef,
+        fallthrough: MachineBlockRef,
     },
+}
+
+impl MachineInst {
+    /// Returns an edge in the CFG if the instruction is a terminator inst. Otherwise, panics
+    pub(crate) fn edge_target(&self, edge_idx: u32) -> MachineBlockRef {
+        match self {
+            MachineInst::Jmp { target }
+            | MachineInst::JmpWithParams { target, .. } => match edge_idx {
+                0 => *target,
+                _ => panic!("invalid edge idx")
+            },
+            MachineInst::JmpWithCond { target, fallthrough, .. }
+            | MachineInst::JmpWithCondAndParams { target , fallthrough, .. } => match edge_idx {
+                0 => *target,
+                1 => *fallthrough,
+                _ => panic!("invalid edge idx")
+            },
+            _ => panic!("has no edges")
+        }    
+    }
+
+    /// Returns the block params associated with an edge in the CFG if the instruction is a terminator inst,
+    /// and it has block param info (i.e. this should be called prior to register allocation).
+    /// Otherwise, panics
+    pub(crate) fn edge_params(&self, edge_idx: u32) -> VRegVecRef {
+        match self {
+            MachineInst::JmpWithParams { params, .. } => match edge_idx {
+                0 => *params,
+                _ => panic!("invalid edge idx")
+            },
+            MachineInst::JmpWithCondAndParams { target_params, fallthrough_params, .. } => match edge_idx {
+                0 => *target_params,
+                1 => *fallthrough_params,
+                _ => panic!("invalid edge idx")
+            },
+            _ => panic!("has no edges")
+        }
+    }
+
+    /// How many edges in the CFG an instruction has
+    pub(crate) fn num_edges(&self) -> usize {
+        match self {
+            MachineInst::Jmp { .. } | MachineInst::JmpWithParams { .. } => 1,
+            MachineInst::JmpWithCond { .. } | MachineInst::JmpWithCondAndParams { .. } => 2,
+            _ => 0,
+        }
+    }
 }
 
 make_type_idx!(MachineInstRef, MachineInst);
 
 #[derive(Debug, Clone)]
-struct MachineBlock {
-    irefs: Vec<MachineInstRef>,
-    block_params: Vec<VRegRef>,
+pub(crate) struct MachineBlock {
+    pub(crate) inst_refs: Vec<MachineInstRef>,
+    pub(crate) block_params: Vec<VRegRef>,
+    pub(crate) preds: Vec<MachineBlockRef>,
 }
 
 impl MachineBlock {
+    /// Returns the MachineInstRef corresponding to the terminator instruction
+    pub(crate) fn terminator_ref(&self) -> MachineInstRef {
+        let &terminator_ref = self.inst_refs.last().unwrap();
+        terminator_ref
+    }
+
+    /// Returns the successors of a given MachineBlock
+    pub(crate) fn successors(&self, insts: &IndexSlice<MachineInstRef, [MachineInst]>) 
+        -> impl Iterator<Item = MachineBlockRef> {
+        
+        let terminator = self.terminator_ref();
+        let minst = &insts[terminator];
+        let n_edges = minst.num_edges();
+
+        (0..n_edges).map(|i| minst.edge_target(i as u32))
+    }
+    
     fn new() -> Self {
         MachineBlock { 
-            irefs: vec![],
+            inst_refs: vec![],
             block_params: vec![],
+            preds: vec![],
         }
     }
 }
@@ -696,6 +789,13 @@ pub(crate) struct MachineFunctionDefinition {
     pub(crate) blocks: IndexVec<MachineBlockRef, MachineBlock>,
 
     pub(crate) stack_slots: IndexVec<cir::StackSlotRef, cir::StackSlot>
+}
+
+impl MachineFunctionDefinition {
+    /// Returns a BlockRef to the entry block (for now, this is always just index 0 by construction)
+    pub(crate) fn entry_block(&self) -> MachineBlockRef {
+        MachineBlockRef(0)
+    }
 }
 
 #[derive(Debug)]
@@ -895,7 +995,7 @@ impl MachineInst {
             MachineInst::Push { .. } => "Push",
             MachineInst::PushImm { .. } => "PushImm",
             MachineInst::Pop { .. } => "Pop",
-            MachineInst::Jump { .. } => "Jump",
+            MachineInst::Jmp { .. } => "Jump",
             MachineInst::Call { .. } => "Call",
             MachineInst::CallIndirect { .. } => "CallIndirect",
             MachineInst::Ret => "Ret",
@@ -912,8 +1012,9 @@ impl MachineInst {
             MachineInst::OrRegToReg { .. } => "OrRegToReg",
             MachineInst::XorRegToReg { .. } => "XorRegToReg",
             MachineInst::NotReg { .. } => "NotReg",
-            MachineInst::TestRegWithImm { .. } => "TestRegWithImm",
-            MachineInst::CmpRegWithImm { .. } => "CmpRegWithImm",
+            MachineInst::TestRegWithReg { .. } => "TestRegWithReg",
+            MachineInst::CmpRegWithReg { .. } => "CmpRegWithReg",
+            MachineInst::SetReg { .. } => "SetReg",
             MachineInst::JmpWithCond { .. } => "JmpWithCond",
         }
     }
@@ -930,9 +1031,17 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
                 display_vec(&self.1[*params], f)?;
                 write!(f, ")")
             }
-            MachineInst::JmpWithCondAndParams { cond, target, params } => {
+            MachineInst::JmpWithCondAndParams { 
+                cond, 
+                target,
+                fallthrough,
+                target_params,
+                fallthrough_params 
+            } => {
                 write!(f, "{m}.{cond} {target}(")?;
-                display_vec(&self.1[*params], f)?;
+                display_vec(&self.1[*target_params], f)?;
+                write!(f, ") {fallthrough}(")?;
+                display_vec(&self.1[*fallthrough_params], f)?;
                 write!(f, ")")
             },
             MachineInst::CallWithParams { target, params } => {
@@ -975,7 +1084,7 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
             MachineInst::Push { op1, width } => todo!(),
             MachineInst::PushImm { op1, width } => todo!(),
             MachineInst::Pop { dst, width } => todo!(),
-            MachineInst::Jump { target } => todo!(),
+            MachineInst::Jmp { target } => todo!(),
             MachineInst::Call { target } => todo!(),
             MachineInst::CallIndirect { target } => todo!(),
             MachineInst::Ret => write!(f, "{m}"),
@@ -992,9 +1101,13 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
             MachineInst::OrRegToReg { dst, op1, op2, width } => todo!(),
             MachineInst::XorRegToReg { dst, op1, op2, width } => todo!(),
             MachineInst::NotReg { dst, op1, width } => todo!(),
-            MachineInst::TestRegWithImm { op1, op2, width } => todo!(),
-            MachineInst::CmpRegWithImm { op1, op2, width } => todo!(),
-            MachineInst::JmpWithCond { cond, target } => todo!(),
+            MachineInst::TestRegWithReg { op1, op2, width } => 
+                write!(f, "{m} {width} {op1}, {op2}"),
+            MachineInst::CmpRegWithReg { op1, op2, width } => 
+                write!(f, "{m} {width} {op1}, {op2}"),
+            MachineInst::SetReg { dst, cond } =>
+                write!(f, "{m}.{cond} {dst}"),
+            MachineInst::JmpWithCond { cond, target, fallthrough } => todo!(),
         }
     }
 }
@@ -1004,7 +1117,7 @@ impl std::fmt::Display for MachineFunctionDefinition {
         for (bref, block) in MachineBlockRef::enumerate2(&self.blocks) {
             writeln!(f, "b{}:", bref.get_inner())?;
             
-            for &iref in &block.irefs {
+            for &iref in &block.inst_refs {
                 let minst = &self.insts[iref];
                 let display_minst = DisplayMachineInst(minst, &self.vreg_vecs);
                 write!(f, "    ")?;

@@ -728,7 +728,7 @@ impl Assembler {
                     None
                 )
             },
-            MachineInst::Jump { target } => {
+            MachineInst::Jmp { target } => {
                 let target = block_labels[target];
                 self.emit(
                     Instruction::with_branch(Code::Jmp_rel32_64, target.0)?,
@@ -972,33 +972,55 @@ impl Assembler {
                 let dst: Register = dst.to_register(width);
                 self.emit(Instruction::with1(code, dst)?, None)
             },
-            MachineInst::TestRegWithImm { op1, op2, width } => {
+            MachineInst::TestRegWithReg { op1, op2, width } => {
                 let op1 = op1.as_preg(valid);
+                let op2 = op2.as_preg(valid);
 
                 let code = match width {
-                    GprOperandWidth::Byte => Code::Test_rm8_imm8,
-                    GprOperandWidth::Word => Code::Test_rm16_imm16,
-                    GprOperandWidth::Dword => Code::Test_rm32_imm32,
-                    GprOperandWidth::Qword => Code::Test_rm64_imm32,
+                    GprOperandWidth::Byte => Code::Test_rm8_r8,
+                    GprOperandWidth::Word => Code::Test_rm16_r16,
+                    GprOperandWidth::Dword => Code::Test_rm32_r32,
+                    GprOperandWidth::Qword => Code::Test_rm64_r64,
                 };
 
                 let op1: Register = op1.to_register(width);
-                self.emit(Instruction::with2(code, op1, op2.0 as i32)?, None)
+                let op2: Register = op2.to_register(width);
+                self.emit(Instruction::with2(code, op1, op2)?, None)
             },
-            MachineInst::CmpRegWithImm { op1, op2, width } => {
+            MachineInst::CmpRegWithReg { op1, op2, width } => {
                 let op1 = op1.as_preg(valid);
+                let op2 = op2.as_preg(valid);
 
                 let code = match width {
-                    GprOperandWidth::Byte => Code::Cmp_rm8_imm8,
-                    GprOperandWidth::Word => Code::Cmp_rm16_imm16,
-                    GprOperandWidth::Dword => Code::Cmp_rm32_imm32,
-                    GprOperandWidth::Qword => Code::Cmp_rm64_imm32,
+                    GprOperandWidth::Byte => Code::Cmp_rm8_r8,
+                    GprOperandWidth::Word => Code::Cmp_rm16_r16,
+                    GprOperandWidth::Dword => Code::Cmp_rm32_r32,
+                    GprOperandWidth::Qword => Code::Cmp_rm64_r64,
                 };
 
                 let op1: Register = op1.to_register(width);
-                self.emit(Instruction::with2(code, op1, op2.0 as i32)?, None)
+                let op2: Register = op2.to_register(width);
+                self.emit(Instruction::with2(code, op1, op2)?, None)
             },
-            MachineInst::JmpWithCond { cond, target } => {
+            MachineInst::SetReg { dst, cond } => {
+                let code = match cond {
+                    Condition::O => Code::Seto_rm8,
+                    Condition::No => Code::Setno_rm8,
+                    Condition::Z => Code::Sete_rm8,
+                    Condition::Nz => Code::Setne_rm8,
+                    Condition::B => Code::Setb_rm8,
+                    Condition::Ae => Code::Setae_rm8,
+                    Condition::Be => Code::Setbe_rm8,
+                    Condition::A => Code::Seta_rm8,
+                    Condition::L => Code::Setl_rm8,
+                    Condition::Ge => Code::Setge_rm8,
+                    Condition::Le => Code::Setle_rm8,
+                    Condition::G => Code::Setg_rm8,
+                };
+
+                todo!();
+            }
+            MachineInst::JmpWithCond { cond, target, fallthrough: _ } => {
                 let target = block_labels[target];
 
                 let code = match cond {

@@ -421,6 +421,7 @@ pub(crate) struct FunctionBuilder<'func> {
 impl<'func> FunctionBuilder<'func> {
     pub(crate) fn add_block(&mut self) -> BlockRef {
         let block = Block::new();
+        self.func.block_uses.push(smallvec![]);
         self.func.blocks.push(block)
     }
 
