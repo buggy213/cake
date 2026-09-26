@@ -23,7 +23,7 @@ use cake_util::{IndexVec, index_vec};
 use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 use crate::{
-    cir::{self, BlockRef, Constant, Data, DataContents, FunctionDefinition, InstRef, Value, post_order}, mir::{self, Condition, GprOperandWidth, ImmediateOperand, MachineBlock, MachineBlockRef, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstOperandCoord, MachineInstRef, MachineModule, MemOperand, MemOperandDisplacement, Reg, RegClass, SseOperandWidth, StackOrReg, VRegDef, VRegDefCoord, VRegRef, VRegUse, VRegVec, VRegVecRef, VirtualReg, phys_regs}
+    cir::{self, BlockRef, CompareMode, Constant, Data, DataContents, FunctionDefinition, InstRef, Value, post_order}, mir::{self, Condition, GprOperandWidth, ImmediateOperand, MachineBlock, MachineBlockRef, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstOperandCoord, MachineInstRef, MachineModule, MemOperand, MemOperandDisplacement, Reg, RegClass, SseOperandWidth, StackOrReg, VRegDef, VRegDefCoord, VRegRef, VRegUse, VRegVec, VRegVecRef, VirtualReg, phys_regs}
 };
 
 // Whether a CIR instruction has already been selected
@@ -36,7 +36,7 @@ enum SelectionStatus {
 }
 
 /// Handles instruction selection
-struct InstructionSelector<'cir_mod> {
+pub(crate) struct InstructionSelector<'cir_mod> {
     cir_mod: &'cir_mod cir::Module,
 
     mir_mod: mir::MachineModule,
@@ -146,7 +146,7 @@ impl MachineBlockRef {
 }
 
 impl<'cir_mod> InstructionSelector<'cir_mod> {
-    fn new(cir_mod: &'cir_mod cir::Module) -> InstructionSelector<'cir_mod> {
+    pub(crate) fn new(cir_mod: &'cir_mod cir::Module) -> InstructionSelector<'cir_mod> {
         // prepare MIR module for instruction selection by copying over functions and basic blocks
         // but leaving them unpopulated. also copies over stack slots
         let mut mir_mod = MachineModule {
@@ -187,13 +187,8 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
         }
     }
 
-    fn finish(self) -> mir::MachineModule {
+    pub(crate) fn finish(self) -> mir::MachineModule {
         self.mir_mod
-    }
-
-    fn select_add() {
-        let x: Value = todo!();
-        let y: Value = todo!();
     }
 
     // Allocates a new virtual register and returns its index
@@ -372,15 +367,20 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     op2: b_vreg.into(), 
                     width
                 };
-                
+                let set_inst = MachineInst::SetReg { 
+                    dst: output_vreg.into(), 
+                    cond: Condition::from_cir(*mode, *signed),
+                };
 
                 let cmp_inst_ref = self.insts.push(cmp_inst);
+                let set_inst_ref = self.insts.push(set_inst);
 
                 self.use_operand(*a, a_vreg, cmp_inst_ref, MachineInstOperandCoord::direct(0));
                 self.use_operand(*b, b_vreg, cmp_inst_ref, MachineInstOperandCoord::direct(1));
-                self.define_vreg(VRegDef::Inst(cmp_inst_ref, VRegDefCoord(0)), output_vreg);
+                self.define_vreg(VRegDef::Inst(set_inst_ref, VRegDefCoord(0)), output_vreg);
 
                 selected_insts.push(cmp_inst_ref);
+                selected_insts.push(set_inst_ref);
             },
             Inst::Fadd { a, b } => todo!(),
             Inst::Fsub { a, b } => todo!(),
@@ -451,6 +451,8 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 };
                 let minst_ref = self.insts.push(minst);
 
+                self.define_vreg(VRegDef::Inst(minst_ref, VRegDefCoord(0)), output_vreg);
+
                 selected_insts.push(minst_ref);
             },
             Inst::Zext { v } => todo!(),
@@ -498,7 +500,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 };
 
                 let branch_inst = MachineInst::JmpWithCondAndParams { 
-                    cond: Condition::Z, 
+                    cond: Condition::Nz, 
                     target: MachineBlockRef::from_block_ref(*con), 
                     fallthrough: MachineBlockRef::from_block_ref(*alt), 
                     target_params: con_vreg_vec, 
@@ -520,6 +522,9 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                     self.use_operand(val, *vreg, branch_inst_ref, MachineInstOperandCoord::indirect(0, op_idx));
                     op_idx += 1;
                 }
+
+                selected_insts.push(test_inst_ref);
+                selected_insts.push(branch_inst_ref);
             },
             Inst::Return { values } => {
                 let values = &function.value_vecs[*values];
@@ -658,6 +663,25 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
         }
     }
 
+}
+
+impl Condition {
+    fn from_cir(mode: CompareMode, signed: bool) -> Self {
+        match (mode, signed) {
+            (CompareMode::LessThan, true) => Self::L,
+            (CompareMode::LessThan, false) => Self::B,
+            (CompareMode::GreaterThan, true) => Self::G,
+            (CompareMode::GreaterThan, false) => Self::A,
+            (CompareMode::LessThanOrEqual, true) => Self::Le,
+            (CompareMode::LessThanOrEqual, false) => Self::Be,
+            (CompareMode::GreaterThanOrEqual, true) => Self::Ge,
+            (CompareMode::GreaterThanOrEqual, false) => Self::Ae,
+            (CompareMode::Equal, true) => Self::Z,
+            (CompareMode::Equal, false) => Self::Z,
+            (CompareMode::NotEqual, true) => Self::Nz,
+            (CompareMode::NotEqual, false) => Self::Nz,
+        }
+    }
 }
 
 #[cfg(test)]

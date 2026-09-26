@@ -799,16 +799,16 @@ impl MachineFunctionDefinition {
 }
 
 #[derive(Debug)]
-struct MachineFunction {
-    name: String,
-    definition: Option<MachineFunctionDefinition>,
+pub(crate) struct MachineFunction {
+    pub(crate) name: String,
+    pub(crate) definition: Option<MachineFunctionDefinition>,
 }
 
 make_type_idx!(MachineFunctionRef, MachineFunction);
 
 #[derive(Debug)]
-struct MachineModule {
-    functions: IndexVec<MachineFunctionRef, MachineFunction>,
+pub(crate) struct MachineModule {
+    pub(crate) functions: IndexVec<MachineFunctionRef, MachineFunction>,
 
     // signatures and data can be imported directly from the CIR module
     signatures: IndexVec<cir::FuncRef, cir::Signature>,
@@ -1027,9 +1027,8 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
         let m = inst.mnemonic();
         match inst {
             MachineInst::JmpWithParams { target, params } => {
-                write!(f, "{m} {target}(")?;
-                display_vec(&self.1[*params], f)?;
-                write!(f, ")")
+                write!(f, "{m} {target}")?;
+                display_vec(&self.1[*params], f)
             }
             MachineInst::JmpWithCondAndParams { 
                 cond, 
@@ -1038,21 +1037,18 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
                 target_params,
                 fallthrough_params 
             } => {
-                write!(f, "{m}.{cond} {target}(")?;
+                write!(f, "{m}.{cond} {target}")?;
                 display_vec(&self.1[*target_params], f)?;
-                write!(f, ") {fallthrough}(")?;
-                display_vec(&self.1[*fallthrough_params], f)?;
-                write!(f, ")")
+                write!(f, " {fallthrough}")?;
+                display_vec(&self.1[*fallthrough_params], f)
             },
             MachineInst::CallWithParams { target, params } => {
-                write!(f, "{m} {target}(")?;
-                display_vec(&self.1[*params], f)?;
-                write!(f, ")")
+                write!(f, "{m} {target}")?;
+                display_vec(&self.1[*params], f)
             },
             MachineInst::CallIndirectWithParams { target, params } => {
-                write!(f, "{m} {target}(")?;
-                display_vec(&self.1[*params], f)?;
-                write!(f, ")")
+                write!(f, "{m} {target}")?;
+                display_vec(&self.1[*params], f)
             },
             MachineInst::RetWithParams { params } => {
                 write!(f, "{m} ")?;
@@ -1068,11 +1064,13 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
             MachineInst::AddImmToMem { op1, op2, width } => todo!(),
             MachineInst::FAddRegToReg { dst, op1, op2, width } => todo!(),
             MachineInst::FAddMemToReg { dst, op1, op2, width } => todo!(),
-            MachineInst::Load { dst, op2, width } => todo!(),
+            MachineInst::Load { dst, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op2}"),
             MachineInst::LoadImm { dst, op2, width } => 
                 write!(f, "{m} {width} {dst}, {op2}"),
             MachineInst::LoadFloat { dst, op2, width } => todo!(),
-            MachineInst::StoreReg { op1, op2, width } => todo!(),
+            MachineInst::StoreReg { op1, op2, width } => 
+                write!(f, "{m} {width} {op1}, {op2}"),
             MachineInst::StoreImm { op1, op2, width } => todo!(),
             MachineInst::StoreFloat { op1, op2, width } => todo!(),
             MachineInst::Mov { dst, op2, width } => 
@@ -1084,10 +1082,12 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
             MachineInst::Push { op1, width } => todo!(),
             MachineInst::PushImm { op1, width } => todo!(),
             MachineInst::Pop { dst, width } => todo!(),
-            MachineInst::Jmp { target } => todo!(),
+            MachineInst::Jmp { target } => 
+                write!(f, "{m} {target}"),
             MachineInst::Call { target } => todo!(),
             MachineInst::CallIndirect { target } => todo!(),
-            MachineInst::Ret => write!(f, "{m}"),
+            MachineInst::Ret => 
+                write!(f, "{m}"),
             MachineInst::MulRegToReg { dst, op1, op2, width } => todo!(),
             MachineInst::MulMemToReg { dst, op1, op2, width } => todo!(),
             MachineInst::MulRegWithImm { dst, op1, op2, width } => todo!(),
@@ -1107,7 +1107,8 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
                 write!(f, "{m} {width} {op1}, {op2}"),
             MachineInst::SetReg { dst, cond } =>
                 write!(f, "{m}.{cond} {dst}"),
-            MachineInst::JmpWithCond { cond, target, fallthrough } => todo!(),
+            MachineInst::JmpWithCond { cond, target, fallthrough } => 
+                write!(f, "{m}.{cond} {target} {fallthrough}"),
         }
     }
 }
@@ -1159,4 +1160,5 @@ impl std::fmt::Display for MachineModule {
     }
 }
 
-mod cir2mir;
+/// Instruction selection
+pub(crate) mod cir2mir;

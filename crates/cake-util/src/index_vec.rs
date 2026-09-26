@@ -36,6 +36,10 @@ impl<I: Idx, T> IndexVec<I, T> {
         idx
     }
 
+    pub fn pop(&mut self) -> Option<T> {
+        self.inner.pop()
+    }
+
     pub fn push_mut(&mut self, value: T) -> &mut T {
         self.inner.push(value);
         self.inner.last_mut().unwrap()

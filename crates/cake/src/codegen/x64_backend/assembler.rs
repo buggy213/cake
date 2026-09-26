@@ -1042,6 +1042,14 @@ impl Assembler {
             },
         }
     }
+
+    fn assemble_block() {
+
+    }
+
+    pub(crate) fn assemble_function() {
+
+    }
 }
 
 fn cmov_opcode(cond: Condition, width: GprOperandWidth) -> iced_x86::Code {
