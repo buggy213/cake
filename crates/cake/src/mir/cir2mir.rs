@@ -361,7 +361,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
                 let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
 
-                let width = function.type_of_value(output_value).to_gpr_width();
+                let width = function.type_of_value(*a).to_gpr_width();
 
                 let cmp_inst = MachineInst::CmpRegWithReg { 
                     op1: a_vreg.into(), 

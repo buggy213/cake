@@ -228,7 +228,7 @@ impl mir::MachineInst {
 
         match self {
             JmpWithParams { target, params } => {
-                make_params_uses(*params, func, operands);
+                // no operands: branch args are reported via branch_blockparams
             },
             JmpWithCondAndParams { 
                 cond, 
@@ -237,8 +237,7 @@ impl mir::MachineInst {
                 target_params, 
                 fallthrough_params 
             } => {
-                make_params_uses(*target_params, func, operands);
-                make_params_uses(*fallthrough_params, func, operands);
+                // no operands: branch args are reported via branch_blockparams
             },
             CallWithParams { target, params } => todo!(),
             CallIndirectWithParams { target, params } => todo!(),
@@ -753,18 +752,35 @@ fn amd64_machine_env() -> regalloc2::MachineEnv {
     }
 
     let mut gprs = new_pregset(regalloc2::RegClass::Int, 16);
+    
     // by default, omit rsp from register allocation, since it needs to be kept around for stack
     // manipulation
     gprs.remove(mir::PhysReg::rsp.into());
 
+    let caller_saved_regs = {
+        use mir::PhysReg::*;
+        [rax, rdi, rsi, rdx, rcx, r8, r9, r10, r11]
+    };
+
+    let caller_saved_pregset = {
+        let mut set = regalloc2::PRegSet::empty();
+        for preg in caller_saved_regs {
+            set.remove(preg.into());
+        }
+
+        set
+    };
+    let mut callee_saved_pregset = caller_saved_pregset.invert();
+    callee_saved_pregset.intersect_from(gprs);
+
     regalloc2::MachineEnv {
         preferred_regs_by_class: [
-            gprs,
+            caller_saved_pregset,
             new_pregset(regalloc2::RegClass::Float, 16),
             regalloc2::PRegSet::empty(),
         ],
         non_preferred_regs_by_class: [
-            regalloc2::PRegSet::empty(),
+            callee_saved_pregset,
             regalloc2::PRegSet::empty(),
             regalloc2::PRegSet::empty()
         ],
