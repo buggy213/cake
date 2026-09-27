@@ -29,4 +29,4 @@ pub(crate) trait RegisterAllocator {
 
 // Implementations of the register allocator
 mod basic_alloc;
-mod regalloc2;
+pub(crate) mod regalloc2;

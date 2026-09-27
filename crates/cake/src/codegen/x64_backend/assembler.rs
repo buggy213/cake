@@ -1,7 +1,7 @@
 use std::assert_matches;
 use cake_util::{IndexVec, index_vec};
 use iced_x86::{
-    IcedError, Instruction, MemoryOperand, Register
+    IcedError, Instruction, MemoryOperand, Register, code_asm::CodeAssembler
 };
 
 use crate::{
@@ -168,12 +168,6 @@ impl PhysReg {
 
 impl MemOperand {
     fn as_memory_operand(&self, fn_ctx: &AssembleFunctionContext, valid: ValidForCodegenToken) -> MemoryOperand {
-        let displ_size_from_displacement = |w: MemOperandDisplacement| match w {
-            MemOperandDisplacement::Disp32(_) => 4,
-            MemOperandDisplacement::Disp8(_) => 1,
-            MemOperandDisplacement::Zero => 0
-        };
-
         use crate::mir::StackOrReg;
         // turn StackOrReg -> base register (rsp for stack) + offset (stack offset for stack)
         fn destructure_stack_or_reg(fn_ctx: &AssembleFunctionContext, stack_or_reg: StackOrReg, valid: ValidForCodegenToken) -> (PhysReg, u32) {
@@ -204,8 +198,8 @@ impl MemOperand {
                 let base: Register = base_reg.to_register(GprOperandWidth::Qword);
                 let index: Register = index.to_register(GprOperandWidth::Qword);
                 let scale: u32 = scale.as_u32();
-                let displ_size = displ_size_from_displacement(*disp);
                 let disp: u32 = disp.as_u32() + base_offset;
+                let displ_size = if disp > 0 { 1 } else { 0 };
 
                 MemoryOperand::with_base_index_scale_displ_size(base, index, scale, disp as i64, displ_size)
             },
@@ -213,8 +207,8 @@ impl MemOperand {
                 let (base_reg, base_offset) = destructure_stack_or_reg(fn_ctx, *base, valid);
 
                 let base: Register = base_reg.to_register(GprOperandWidth::Qword);
-                let displ_size = displ_size_from_displacement(*disp);
                 let disp = disp.as_u32() + base_offset;
+                let displ_size = if disp > 0 { 1 } else { 0 };
 
                 MemoryOperand::with_base_displ_size(base, disp as i64, displ_size)
             },
@@ -233,10 +227,15 @@ impl MemOperand {
 pub(crate) enum Relocation {
     /// A `call rel32` whose target function's address is not known yet
     Call(MachineFunctionRef),
+    
     /// A RIP-relative memory operand referencing a function's address
     FnReloc(MachineFunctionRef),
+
     /// A RIP-relative memory operand referencing a data's address
-    DataReloc(cir::DataRef)
+    DataReloc(cir::DataRef),
+
+    /// RIP-relative label offset
+    LabelReloc(MachineBlockRef),
 }
 
 impl MemOperand {
@@ -251,35 +250,40 @@ impl MemOperand {
     }
 }
 
-/// A `Relocation` at a particular offset that will be patched by the linker
+/// A `Relocation` at a particular offset that will be patched by the assembler (in the case of label relocs) 
+/// or patched by the linker (all other relocs)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AssembledRelocation {
     code_offset: u64,
     reloc: Relocation
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct MachineLabel(u64);
 
 pub(crate) struct Assembler {
     encoder: iced_x86::Encoder,
     current_offset: usize,
+
     relocs: Vec<AssembledRelocation>,
 }
 
 /// Per-function context for assembling. 
 pub(crate) struct AssembleFunctionContext {
-    labels: IndexVec<MachineBlockRef, MachineLabel>,
-
     // negative offsets from the top of the stack frame
     stack: IndexVec<StackSlotRef, u32>,
 
     // total stack frame size, guaranteed to be a multiple of 16
     stack_usage: u32,
+
+    // a linear ordering over the blocks in an instruction
+    block_order: Vec<MachineBlockRef>,
+
+    // the offsets of blocks, relative to the start of the function
+    block_labels: IndexVec<MachineBlockRef, u64>,
 }
 
 impl AssembleFunctionContext {
-    // Computes stack layout for a function and returns a new `AssembleFunctionContext`
+    // Computes stack layout for a function, as well as a basic block ordering,
+    // and returns a new `AssembleFunctionContext`
     fn new(mfunc: &MachineFunctionDefinition) -> Self {
         // stack arranged such that values requiring the largest alignment
         // live at higher addresses
@@ -299,10 +303,14 @@ impl AssembleFunctionContext {
 
         current_stack = current_stack.next_multiple_of(16);
 
+        let block_order = MachineBlockRef::iter(&mfunc.blocks)
+            .collect();
+
         Self {
-            labels: index_vec![],
             stack: computed_stack,
-            stack_usage: current_stack
+            stack_usage: current_stack,
+            block_order,
+            block_labels: index_vec![],
         }
     }
 }
@@ -319,7 +327,8 @@ impl Assembler {
         if let Some(reloc) = reloc {
             let offsets = self.encoder.get_constant_offsets();
             let (field_offset, field_size) = match reloc {
-                Relocation::Call(_) => {
+                Relocation::Call(_)
+                | Relocation::LabelReloc(_) => {
                     assert!(offsets.has_immediate());
                     (offsets.immediate_offset(), offsets.immediate_size())
                 }
@@ -327,7 +336,7 @@ impl Assembler {
                 | Relocation::DataReloc(_) => {
                     assert!(offsets.has_displacement());
                     (offsets.displacement_offset(), offsets.displacement_size())
-                }
+                },
             };
 
             assert_eq!(field_size, 4, "only rel32/disp32 relocations are supported for now");
@@ -347,18 +356,14 @@ impl Assembler {
     }
 
     /// Assembles a single MIR instruction into `self`.
-    ///
-    /// `block_labels` must contain the resolved byte offset (within the function) for every
-    /// `MachineBlockRef` that may be targeted by a jump
     fn assemble_inst(
         &mut self,
         mir_inst: MachineInst,
+        fallthrough_block: Option<MachineBlockRef>,
         fn_ctx: &AssembleFunctionContext,
         valid: ValidForCodegenToken,
     ) -> Result<(), IcedError> {
         use iced_x86::Code;
-        
-        let block_labels = fn_ctx.labels.as_ref();
 
         match mir_inst {
             MachineInst::JmpWithParams { .. }
@@ -729,10 +734,9 @@ impl Assembler {
                 )
             },
             MachineInst::Jmp { target } => {
-                let target = block_labels[target];
                 self.emit(
-                    Instruction::with_branch(Code::Jmp_rel32_64, target.0)?,
-                    None,
+                    Instruction::with_branch(Code::Jmp_rel32_64, 0)?,
+                    Some(Relocation::LabelReloc(target)),
                 )
             },
             MachineInst::Call { target } => {
@@ -1003,6 +1007,8 @@ impl Assembler {
                 self.emit(Instruction::with2(code, op1, op2)?, None)
             },
             MachineInst::SetReg { dst, cond } => {
+                let dst = dst.as_preg(valid);
+
                 let code = match cond {
                     Condition::O => Code::Seto_rm8,
                     Condition::No => Code::Setno_rm8,
@@ -1018,11 +1024,13 @@ impl Assembler {
                     Condition::G => Code::Setg_rm8,
                 };
 
-                todo!();
+                let dst = dst.to_register(GprOperandWidth::Byte);
+                self.emit(
+                    Instruction::with1(code, dst)?,
+                    None
+                )
             }
-            MachineInst::JmpWithCond { cond, target, fallthrough: _ } => {
-                let target = block_labels[target];
-
+            MachineInst::JmpWithCond { cond, target, fallthrough } => {
                 let code = match cond {
                     Condition::O => Code::Jo_rel32_64,
                     Condition::No => Code::Jno_rel32_64,
@@ -1038,20 +1046,86 @@ impl Assembler {
                     Condition::G => Code::Jg_rel32_64,
                 };
 
-                self.emit(Instruction::with_branch(code, target.0)?, None)
+                self.emit(
+                    Instruction::with_branch(code, 0)?, 
+                    Some(Relocation::LabelReloc(target))
+                )?;
+
+                // if the fallthrough target of this branch is not the fallthrough block of 
+                // this instruction, we need to emit a second branch
+                if !fallthrough_block.is_some_and(|b| b == fallthrough) {
+                    self.emit(
+                        Instruction::with_branch(Code::Jmp_rel32_64, 0)?,
+                        Some(Relocation::LabelReloc(fallthrough))
+                    )?;
+                }
+
+                Ok(())
             },
         }
     }
 
-    fn assemble_block() {
-
+    fn assemble_block(
+        &mut self, 
+        fallthrough_block: Option<MachineBlockRef>, 
+        fn_ctx: &AssembleFunctionContext,
+        mfunc: &MachineFunctionDefinition,
+        mbref: MachineBlockRef,
+        valid: ValidForCodegenToken,
+    ) -> Result<(), IcedError> {
+        let block = &mfunc.blocks[mbref];
+        for &inst_ref in &block.inst_refs {
+            let inst = mfunc.insts[inst_ref];
+            self.assemble_inst(inst, fallthrough_block, fn_ctx, valid)?;
+        }
+        
+        Ok(())
     }
 
-    pub(crate) fn assemble_function() {
+    pub(crate) fn assemble_function(
+        &mut self, 
+        fn_ctx: &mut AssembleFunctionContext, 
+        mfunc: &MachineFunctionDefinition,
+        valid: ValidForCodegenToken,
+    ) -> Result<(), IcedError> {
+        fn_ctx.block_labels.resize(fn_ctx.block_order.len(), 0);
 
+        for i in 0..fn_ctx.block_order.len() {
+            let current_block = fn_ctx.block_order[i];
+            let next_block = fn_ctx.block_order.get(i + 1).copied();
+            fn_ctx.block_labels[current_block] = self.current_offset as u64;
+
+            self.assemble_block(
+                next_block, 
+                fn_ctx, 
+                mfunc, 
+                current_block, 
+                valid
+            )?;
+        }
+
+        // patch LabelReloc's
+        let mut buf = self.encoder.take_buffer();
+        self.relocs.retain(|&reloc| {
+            let Relocation::LabelReloc(target) = reloc.reloc else {
+                return true
+            };
+
+            let rip = (reloc.code_offset + 4) as i64;
+            let target_ip = fn_ctx.block_labels[target] as i64;
+            let offset = (target_ip - rip) as i32;
+            let offset_bytes = offset.to_le_bytes();
+            buf[reloc.code_offset as usize..][..4].copy_from_slice(&offset_bytes);
+
+            false
+        });
+        self.encoder.set_buffer(buf);
+
+        Ok(())
     }
 }
 
+/// Helper to select the right encoding of `cmov` based on condition / operand width
 fn cmov_opcode(cond: Condition, width: GprOperandWidth) -> iced_x86::Code {
     use Condition::*;
     use GprOperandWidth::*;
@@ -1101,11 +1175,12 @@ fn cmov_opcode(cond: Condition, width: GprOperandWidth) -> iced_x86::Code {
 #[cfg(test)]
 mod tests {
     use cake_util::{IndexVec, index_vec};
+use iced_x86::Formatter;
 
     use crate::{
         cir, 
         codegen::x64_backend::assembler::{
-            AssembleFunctionContext, AssembledRelocation, Assembler, MachineLabel, Relocation, valid::ValidForCodegenToken
+            AssembleFunctionContext, AssembledRelocation, Assembler, Relocation, valid::ValidForCodegenToken
         }, 
         mir::{
             GprOperandWidth, ImmediateOperand, MachineBlockRef, MachineFunctionRef, MachineInst, MemOperand, MemOperandDisplacement, phys_regs::*
@@ -1120,17 +1195,17 @@ mod tests {
             relocs: Vec::new(),
         };
         
-        let block_labels: IndexVec<MachineBlockRef, MachineLabel> = IndexVec::new();
         let fn_ctx = AssembleFunctionContext {
             stack: index_vec![],
             stack_usage: 0,
-            labels: block_labels
+            block_order: vec![],
+            block_labels: index_vec![]
         };
 
         let valid = unsafe { ValidForCodegenToken::assume_valid() };
 
         for inst in machine_insts {
-            assembler.assemble_inst(inst, &fn_ctx, valid).expect("failed to assemble instructions")
+            assembler.assemble_inst(inst, None, &fn_ctx, valid).expect("failed to assemble instructions")
         }
 
         let bytes = assembler.encoder.take_buffer();
@@ -1189,6 +1264,7 @@ mod tests {
     fn test_reloc() {
         let data_0 = cir::DataRef::new_for_test(0);
         let func_0 = MachineFunctionRef::new_for_test(0);
+        let block_0 = MachineBlockRef::new_for_test(0);
         
         let insts = vec![
             MachineInst::Lea { 
@@ -1198,21 +1274,52 @@ mod tests {
                 }, 
                 width: GprOperandWidth::Qword
             },
-            MachineInst::Call { target: func_0 }
+            MachineInst::Call { target: func_0 },
+            MachineInst::Jmp { target: block_0 }
         ];
 
         let expected_bytes: Vec<u8> = vec![
             0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00,
-            0xE8, 0x00, 0x00, 0x00, 0x00
+            0xE8, 0x00, 0x00, 0x00, 0x00,
+            0xE9, 0x00, 0x00, 0x00, 0x00,
         ];
 
         let assembler = test_harness(insts, &expected_bytes);
 
         let expected_relocs: Vec<AssembledRelocation> = vec![
             AssembledRelocation { code_offset: 3, reloc: Relocation::DataReloc(data_0) },
-            AssembledRelocation { code_offset: 8, reloc: Relocation::Call(func_0) }
+            AssembledRelocation { code_offset: 8, reloc: Relocation::Call(func_0) },
+            AssembledRelocation { code_offset: 13, reloc: Relocation::LabelReloc(block_0) }
         ];
 
         assert_eq!(assembler.relocs, expected_relocs);
+    }
+
+    #[test]
+    fn test_conditional() {
+        use crate::regalloc::regalloc2::test::conditional_module;
+
+        let module = conditional_module();
+        let mut assembler = Assembler {
+            encoder: iced_x86::Encoder::new(64),
+            current_offset: 0,
+            relocs: vec![],
+        };
+
+        let mfunc = module.functions.iter().next().unwrap().definition.as_ref().unwrap();
+        let mut fn_ctx = AssembleFunctionContext::new(mfunc);
+        let valid = unsafe { ValidForCodegenToken::assume_valid() };
+        assembler.assemble_function(&mut fn_ctx, mfunc, valid).expect("codegen failed");
+
+        let assembled = assembler.encoder.take_buffer();
+        let mut decoder = iced_x86::Decoder::new(64, &assembled, 0);
+        let mut formatter = iced_x86::IntelFormatter::new();
+        formatter.options_mut().set_branch_leading_zeros(false);
+        let mut output = String::new();
+        for inst in &mut decoder {
+            output.clear();
+            formatter.format(&inst, &mut output);
+            println!("{}", output);
+        }
     }
 }

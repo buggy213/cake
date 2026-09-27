@@ -272,7 +272,7 @@ pub(crate) enum StackOrReg {
     Reg(Reg),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum MemOperand {
     PcRelativeFn {
         target: MachineFunctionRef
@@ -389,7 +389,7 @@ impl Condition {
 /// emission. MachineInst's remain in three-address SSA form until register allocation, 
 /// using virtual registers and block parameters; it is the register allocator's job
 /// to perform out-of-SSA and two-address legalization for x86_64. 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum MachineInst {
     // These variants are used for register allocation, since they directly encode the values
     // which are live across control flow

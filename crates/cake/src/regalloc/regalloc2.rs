@@ -801,13 +801,12 @@ fn finalize_regalloc(
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use regalloc2::RegallocOptions;
 
-    use crate::{mir::cir2mir::InstructionSelector, regalloc::regalloc2::{RegAllocAdapter, RegAllocAdapterContext, amd64_machine_env, finalize_regalloc}};
+    use crate::{mir::{MachineModule, cir2mir::InstructionSelector}, regalloc::regalloc2::{RegAllocAdapter, RegAllocAdapterContext, amd64_machine_env, finalize_regalloc}};
 
-    #[test]
-    fn test_conditional() {
+    pub(crate) fn conditional_module() -> MachineModule {
         use crate::cir::ast2cir::test::conditional_module;
         let mut module = conditional_module();
         let func = module.functions.iter_mut().next().unwrap().definition.as_mut().unwrap();
@@ -820,7 +819,7 @@ mod test {
         print!("{mir_mod}");
 
         let mut regalloc_ctx = RegAllocAdapterContext::new();
-        let mut func = mir_mod.functions.iter_mut().next().unwrap().definition.as_mut().unwrap();
+        let func = mir_mod.functions.iter_mut().next().unwrap().definition.as_mut().unwrap();
         regalloc_ctx.populate(func);
         let ra2_adapter = RegAllocAdapter {
             func,
@@ -835,6 +834,12 @@ mod test {
 
         finalize_regalloc(func, &ra2_adapter.ctx, result);
 
-        print!("{mir_mod}")
+        print!("{mir_mod}");
+        mir_mod
+    }
+
+    #[test]
+    fn test_conditional() {
+        conditional_module();
     }
 }
