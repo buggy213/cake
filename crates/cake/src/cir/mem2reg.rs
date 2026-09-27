@@ -20,7 +20,7 @@ use cake_util::{IndexVec, index_vec};
 use rustc_hash::FxHashSet;
 use smallvec::{SmallVec, smallvec};
 
-use crate::cir::{BlockRef, FunctionDefinition, Inst, InstRef, Module, OperandCoord, StackSlotRef, StackSlotUse, Type, Value, dom_info::{self, DominanceFrontiers, DominanceTree}};
+use crate::cir::{BlockRef, FunctionDefinition, Inst, InstRef, Module, OperandCoord, StackSlotRef, StackSlotUse, Type, Use, Value, dom_info::{self, DominanceFrontiers, DominanceTree}};
 
 pub(crate) fn mem2reg(func: &mut FunctionDefinition) {
     let dom_tree = dom_info::dom_tree(func);
@@ -122,7 +122,12 @@ fn mem2reg_slot(
             if needs_phi.contains(&edge.target) {
                 let top = *value_stack.last().expect("uninitialized variable used");
                 let arg_vec = edge.args;
+                let idx = func.value_vecs[arg_vec].len();
                 func.value_vecs[arg_vec].push(top);
+                func.add_use(top, Use {
+                    user: terminator_ref,
+                    operand_coord: OperandCoord::indirect(edge.args_kind, idx as u32)
+                })
             }
         }
 

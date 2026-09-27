@@ -102,6 +102,24 @@ impl Module {
         &self.functions
     }
 
+    /// Helper for unit tests to grab the (singular) function definition
+    /// within a module
+    #[cfg(test)]
+    pub(crate) fn test_function(&self) -> &FunctionDefinition {
+        self.functions.iter()
+            .find_map(|p| p.definition.as_ref())
+            .unwrap()
+    }
+
+    /// Helper for unit tests to grab the (singular) function definition
+    /// within a module
+    #[cfg(test)]
+    pub(crate) fn test_function_mut(&mut self) -> &mut FunctionDefinition {
+        self.functions.iter_mut()
+            .find_map(|p| p.definition.as_mut())
+            .unwrap()
+    }
+
     pub(crate) fn signatures(&self) -> &IndexSlice<FuncRef, [Signature]> {
         &self.signatures
     }
@@ -230,6 +248,10 @@ pub(crate) struct OperandCoord {
 impl OperandCoord {
     pub(crate) fn direct(idx: u32) -> Self {
         Self { kind: 0, idx }
+    }
+
+    pub(crate) fn indirect(kind: u32, idx: u32) -> Self {
+        Self { kind, idx }
     }
 }
 

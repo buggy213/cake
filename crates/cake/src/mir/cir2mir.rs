@@ -57,6 +57,7 @@ pub(crate) struct InstructionSelector<'cir_mod> {
 }
 
 /// See note for InstructionSelector::vregs
+#[derive(Debug)]
 enum InstSelVReg {
     Undefined {
         class: RegClass,
