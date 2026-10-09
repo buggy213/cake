@@ -2,6 +2,7 @@
 //! and a push-based approach to apply edits to the IR at the end
 
 use cake_util::{IndexVec, make_type_idx};
+use ::regalloc2::PRegSet;
 
 use crate::cir::Type;
 
@@ -27,6 +28,15 @@ pub(crate) trait RegisterAllocator {
     fn allocate(&mut self);
 }
 
+
+pub(crate) struct MachineEnv {
+    int_preferred_regset: PRegSet,
+    fp_preferred_regset: PRegSet,
+
+    int_nonpreferred_regset: PRegSet,
+    fp_nonpreferred_regset: PRegSet,  
+}
+
 // Implementations of the register allocator
-mod basic_alloc;
+pub(crate) mod basic_alloc;
 pub(crate) mod regalloc2;

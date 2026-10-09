@@ -267,7 +267,8 @@ impl MemOperandScale {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum StackOrReg {
+pub(crate) enum MemLocation {
+    Argument(u32),
     Stack(cir::StackSlotRef),
     Reg(Reg),
 }
@@ -283,13 +284,13 @@ pub(crate) enum MemOperand {
     // index is not allowed to be physical register rsp or r12, 
     // this is enforced by register allocator
     Full {
-        base: StackOrReg,
+        base: MemLocation,
         index: Reg,
         scale: MemOperandScale,
         disp: MemOperandDisplacement,
     },
     BasePlusDisp {
-        base: StackOrReg,
+        base: MemLocation,
         disp: MemOperandDisplacement,
     },
     AbsoluteDisp {
@@ -308,11 +309,11 @@ impl MemOperand {
     }
 
     pub(crate) fn base(reg: impl Into<Reg>) -> Self {
-        MemOperand::BasePlusDisp { base: StackOrReg::Reg(reg.into()), disp: MemOperandDisplacement::Zero }
+        MemOperand::BasePlusDisp { base: MemLocation::Reg(reg.into()), disp: MemOperandDisplacement::Zero }
     }
 
     pub(crate) fn base_disp(reg: impl Into<Reg>, disp: MemOperandDisplacement) -> Self {
-        MemOperand::BasePlusDisp { base: StackOrReg::Reg(reg.into()), disp }
+        MemOperand::BasePlusDisp { base: MemLocation::Reg(reg.into()), disp }
     }
 }
 
@@ -937,12 +938,14 @@ impl std::fmt::Display for MemOperandDisplacement {
     }
 }
 
-impl std::fmt::Display for StackOrReg {
+impl std::fmt::Display for MemLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StackOrReg::Stack(stack_slot_ref) => 
+            MemLocation::Argument(idx) =>
+                write!(f, "&args({idx})"),
+            MemLocation::Stack(stack_slot_ref) => 
                 write!(f, "&ss{}", stack_slot_ref.get_inner()),
-            StackOrReg::Reg(reg) => 
+            MemLocation::Reg(reg) => 
                 write!(f, "{reg}"),
         }
     }

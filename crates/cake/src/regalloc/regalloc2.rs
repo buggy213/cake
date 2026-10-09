@@ -171,7 +171,7 @@ impl mir::MachineInst {
                 mir::MemOperand::PcRelativeFn { target } => (),
                 mir::MemOperand::PcRelativeData { target } => (),
                 mir::MemOperand::Full { base, index, scale, disp } => {
-                    if let mir::StackOrReg::Reg(base) = base {
+                    if let mir::MemLocation::Reg(base) = base {
                         operand_buf[num_operands] = make_use(*base, func);
                         num_operands += 1;
                     }
@@ -183,7 +183,7 @@ impl mir::MachineInst {
                     num_operands += 1;
                 },
                 mir::MemOperand::BasePlusDisp { base, disp } => {
-                    if let mir::StackOrReg::Reg(base) = base {
+                    if let mir::MemLocation::Reg(base) = base {
                         operand_buf[num_operands] = make_use(*base, func);
                         num_operands += 1;
                     }
@@ -358,8 +358,9 @@ impl mir::MachineInst {
                 mir::MemOperand::PcRelativeData { target } => allocs,
                 mir::MemOperand::Full { base, index, scale, disp } => {
                     match base {
-                        mir::StackOrReg::Stack(stack_slot_ref) => (),
-                        mir::StackOrReg::Reg(reg) => {
+                        mir::MemLocation::Argument(idx) => (),
+                        mir::MemLocation::Stack(stack_slot_ref) => (),
+                        mir::MemLocation::Reg(reg) => {
                             *reg = alloc_mir_preg(allocs[0]).into();
                             allocs = &allocs[1..]
                         },
@@ -372,8 +373,9 @@ impl mir::MachineInst {
                 },
                 mir::MemOperand::BasePlusDisp { base, disp } => {
                     match base {
-                        mir::StackOrReg::Stack(stack_slot_ref) => (),
-                        mir::StackOrReg::Reg(reg) => {
+                        mir::MemLocation::Argument(idx) => (),
+                        mir::MemLocation::Stack(stack_slot_ref) => (),
+                        mir::MemLocation::Reg(reg) => {
                             *reg = alloc_mir_preg(allocs[0]).into();
                             allocs = &allocs[1..];
                         },

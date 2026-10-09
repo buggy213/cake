@@ -1,7 +1,7 @@
 use std::assert_matches;
 use cake_util::{IndexVec, index_vec};
 use iced_x86::{
-    IcedError, Instruction, MemoryOperand, Register, code_asm::CodeAssembler
+    IcedError, Instruction, MemoryOperand, Register
 };
 
 use crate::{
@@ -168,15 +168,19 @@ impl PhysReg {
 
 impl MemOperand {
     fn as_memory_operand(&self, fn_ctx: &AssembleFunctionContext, valid: ValidForCodegenToken) -> MemoryOperand {
-        use crate::mir::StackOrReg;
+        use crate::mir::MemLocation;
         // turn StackOrReg -> base register (rsp for stack) + offset (stack offset for stack)
-        fn destructure_stack_or_reg(fn_ctx: &AssembleFunctionContext, stack_or_reg: StackOrReg, valid: ValidForCodegenToken) -> (PhysReg, u32) {
+        fn destructure_stack_or_reg(fn_ctx: &AssembleFunctionContext, stack_or_reg: MemLocation, valid: ValidForCodegenToken) -> (PhysReg, u32) {
             match stack_or_reg {
-                StackOrReg::Stack(stack_slot_ref) => {
-                    let stack_offset = fn_ctx.stack[stack_slot_ref];
-                    (PhysReg::rsp, stack_offset)
+                MemLocation::Argument(idx) => {
+                    let offset = fn_ctx.arguments[idx as usize];
+                    (PhysReg::rsp, fn_ctx.stack_usage + offset)
                 },
-                StackOrReg::Reg(reg) => {
+                MemLocation::Stack(stack_slot_ref) => {
+                    let offset = fn_ctx.stack[stack_slot_ref];
+                    (PhysReg::rsp, fn_ctx.stack_usage - offset)
+                },
+                MemLocation::Reg(reg) => {
                     (reg.as_preg(valid), 0)
                 }
             }
@@ -271,6 +275,9 @@ pub(crate) struct AssembleFunctionContext {
     // negative offsets from the top of the stack frame
     stack: IndexVec<StackSlotRef, u32>,
 
+    // positive offsets from the top of the stack frame
+    arguments: Vec<u32>,
+
     // total stack frame size, guaranteed to be a multiple of 16
     stack_usage: u32,
 
@@ -285,30 +292,13 @@ impl AssembleFunctionContext {
     // Computes stack layout for a function, as well as a basic block ordering,
     // and returns a new `AssembleFunctionContext`
     fn new(mfunc: &MachineFunctionDefinition) -> Self {
-        // stack arranged such that values requiring the largest alignment
-        // live at higher addresses
-        let mut computed_stack: IndexVec<StackSlotRef, u32> = index_vec![0u32; mfunc.stack_slots.len()];
-        let mut stack_slot_by_align: Vec<StackSlotRef> = StackSlotRef::iter(&mfunc.stack_slots).collect();
-        stack_slot_by_align.sort_by(|&a, &b| {
-            Ord::cmp(&mfunc.stack_slots[a].align, &mfunc.stack_slots[b].align).reverse()
-        });
-
-        let mut current_stack = 0u32;
-        for stack_slot_ref in stack_slot_by_align {
-            let stack_slot = mfunc.stack_slots[stack_slot_ref];
-            current_stack += stack_slot.size;
-            current_stack = current_stack.next_multiple_of(stack_slot.align);
-            computed_stack[stack_slot_ref] = current_stack;
-        }
-
-        current_stack = current_stack.next_multiple_of(16);
-
         let block_order = MachineBlockRef::iter(&mfunc.blocks)
             .collect();
 
         Self {
-            stack: computed_stack,
-            stack_usage: current_stack,
+            stack: todo!(),
+            arguments: todo!(),
+            stack_usage: todo!(),
             block_order,
             block_labels: index_vec![],
         }
@@ -1197,6 +1187,7 @@ use iced_x86::Formatter;
         
         let fn_ctx = AssembleFunctionContext {
             stack: index_vec![],
+            arguments: vec![],
             stack_usage: 0,
             block_order: vec![],
             block_labels: index_vec![]

@@ -23,7 +23,7 @@ use cake_util::{IndexVec, index_vec};
 use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 use crate::{
-    cir::{self, BlockRef, CompareMode, Constant, Data, DataContents, FunctionDefinition, InstRef, Value, post_order}, mir::{self, Condition, GprOperandWidth, ImmediateOperand, MachineBlock, MachineBlockRef, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstOperandCoord, MachineInstRef, MachineModule, MemOperand, MemOperandDisplacement, Reg, RegClass, SseOperandWidth, StackOrReg, VRegDef, VRegDefCoord, VRegRef, VRegUse, VRegVec, VRegVecRef, VirtualReg, phys_regs}
+    cir::{self, BlockRef, CompareMode, Constant, Data, DataContents, FunctionDefinition, InstRef, Value, post_order}, mir::{self, Condition, GprOperandWidth, ImmediateOperand, MachineBlock, MachineBlockRef, MachineFunction, MachineFunctionDefinition, MachineFunctionRef, MachineInst, MachineInstOperandCoord, MachineInstRef, MachineModule, MemOperand, MemOperandDisplacement, Reg, RegClass, SseOperandWidth, MemLocation, VRegDef, VRegDefCoord, VRegRef, VRegUse, VRegVec, VRegVecRef, VirtualReg, phys_regs}
 };
 
 // Whether a CIR instruction has already been selected
@@ -441,7 +441,7 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 };
 
                 let mem = MemOperand::BasePlusDisp { 
-                    base: StackOrReg::Stack(*slot), 
+                    base: MemLocation::Stack(*slot), 
                     disp: MemOperandDisplacement::Zero,
                 };
 
