@@ -553,7 +553,14 @@ impl RegAllocAdapterContext {
         self.branch_params.clear();
     }
 
-    fn populate(&mut self, func: &mir::MachineFunctionDefinition) {
+    /// Populate the RegAllocAdapterContext from a machine function
+    /// This function also needs to do some surgery to the entry block to ensure that parameters are always going to end up
+    /// in the right spot
+    fn populate(&mut self, func: &mut mir::MachineFunctionDefinition, abi: &PreRegAllocABIInfo) {
+        let entry = func.entry_block();
+
+        
+        
         for (bref, block) in mir::MachineBlockRef::enumerate2(&func.blocks) {
             let block_succs = block.successors(&func.insts);
             Self::extend_range(
@@ -805,15 +812,13 @@ fn finalize_regalloc(
     }
 
 
-    for (insn, &offset) in result.inst_alloc_offsets.iter().enumerate() {
+    for (insn, &inst_ref) in ctx.insns.iter().enumerate() {
         let inst_ref = ctx.insns[insn];
         let inst_mut = &mut func.insts[inst_ref];
-        let inst_operand_range = ctx.inst_operands[inst_ref];
-        let num_operands = inst_operand_range.1 - inst_operand_range.0;
         
         inst_mut.rewrite_inst_operands(
             &mut func.vreg_vecs, 
-            &result.allocs[offset as usize..][..num_operands as usize]
+            result.inst_allocs(regalloc2::Inst(insn as u32))
         );
     }
 }

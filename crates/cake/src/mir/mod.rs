@@ -308,6 +308,10 @@ impl MemOperand {
         MemOperand::PcRelativeData { target: data_ref }
     }
 
+    pub(crate) fn stack(stack_slot_ref: cir::StackSlotRef) -> Self {
+        MemOperand::BasePlusDisp { base: MemLocation::Stack(stack_slot_ref), disp: MemOperandDisplacement::Zero }
+    }
+
     pub(crate) fn base(reg: impl Into<Reg>) -> Self {
         MemOperand::BasePlusDisp { base: MemLocation::Reg(reg.into()), disp: MemOperandDisplacement::Zero }
     }

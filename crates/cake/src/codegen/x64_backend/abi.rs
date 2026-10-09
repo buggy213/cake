@@ -31,39 +31,84 @@
 //!    or optimized (sort by descending alignment to reduce stack usage). This layout is passed off
 //!    to codegen for final assembly emission
 
+use std::iter::zip;
+
 use cake_util::{IndexVec, index_vec};
-use regalloc2::{PRegSet, PRegSetIter};
+use regalloc2::PRegSet;
 use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 
-use crate::{cir::{self, StackSlot, StackSlotRef}, mir::{MachineFunctionDefinition, MachineInstRef, PhysReg}, regalloc::{self}};
+use crate::{cir::{self, StackSlot, StackSlotRef}, mir::{GprOperandWidth, MachineFunctionDefinition, MachineInst, MachineInstRef, MemLocation, MemOperand, MemOperandDisplacement, PhysReg, Reg, RegClass}, regalloc::{self}};
 
 enum ParameterLocation {
     Register(PhysReg),
-    Stack(usize)
+    Stack {
+        // relative to the bottom of the parameter passing area
+        offset: u32
+    }
 }
 
-struct CallABIInfo {
-    call_sig: cir::SigRef,
-    parameter_locations: Vec<ParameterLocation>,
+pub(crate) struct CallABIInfo {
+    pub(crate) call_sig: cir::SigRef,
+    pub(crate) parameter_locations: Vec<ParameterLocation>,
+    pub(crate) parameter_area: StackSlot,
 }
 
-struct PreRegAllocABIInfo {
-    call_by_iref: FxHashMap<MachineInstRef, CallABIInfo>,
-    maximal_parameter_area: Option<StackSlot>,
+pub(crate) struct PreRegAllocABIInfo {
+    pub(crate) callee_info: CallABIInfo,
+    pub(crate) call_by_iref: FxHashMap<cir::SigRef, CallABIInfo>,
+    pub(crate) maximal_parameter_area: Option<StackSlot>,
 }
 
 /// Perform analysis of function calls and insert parameter passing sequences
 fn prepare_abi(mfunc: &mut MachineFunctionDefinition) -> PreRegAllocABIInfo {
     let mut call_by_iref = FxHashMap::default();
     
-    for block in &mfunc.blocks {
-        for &iref in &block.inst_refs {
+    fn process_sig(sig: &cir::Signature) -> CallABIInfo {
+        let mut parameter_locations = vec![];
 
+        use crate::mir::PhysReg::*;
+        let mut int_regs: SmallVec<[PhysReg; 8]> = smallvec![r9, r8, rdx, rcx, rsi, rdi];
+        let mut fp_regs: SmallVec<[PhysReg; 8]> = smallvec![xmm7, xmm6, xmm5, xmm4, xmm3, xmm2, xmm1, xmm0];
+
+        let mut current_stack = 0u32;
+        for &arg_ty in &sig.argument_types {
+            if (arg_ty.is_integral() || arg_ty.is_ptr()) && let Some(ireg) = int_regs.pop() {
+                parameter_locations.push(ParameterLocation::Register(ireg));
+            }
+            else if arg_ty.is_fp() && let Some(freg) = fp_regs.pop() {
+                parameter_locations.push(ParameterLocation::Register(freg));
+            }
+            else {
+                parameter_locations.push(ParameterLocation::Stack { offset: current_stack });
+                current_stack += 8;
+            }
+        }
+        
+        CallABIInfo {
+            call_sig: todo!(), 
+            parameter_locations, 
+            parameter_area: todo!() 
         }
     }
 
-    PreRegAllocABIInfo { 
+    for block in &mfunc.blocks {
+        for &iref in &block.inst_refs {
+            let inst = mfunc.insts[iref];
+            let callee_sig: cir::Signature = match inst {
+                MachineInst::CallWithParams { target, params } => {
+                    todo!("we need to thread signatures in somehow")
+                },
+                MachineInst::CallIndirectWithParams { target, params } => todo!("indirect calls"),
+                _ => continue
+            };
+
+            
+        }
+    }
+
+    PreRegAllocABIInfo {
+        callee_info: todo!(),
         call_by_iref, 
         maximal_parameter_area: todo!(),
     }
@@ -138,8 +183,16 @@ fn finalize_abi(
     current_stack = current_stack.next_multiple_of(16);
     
 
-    for &ss in &int_save_slots {
-        
+    for (preg, &ss) in zip(int_save, &int_save_slots) {
+        let phys_reg: PhysReg = preg.into();
+        let save_inst = MachineInst::StoreReg {
+            op1: MemOperand::stack(ss),
+            op2: Reg::PReg(phys_reg),
+            width: GprOperandWidth::Qword,
+        };
+
+        let save_inst_ref = mfunc.insts.push(save_inst);
+        iref_buffer.push(save_inst_ref);
     }
 
     let entry_bref = mfunc.entry_block();
@@ -147,7 +200,35 @@ fn finalize_abi(
     entry_block.inst_refs.splice(0..0, iref_buffer.iter().copied());
     iref_buffer.clear();
 
-    todo!()
+    for block in &mut mfunc.blocks {
+        let terminator_ref = block.terminator_ref();
+        let terminator = mfunc.insts[terminator_ref];
+
+        if !matches!(terminator, MachineInst::Ret) {
+            continue;
+        }
+
+        for (preg, &ss) in zip(int_save, &int_save_slots) {
+            let phys_reg: PhysReg = preg.into();
+            let restore_inst = MachineInst::Load { 
+                dst: phys_reg.into(), 
+                op2: MemOperand::stack(ss), 
+                width: GprOperandWidth::Qword, 
+            };
+
+            let restore_inst_ref = mfunc.insts.push(restore_inst);
+            iref_buffer.push(restore_inst_ref);
+        }
+        iref_buffer.push(terminator_ref);
+
+        block.inst_refs.pop();
+        block.inst_refs.extend_from_slice(&iref_buffer);
+    }
+
+    StackLayout { 
+        stack: computed_stack, 
+        stack_usage: current_stack 
+    }
 }
 
 struct ABIMachineEnv {

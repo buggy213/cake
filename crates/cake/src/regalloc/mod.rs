@@ -40,3 +40,6 @@ pub(crate) struct MachineEnv {
 // Implementations of the register allocator
 pub(crate) mod basic_alloc;
 pub(crate) mod regalloc2;
+
+// Small cleanup pass to remove redundant copies after register allocation
+pub(crate) mod cleanup;
