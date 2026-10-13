@@ -460,6 +460,62 @@ impl Assembler {
                     op1.get_relocation()
                 )
             },
+            MachineInst::SubRegToReg { dst, op1, op2, width } => {
+                let dst_op1 = Reg::tied_pregs(dst, op1, valid);
+                let op2 = op2.as_preg(valid);
+                
+                let code = match width {
+                    GprOperandWidth::Byte => Code::Sub_rm8_r8,
+                    GprOperandWidth::Word => Code::Sub_rm16_r16,
+                    GprOperandWidth::Dword => Code::Sub_rm32_r32,
+                    GprOperandWidth::Qword => Code::Sub_rm64_r64,
+                };
+
+                let dst_op1: Register = dst_op1.to_register(width);
+                let subtractand: Register = op2.to_register(width);
+                self.emit(
+                    Instruction::with2(code, dst_op1, subtractand)?,
+                    None
+                )
+            }
+            MachineInst::ShlxRegByReg { dst, op1, op2, width } => {
+                let dst = dst.as_preg(valid);
+                let op1 = op1.as_preg(valid);
+                let op2 = op2.as_preg(valid);
+
+                let code = match width {
+                    GprOperandWidth::Byte => panic!("Shlx of byte width not encodable"),
+                    GprOperandWidth::Word => panic!("Shlx of word width not encodable"),
+                    GprOperandWidth::Dword => Code::VEX_Shlx_r32_rm32_r32,
+                    GprOperandWidth::Qword => Code::VEX_Shlx_r64_rm64_r64,
+                };
+
+                let dst = dst.to_register(width);
+                let op1 = op1.to_register(width);
+                let op2 = op2.to_register(width);
+                self.emit(
+                    Instruction::with3(code, dst, op1, op2)?,
+                    None
+                )
+            }
+            MachineInst::ShlRegByImm { dst, op1, op2, width } => {
+                let dst_op1 = Reg::tied_pregs(dst, op1, valid);
+                assert!(op2.0 < 256, "non-encodable shift size");
+                
+                let code = match width {
+                    GprOperandWidth::Byte => Code::Shl_rm8_imm8,
+                    GprOperandWidth::Word => Code::Shl_rm16_imm8,
+                    GprOperandWidth::Dword => Code::Shl_rm32_imm8,
+                    GprOperandWidth::Qword => Code::Shl_rm64_imm8,
+                };
+
+                let dst_op1 = dst_op1.to_register(width);
+                self.emit(
+                    Instruction::with2(code, dst_op1, op2.0 as i32)?,
+                    None
+                )
+            }
+
             MachineInst::FAddRegToReg { dst, op1, op2, width } => {
                 let dst = dst.as_preg(valid);
                 let op1 = op1.as_preg(valid);
@@ -491,6 +547,21 @@ impl Assembler {
                 self.emit(
                     Instruction::with3(code, dst, op1, mem)?,
                     op2.get_relocation()
+                )
+            }
+            MachineInst::FSubRegToReg { dst, op1, op2, width } => {
+                let code = match width {
+                    SseOperandWidth::Single => Code::VEX_Vsubss_xmm_xmm_xmmm32,
+                    SseOperandWidth::Double => Code::VEX_Vsubss_xmm_xmm_xmmm32,
+                };
+
+                let dst: Register = dst.as_preg(valid).to_sse_register();
+                let op1: Register = op1.as_preg(valid).to_sse_register();
+                let op2: Register = op2.as_preg(valid).to_sse_register();
+
+                self.emit(
+                    Instruction::with3(code, dst, op1, op2)?,
+                    None
                 )
             }
             MachineInst::Load { dst, op2, width } => {

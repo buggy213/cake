@@ -13,7 +13,8 @@
 //! In addition, we make a few assumptions in the backend:
 //! - mcmodel=small, i.e. all data and code fits within 2 GiB, so that rel32 addressing always works
 //! - AVX is available (pretty much every x86-64 CPU made in the last 15 years supports it), so
-//!   that the three-address instruction encodings are available
+//!   that the three-address instruction encodings for floating-point operations are available
+//! - BMI is available (Haswell+, Zen+), providing access to better shift instructions
 
 use cake_util::{IndexSlice, IndexVec, make_type_idx};
 use smallvec::SmallVec;
@@ -154,7 +155,7 @@ pub(crate) struct MachineInstOperandCoord {
 /// For Inst, this is always zero for instructions that only have a single output,
 /// and the index of the output for instructions with >1 output.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct VRegDefCoord(u32);
+pub(crate) struct VRegDefCoord(pub(crate) u32);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum VRegDef {
@@ -311,6 +312,10 @@ impl MemOperand {
     pub(crate) fn stack(stack_slot_ref: cir::StackSlotRef) -> Self {
         MemOperand::BasePlusDisp { base: MemLocation::Stack(stack_slot_ref), disp: MemOperandDisplacement::Zero }
     }
+    
+    pub(crate) fn arg(arg_idx: u32) -> Self {
+        MemOperand::BasePlusDisp { base: MemLocation::Argument(arg_idx), disp: MemOperandDisplacement::Zero }
+    }
 
     pub(crate) fn base(reg: impl Into<Reg>) -> Self {
         MemOperand::BasePlusDisp { base: MemLocation::Reg(reg.into()), disp: MemOperandDisplacement::Zero }
@@ -462,6 +467,28 @@ pub(crate) enum MachineInst {
         op2: ImmediateOperand,
         width: GprOperandWidth
     },
+    // sub %dst/op1, %op2
+    SubRegToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
+        width: GprOperandWidth,
+    },
+    // shlx %dst, %op1, %op2
+    // width must be Dword or Qword
+    ShlxRegByReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
+        width: GprOperandWidth,
+    },
+    // shl %dst/op1, %op2
+    ShlRegByImm {
+        dst: Reg,
+        op1: Reg,
+        op2: ImmediateOperand,
+        width: GprOperandWidth,
+    },
     // vaddss %dst, %op1, %op2
     FAddRegToReg {
         dst: Reg,
@@ -474,6 +501,13 @@ pub(crate) enum MachineInst {
         dst: Reg,
         op1: Reg,
         op2: MemOperand,
+        width: SseOperandWidth,
+    },
+    // vsubss %dst, %op1, %op2
+    FSubRegToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
         width: SseOperandWidth,
     },
 
@@ -986,8 +1020,12 @@ impl MachineInst {
             MachineInst::AddRegToMem { .. } => "AddRegToMem",
             MachineInst::AddImmToReg { .. } => "AddImmToReg",
             MachineInst::AddImmToMem { .. } => "AddImmToMem",
+            MachineInst::SubRegToReg { .. } => "SubRegToReg",
+            MachineInst::ShlxRegByReg { .. } => "ShlxRegByReg",
+            MachineInst::ShlRegByImm { .. } => "ShlRegByImm",
             MachineInst::FAddRegToReg { .. } => "FAddRegToReg",
             MachineInst::FAddMemToReg { .. } => "FAddMemToReg",
+            MachineInst::FSubRegToReg { .. } => "FSubRegToReg",
             MachineInst::Load { .. } => "Load",
             MachineInst::LoadImm { .. } => "LoadImm",
             MachineInst::LoadFloat { .. } => "LoadFloat",
@@ -1069,8 +1107,16 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
             MachineInst::AddRegToMem { op1, op2, width } => todo!(),
             MachineInst::AddImmToReg { dst, op1, op2, width } => todo!(),
             MachineInst::AddImmToMem { op1, op2, width } => todo!(),
+            MachineInst::SubRegToReg { dst, op1, op2, width } =>
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::ShlxRegByReg { dst, op1, op2, width } =>
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::ShlRegByImm { dst, op1, op2, width } =>
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
             MachineInst::FAddRegToReg { dst, op1, op2, width } => todo!(),
             MachineInst::FAddMemToReg { dst, op1, op2, width } => todo!(),
+            MachineInst::FSubRegToReg { dst, op1, op2, width } =>
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
             MachineInst::Load { dst, op2, width } => 
                 write!(f, "{m} {width} {dst}, {op2}"),
             MachineInst::LoadImm { dst, op2, width } => 
