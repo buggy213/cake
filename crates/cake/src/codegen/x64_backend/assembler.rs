@@ -564,6 +564,58 @@ impl Assembler {
                     None
                 )
             }
+            MachineInst::FMulRegToReg { dst, op1, op2, width } => {
+                let code = match width {
+                    SseOperandWidth::Single => Code::VEX_Vsubss_xmm_xmm_xmmm32,
+                    SseOperandWidth::Double => Code::VEX_Vsubsd_xmm_xmm_xmmm64,
+                };
+
+                let dst: Register = dst.as_preg(valid).to_sse_register();
+                let op1: Register = op1.as_preg(valid).to_sse_register();
+                let op2: Register = op2.as_preg(valid).to_sse_register();
+
+                self.emit(
+                    Instruction::with3(code, dst, op1, op2)?,
+                    None
+                )
+            }
+            MachineInst::FDivRegByReg { dst, op1, op2, width } => {
+                let code = match width {
+                    SseOperandWidth::Single => Code::VEX_Vdivss_xmm_xmm_xmmm32,
+                    SseOperandWidth::Double => Code::VEX_Vdivsd_xmm_xmm_xmmm64,
+                };
+
+                let dst: Register = dst.as_preg(valid).to_sse_register();
+                let op1: Register = op1.as_preg(valid).to_sse_register();
+                let op2: Register = op2.as_preg(valid).to_sse_register();
+
+                self.emit(
+                    Instruction::with3(code, dst, op1, op2)?,
+                    None
+                )
+            }
+            MachineInst::FCvtFloatToDouble { dst, op1 } => {
+                let code = Code::Cvtss2sd_xmm_xmmm32;
+
+                let dst = dst.as_preg(valid).to_sse_register();
+                let op1 = op1.as_preg(valid).to_sse_register();
+
+                self.emit(
+                    Instruction::with2(code, dst, op1)?,
+                    None
+                )
+            }
+            MachineInst::FCvtDoubleToFloat { dst, op1 } => {
+                let code = Code::Cvtsd2ss_xmm_xmmm64;
+
+                let dst = dst.as_preg(valid).to_sse_register();
+                let op1 = op1.as_preg(valid).to_sse_register();
+
+                self.emit(
+                    Instruction::with2(code, dst, op1)?, 
+                    None
+                )
+            }
             MachineInst::Load { dst, op2, width } => {
                 let dst = dst.as_preg(valid);
 
@@ -677,16 +729,16 @@ impl Assembler {
                     None
                 )
             },
-            MachineInst::Cmov { dst, op2, cond, width } => {
-                let dst = dst.as_preg(valid);
+            MachineInst::Cmov { dst, op1, op2, cond, width } => {
+                let dst_op1 = Reg::tied_pregs(dst, op1, valid);
                 let op2 = op2.as_preg(valid);
 
                 let code = cmov_opcode(cond, width);
 
-                let dst: Register = dst.to_register(width);
+                let dst_op1: Register = dst_op1.to_register(width);
                 let src: Register = op2.to_register(width);
                 self.emit(
-                    Instruction::with2(code, dst, src)?,
+                    Instruction::with2(code, dst_op1, src)?,
                     None
                 )
             }
@@ -892,8 +944,8 @@ impl Assembler {
                 let dst_quo = dst_quo.as_preg(valid);
                 let dst_rem = dst_rem.as_preg(valid);
                 let op1 = op1.as_preg(valid);
-                assert_matches!(dst_quo, PhysReg::rax);
-                assert_matches!(dst_rem, PhysReg::rdx);
+                assert_matches!(dst_quo, PhysReg::rax, "quotient of div must be rax (or subregister of rax)");
+                assert_matches!(dst_rem, PhysReg::rdx, "remainder of div must be rdx (or subregister of rdx)");
 
                 let code = match width {
                     GprOperandWidth::Byte => Code::Div_rm8,
@@ -911,8 +963,8 @@ impl Assembler {
             MachineInst::UDivByMem { dst_quo, dst_rem, op1, width } => {
                 let dst_quo = dst_quo.as_preg(valid);
                 let dst_rem = dst_rem.as_preg(valid);
-                assert_matches!(dst_quo, PhysReg::rax);
-                assert_matches!(dst_rem, PhysReg::rdx);
+                assert_matches!(dst_quo, PhysReg::rax, "quotient of div must be rax (or subregister of rax)");
+                assert_matches!(dst_rem, PhysReg::rdx, "remainder of div must be rdx (or subregister of rdx)");
 
                 let code = match width {
                     GprOperandWidth::Byte => Code::Div_rm8,

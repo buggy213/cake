@@ -342,14 +342,158 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
 
                 selected_insts.push(minst_ref);
             },
-            Inst::Sub { a, b } => todo!(),
-            Inst::Mul { a, b } => todo!(),
+            Inst::Sub { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_gpr_width();
+                let minst = MachineInst::SubRegToReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
+            Inst::Mul { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_gpr_width();
+                let minst = MachineInst::MulRegToReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
             Inst::Div { a, b } => todo!(),
             Inst::Modulo { a, b } => todo!(),
-            Inst::And { a, b } => todo!(),
-            Inst::Or { a, b } => todo!(),
-            Inst::Xor { a, b } => todo!(),
-            Inst::Shl { a, b } => todo!(),
+            Inst::And { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_gpr_width();
+                let minst = MachineInst::AndRegToReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
+            Inst::Or { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_gpr_width();
+                let minst = MachineInst::OrRegToReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
+            Inst::Xor { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_gpr_width();
+                let minst = MachineInst::XorRegToReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
+            Inst::Shl { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_gpr_width();
+                let minst = MachineInst::ShlxRegByReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
             Inst::Ashr { a, b } => todo!(),
             Inst::Lshr { a, b } => todo!(),
             Inst::Icmp { mode, a, b, signed } => {
@@ -383,10 +527,106 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
                 selected_insts.push(cmp_inst_ref);
                 selected_insts.push(set_inst_ref);
             },
-            Inst::Fadd { a, b } => todo!(),
-            Inst::Fsub { a, b } => todo!(),
-            Inst::Fmul { a, b } => todo!(),
-            Inst::Fdiv { a, b } => todo!(),
+            Inst::Fadd { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_sse_width();
+                let minst = MachineInst::FAddRegToReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
+            Inst::Fsub { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_sse_width();
+                let minst = MachineInst::FSubRegToReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
+            Inst::Fmul { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_sse_width();
+                let minst = MachineInst::FMulRegToReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
+            Inst::Fdiv { a, b } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let a_vreg = self.operand_vreg(RegClass::Gpr, *a);
+                let b_vreg = self.operand_vreg(RegClass::Gpr, *b);
+
+                let width = function.type_of_value(output_value).to_sse_width();
+                let minst = MachineInst::FDivRegByReg { 
+                    dst: Reg::VReg(output_vreg), 
+                    op1: Reg::VReg(a_vreg), 
+                    op2: Reg::VReg(b_vreg), 
+                    width
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.use_operand(*a, a_vreg, minst_ref, OpCoord::direct(0));
+                self.use_operand(*b, b_vreg, minst_ref, OpCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(minst_ref, DefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
             Inst::Fcmp { mode, a, b } => todo!(),
             Inst::IntToFp { v } => todo!(),
             Inst::FpToInt { v } => todo!(),
@@ -456,26 +696,98 @@ impl<'cir_mod> InstructionSelector<'cir_mod> {
 
                 selected_insts.push(minst_ref);
             },
-            Inst::Zext { v } => todo!(),
-            Inst::Sext { v } => todo!(),
-            Inst::Truncate { v } => todo!(),
-            Inst::FpCast { v } => todo!(),
-            Inst::PtrAdd { ptr, offset } => todo!(),
-            Inst::PtrToInt { v } => {
+            Inst::Zext { v } => {
                 let output_value = Value::Inst(inst_ref);
                 let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
                     return
                 };
-                
-                // we need to "redirect" the output_vreg which has been allocated for this inst
-                // into v_vreg since PtrToInt is really a no-op
 
-                // the vreg that was allocated for this inst still gets defined. even though it
-                // is garbage, it is unreferenced, so it should be ok
+                let v_vreg = self.operand_vreg(RegClass::Gpr, *v);
+                let dst_width = function.type_of_value(output_value).to_gpr_width();
+                let op2_width = function.type_of_value(*v).to_gpr_width();
+
+                let minst = MachineInst::ZeroExtend { 
+                    dst: output_vreg.into(), 
+                    op2: v_vreg.into(), 
+                    dst_width, 
+                    op2_width 
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.define_vreg(VRegDef::Inst(minst_ref, VRegDefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
             },
-            Inst::IntToPtr { v } => todo!(),
-            Inst::Select { cond, x, y } => {
+            Inst::Sext { v } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let v_vreg = self.operand_vreg(RegClass::Gpr, *v);
+                let dst_width = function.type_of_value(output_value).to_gpr_width();
+                let op2_width = function.type_of_value(*v).to_gpr_width();
+
+                let minst = MachineInst::SignExtend { 
+                    dst: output_vreg.into(), 
+                    op2: v_vreg.into(), 
+                    dst_width, 
+                    op2_width 
+                };
+
+                let minst_ref = self.insts.push(minst);
+
+                self.define_vreg(VRegDef::Inst(minst_ref, VRegDefCoord(0)), output_vreg);
+
+                selected_insts.push(minst_ref);
+            },
+            Inst::Truncate { v } => todo!(),
+            Inst::FpCast { v } => {
                 todo!()
+            },
+            Inst::PtrAdd { .. }
+            | Inst::PtrToInt { .. }
+            | Inst::IntToPtr { .. } => unreachable!("ptr types should be legalized away before isel"),
+            Inst::Select { cond, x, y } => {
+                let output_value = Value::Inst(inst_ref);
+                let Some(&output_vreg) = self.vreg_by_value.get(&output_value) else {
+                    return
+                };
+
+                let cond_vreg = self.operand_vreg(RegClass::Gpr, *cond);
+                let cond_width = function.type_of_value(*cond).to_gpr_width();
+                
+                let test_inst = MachineInst::TestRegWithReg { 
+                    op1: cond_vreg.into(), 
+                    op2: cond_vreg.into(), 
+                    width: cond_width
+                };
+
+                let test_inst_ref = self.insts.push(test_inst);
+                self.use_operand(*cond, cond_vreg, test_inst_ref, MachineInstOperandCoord::direct(0));
+                self.use_operand(*cond, cond_vreg, test_inst_ref, MachineInstOperandCoord::direct(1));
+
+                let x_vreg = self.operand_vreg(RegClass::Gpr, *x);
+                let y_vreg = self.operand_vreg(RegClass::Gpr, *y);
+                let width = function.type_of_value(output_value).to_gpr_width();
+
+                let cmov_inst = MachineInst::Cmov { 
+                    dst: output_vreg.into(),
+                    op1: x_vreg.into(),
+                    op2: y_vreg.into(),
+                    cond: Condition::Nz, 
+                    width
+                };
+
+                let cmov_inst_ref = self.insts.push(cmov_inst);
+
+                self.use_operand(*x, x_vreg, cmov_inst_ref, MachineInstOperandCoord::direct(0));
+                self.use_operand(*y, y_vreg, cmov_inst_ref, MachineInstOperandCoord::direct(1));
+                self.define_vreg(VRegDef::Inst(cmov_inst_ref, VRegDefCoord(0)), output_vreg);
+
+                selected_insts.push(test_inst_ref);
+                selected_insts.push(cmov_inst_ref);
             },
             Inst::BranchIf { cond, con, con_args, alt, alt_args } => {
                 let con_args = &function.value_vecs[*con_args];

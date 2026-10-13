@@ -510,6 +510,26 @@ pub(crate) enum MachineInst {
         op2: Reg,
         width: SseOperandWidth,
     },
+    FMulRegToReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
+        width: SseOperandWidth,
+    },
+    FDivRegByReg {
+        dst: Reg,
+        op1: Reg,
+        op2: Reg,
+        width: SseOperandWidth,
+    },
+    FCvtFloatToDouble {
+        dst: Reg,
+        op1: Reg,
+    },
+    FCvtDoubleToFloat {
+        dst: Reg,
+        op1: Reg,
+    },
 
     // mov %dst, [%op2]
     Load {
@@ -554,9 +574,10 @@ pub(crate) enum MachineInst {
         op2: Reg,
         width: GprOperandWidth
     },
-    // cmov(cc) %dst, %op2
+    // cmov(cc) %dst/op1, %op2
     Cmov {
         dst: Reg,
+        op1: Reg,
         op2: Reg,
         cond: Condition,
         width: GprOperandWidth
@@ -1026,6 +1047,10 @@ impl MachineInst {
             MachineInst::FAddRegToReg { .. } => "FAddRegToReg",
             MachineInst::FAddMemToReg { .. } => "FAddMemToReg",
             MachineInst::FSubRegToReg { .. } => "FSubRegToReg",
+            MachineInst::FMulRegToReg { .. } => "FMulRegToReg",
+            MachineInst::FDivRegByReg { .. } => "FDivRegByReg",
+            MachineInst::FCvtFloatToDouble { .. } => "FCvtFloatToDouble",
+            MachineInst::FCvtDoubleToFloat { .. } => "FCvtDoubleToFloat",
             MachineInst::Load { .. } => "Load",
             MachineInst::LoadImm { .. } => "LoadImm",
             MachineInst::LoadFloat { .. } => "LoadFloat",
@@ -1103,33 +1128,52 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
                 write!(f, "{m} {width} {dst}, {op2}"),
             MachineInst::AddRegToReg { dst, op1, op2, width } => 
                 write!(f, "{m} {width} {dst}, {op1}, {op2}"),
-            MachineInst::AddMemToReg { dst, op1, op2, width } => todo!(),
-            MachineInst::AddRegToMem { op1, op2, width } => todo!(),
-            MachineInst::AddImmToReg { dst, op1, op2, width } => todo!(),
-            MachineInst::AddImmToMem { op1, op2, width } => todo!(),
+            MachineInst::AddMemToReg { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::AddRegToMem { op1, op2, width } => 
+                write!(f, "{m} {width} {op1}, {op2}"),
+            MachineInst::AddImmToReg { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::AddImmToMem { op1, op2, width } => 
+                write!(f, "{m} {width} {op1}, {op2}"),
             MachineInst::SubRegToReg { dst, op1, op2, width } =>
                 write!(f, "{m} {width} {dst}, {op1}, {op2}"),
             MachineInst::ShlxRegByReg { dst, op1, op2, width } =>
                 write!(f, "{m} {width} {dst}, {op1}, {op2}"),
             MachineInst::ShlRegByImm { dst, op1, op2, width } =>
                 write!(f, "{m} {width} {dst}, {op1}, {op2}"),
-            MachineInst::FAddRegToReg { dst, op1, op2, width } => todo!(),
-            MachineInst::FAddMemToReg { dst, op1, op2, width } => todo!(),
+            MachineInst::FAddRegToReg { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::FAddMemToReg { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
             MachineInst::FSubRegToReg { dst, op1, op2, width } =>
                 write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::FMulRegToReg { dst, op1, op2, width } =>
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::FDivRegByReg { dst, op1, op2, width } =>
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::FCvtFloatToDouble { dst, op1 } =>
+                write!(f, "{m} {dst}, {op1}"),
+            MachineInst::FCvtDoubleToFloat { dst, op1 } =>
+                write!(f, "{m} {dst}, {op1}"),
             MachineInst::Load { dst, op2, width } => 
                 write!(f, "{m} {width} {dst}, {op2}"),
             MachineInst::LoadImm { dst, op2, width } => 
                 write!(f, "{m} {width} {dst}, {op2}"),
-            MachineInst::LoadFloat { dst, op2, width } => todo!(),
+            MachineInst::LoadFloat { dst, op2, width } =>
+                write!(f, "{m} {width} {dst}, {op2}"),
             MachineInst::StoreReg { op1, op2, width } => 
                 write!(f, "{m} {width} {op1}, {op2}"),
-            MachineInst::StoreImm { op1, op2, width } => todo!(),
-            MachineInst::StoreFloat { op1, op2, width } => todo!(),
+            MachineInst::StoreImm { op1, op2, width } => 
+                write!(f, "{m} {width} {op1}, {op2}"),
+            MachineInst::StoreFloat { op1, op2, width } => 
+                write!(f, "{m} {width} {op1}, {op2}"),
             MachineInst::Mov { dst, op2, width } => 
                 write!(f, "{m} {width} {dst}, {op2}"),
-            MachineInst::Cmov { dst, op2, cond, width } => todo!(),
-            MachineInst::Xchg { op1, op2, width } => todo!(),
+            MachineInst::Cmov { dst, op1, op2, cond, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::Xchg { op1, op2, width } => 
+                write!(f, "{m} {width} {op1}, {op2}"),
             MachineInst::ZeroExtend { dst, op2, dst_width, op2_width } => todo!(),
             MachineInst::SignExtend { dst, op2, dst_width, op2_width } => todo!(),
             MachineInst::Push { op1, width } => todo!(),
@@ -1141,19 +1185,27 @@ impl std::fmt::Display for DisplayMachineInst<'_> {
             MachineInst::CallIndirect { target } => todo!(),
             MachineInst::Ret => 
                 write!(f, "{m}"),
-            MachineInst::MulRegToReg { dst, op1, op2, width } => todo!(),
-            MachineInst::MulMemToReg { dst, op1, op2, width } => todo!(),
-            MachineInst::MulRegWithImm { dst, op1, op2, width } => todo!(),
-            MachineInst::MulMemWithImm { dst, op1, op2, width } => todo!(),
+            MachineInst::MulRegToReg { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::MulMemToReg { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::MulRegWithImm { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::MulMemWithImm { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
             MachineInst::UDivByReg { dst_quo, dst_rem, op1, width } => todo!(),
             MachineInst::UDivByMem { dst_quo, dst_rem, op1, width } => todo!(),
             MachineInst::SDivByReg { dst_quo, dst_rem, op1, width } => todo!(),
             MachineInst::SDivByMem { dst_quo, dst_rem, op1, width } => todo!(),
             MachineInst::PrepareDiv { width } => todo!(),
-            MachineInst::AndRegToReg { dst, op1, op2, width } => todo!(),
-            MachineInst::OrRegToReg { dst, op1, op2, width } => todo!(),
-            MachineInst::XorRegToReg { dst, op1, op2, width } => todo!(),
-            MachineInst::NotReg { dst, op1, width } => todo!(),
+            MachineInst::AndRegToReg { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::OrRegToReg { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::XorRegToReg { dst, op1, op2, width } => 
+                write!(f, "{m} {width} {dst}, {op1}, {op2}"),
+            MachineInst::NotReg { dst, op1, width } => 
+                write!(f, "{m} {width} {dst}, {op1}"),
             MachineInst::TestRegWithReg { op1, op2, width } => 
                 write!(f, "{m} {width} {op1}, {op2}"),
             MachineInst::CmpRegWithReg { op1, op2, width } => 

@@ -156,6 +156,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cake-macros"
+version = "0.1.0"
+
+[[package]]
 name = "cake-re"
 version = "0.1.0"
 dependencies = [
